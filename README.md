@@ -10,11 +10,12 @@ Requires PyTorch 1.8.1 compiled for CUDA 11.2.
 ## Hardware
 
 NVIDIA Driver Version: 460.91.03
+
 GPU: GeForce RTX 2080
 
-## Getting Started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
+## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
 
-(1) Check if `pip` is installed:
+1. Check if `pip` is installed:
 ```bash
 $ pip3 --version
 
@@ -24,7 +25,7 @@ $ curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 $ python3 get-pip.py
 ```
 
-(2) Install virtual environment first & then activate:
+2. Install virtual environment first & then activate:
 ```bash
 $ cd <project-directory>
 $ python3 -m pip install --user virtualenv #Install virtualenv if not installed in your system
@@ -32,12 +33,26 @@ $ python3 -m virtualenv env #Create virtualenv for your project
 $ source env/bin/activate #Activate virtualenv for linux/MacOS
 ```
 
-(3) Install PyTorch via pip by running following command:
+3. Install PyTorch via pip by running following command:
 ```bash
 $ pip3 install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html
 ```
 
-(4) Install all dependencies for your project from `requirements.txt` file:
+4. Install all dependencies for your project from `requirements.txt` file:
 ```bash
-$ pip install -r requirements.txt
+$ pip3 install -r requirements.txt
+```
+
+## Run the code
+
+1. Load and preprocess the data. Extract features from provider notes using NLP methods, and convert to PyTorch Tensor.
+
+```bash
+$ python3 src/data_loader.py
+```
+
+2. Split a PyTorch tensor into training, validation, and test sets in a 70-20-10 ratio:
+
+```bash
+$ python3 src/data_splitter.py
 ```
