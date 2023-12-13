@@ -56,3 +56,25 @@ $ python3 src/data_loader.py
 ```bash
 $ python3 src/data_splitter.py
 ```
+
+3. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
+
+```bash
+$ python3 train.py --model_type LSTMAttention
+```
+or 
+
+```bash
+$ python3 train.py --model_type TCN
+```
+
+4. Evaluate best model on test set:
+
+```bash
+$ python3 test.py --model_type LSTMAttention --model_path best_model.pth
+```
+or 
+
+```bash
+$ python3 test.py --model_type TCN --model_path best_model.pth
+```

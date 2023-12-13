@@ -12,6 +12,8 @@ from sklearn.decomposition import PCA
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
+import io
+from tqdm import tqdm
 
 # To do: time var
 
@@ -22,8 +24,8 @@ except LookupError:
     # If not present, download it
     nltk.download('vader_lexicon')
 
-# Function to process the text columns and extract features, then using PCA to reduce the dimensionality of the NLP features.
 def extract_nlp_features(df, text_columns):
+    """Function to process the text columns and extract features, then using PCA to reduce the dimensionality of the NLP features."""
     # Initialize TF-IDF Vectorizer and Sentiment Analyzer
     tfidf_vectorizer = TfidfVectorizer(max_features=100)  # Adjust max_features as needed
     sia = SentimentIntensityAnalyzer()
@@ -61,9 +63,38 @@ def extract_nlp_features(df, text_columns):
 
     return df
 
-# Function to read a file and return a DataFrame
-def read_file(file_path, columns_type, columns_select):
-    return pd.read_csv(file_path, sep='|', dtype=columns_type, low_memory=False, usecols=columns_select)
+def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=10000):
+    """
+    Reads a CSV file with a progress bar, selecting specific columns.
+
+    Parameters:
+        file_path (str): Path to the file.
+        columns_type (dict): Dictionary of column names and their data types.
+        columns_select (list): List of columns to read.
+        parse_dates (list or None): List of columns to parse as dates.
+        chunk_size (int): Number of rows per chunk.
+
+    Returns:
+        DataFrame: The read DataFrame.
+    """
+    # Filter columns_type to include only those columns in columns_select
+    filtered_columns_type = {col: columns_type[col] for col in columns_select if col in columns_type}
+
+    # Initialize a DataFrame to store the data
+    data = pd.DataFrame()
+
+    # Estimate the number of chunks
+    total_rows = sum(1 for _ in open(file_path))
+    total_chunks = (total_rows // chunk_size) + 1
+
+    # Read the file in chunks with a progress bar
+    with tqdm(total=total_chunks, desc="Reading CSV") as pbar:
+        for chunk in pd.read_csv(file_path, sep='|', dtype=filtered_columns_type, usecols=columns_select,
+                                 parse_dates=parse_dates, chunksize=chunk_size, low_memory=False):
+            data = pd.concat([data, chunk], ignore_index=True)
+            pbar.update(1)
+
+    return data
 
 # Define the column types for each file type
 all_columns = {
@@ -107,19 +138,16 @@ dia_columns = {
 
 enc_columns = {
     'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Date': 'object', 'Procedure_Name': 'object', 
-    'Code_Type': 'object', 'Code': 'object', 'Procedure_Flag': 'object', 
-    'Quantity': 'float64', 'Provider': 'object', 'Clinic': 'object', 
-    'Hospital': 'object', 'Inpatient_Outpatient': 'object', 
-    'Encounter_number': 'object'
-}
-
-mrn_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'System': 'object', 'Noted_Date': 'object',
-    'Allergen': 'object', 'Allergen_Type': 'object', 'Allergen_Code': 'float64',
-    'Reactions': 'object', 'Severity': 'object', 'Reaction_Type': 'object', 'Comments': 'object',
-    'Status': 'object','Deleted_Reason_Comments': 'object'
+    'MRN': 'object', 'Encounter_number': 'object', 'Encounter_Status': 'object', 
+    'Hospital': 'object', 'Inpatient_Outpatient': 'object', 'Service_Line': 'object', 
+    'Attending_MD': 'object', 'Admit_Date': 'object', 'Discharge_Date': 'object', 
+    'LOS_Days': 'float64', 'Clinic_Name': 'object', 'Admit_Source': 'object', 
+    'Discharge_Disposition': 'object', 'Payor': 'object', 'Admitting_Diagnosis': 'object', 
+    'Principal_Diagnosis': 'object', 'Diagnosis_1': 'object', 'Diagnosis_2': 'object', 
+    'Diagnosis_3': 'object', 'Diagnosis_4': 'object', 'Diagnosis_5': 'object', 
+    'Diagnosis_6': 'object', 'Diagnosis_7': 'object', 'Diagnosis_8': 'object', 
+    'Diagnosis_9': 'object', 'Diagnosis_10': 'object', 'DRG': 'object', 
+    'Patient_Type': 'object', 'Referrer_Discipline': 'object'
 }
 
 phy_columns = {
@@ -142,31 +170,27 @@ prc_columns = {
 
 # Select columns to read in each dataset
 
-all_columns_select = ['EMPI', 'System', 'Noted_Date', 'Allergen', 'Allergen_Type', 'Allergen_Code', 
+all_columns_select = ['EMPI', 'System', 'Allergen', 'Allergen_Type', 'Allergen_Code', 
     'Reactions', 'Severity', 'Reaction_Type', 'Comments', 'Status']
-con_columns_select = ['EMPI', 'Research_Invitations', 'City', 'State', 'Zip', 'VIP']
+con_columns_select = ['EMPI', 'Research_Invitations', 'City', 'State', 'Zip', 'Country', 'VIP', 'Insurance_1', 'Insurance_2', 'Insurance_3']
 dem_columns_select = ['EMPI', 'Gender_Legal_Sex','Age', 'Sex_At_Birth', 'Gender_Identity', 
-    'Language', 'Language_group', 'Race1', 
-    'Race2', 'Race_Group', 'Ethnic_Group', 
-    'Marital_status', 'Religion', 'Is_a_veteran', 
-    'Zip_code', 'Country', 'Vital_status']
-dia_columns_select = ['EMPI', 'Diagnosis_Name', 
-    'Code_Type', 'Code', 'Diagnosis_Flag', 
-    'Provider', 'Clinic', 'Hospital', 
-    'Inpatient_Outpatient']
-enc_columns_select = ['EMPI', 'Procedure_Name', 'Code', 'Procedure_Flag', 
-    'Quantity', 'Provider', 'Clinic', 
-    'Hospital', 'Inpatient_Outpatient']
-# mrn_columns_select = ['EMPI', 'Allergen', 'Allergen_Type', 'Allergen_Code',
-#     'Reactions', 'Severity', 'Reaction_Type', 'Comments',
-#     'Status']
-phy_columns_select = ['EMPI', 'Concept_Name', 
+    'Language', 'Language_group',
+    'Marital_status', 'Religion', 'Is_a_veteran','Vital_status']
+dia_columns_select = ['EMPI', 'Code', 'Code_Type','Date','Diagnosis_Flag', 'Hospital','Inpatient_Outpatient'] # 'Diagnosis_Name',  'Clinic',
+enc_columns_select = [ 'EMPI', 'Admit_Date', 'Encounter_Status', 
+    'Hospital', 'Inpatient_Outpatient', 'Service_Line', 
+    'LOS_Days', 'Clinic_Name', 'Admit_Source', 
+    'Discharge_Disposition', 'Payor', 'Admitting_Diagnosis', 
+    'Principal_Diagnosis', 'Diagnosis_1', 'Diagnosis_2', 
+    'Diagnosis_3', 'Diagnosis_4', 'Diagnosis_5', 
+    'Diagnosis_6', 'Diagnosis_7', 'Diagnosis_8'] #  'Diagnosis_9', 'Diagnosis_10', 'DRG','Patient_Type', 'Referrer_Discipline'
+phy_columns_select = ['EMPI', 'Concept_Name', 'Date',
     'Code_Type', 'Code', 'Result', 
-    'Units', 'Provider', 'Clinic', 
+    'Units', 'Clinic', 
     'Hospital', 'Inpatient_Outpatient']
-prc_columns_select = ['EMPI', 'Procedure_Name', 
-    'Code_Type', 'Code', 'Procedure_Flag' 
-    'Quantity', 'Provider', 'Clinic', 
+prc_columns_select = ['EMPI', 'Procedure_Name', 'Date',
+    'Code_Type', 'Code', 'Procedure_Flag', 
+    'Quantity', 'Clinic', 
     'Hospital', 'Inpatient_Outpatient']
 
 # Define file paths (read in partial data for now)
@@ -175,26 +199,23 @@ path_to_con_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Con.tx
 path_to_dem_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Dem.txt'
 path_to_dia_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Dia.txt'
 path_to_enc_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Enc.txt'
-#path_to_mrn_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Mrn.txt'
 path_to_prc_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Prc.txt'
 path_to_phy_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Phy.txt'
 
 # Read each file into a DataFrame
-df_all = read_file(path_to_all_file, all_columns, all_columns_select)
-df_con = read_file(path_to_con_file, con_columns, con_columns_select)
-df_dem = read_file(path_to_dem_file, dem_columns, dem_columns_select)
-df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select)
-df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select)
-#df_mrn = read_file(path_to_mrn_file, mrn_columns, phy_columns_select)
-df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select)
-df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select)
+df_all = read_file(path_to_all_file, all_columns, all_columns_select, parse_dates=None)
+df_con = read_file(path_to_con_file, con_columns, con_columns_select, parse_dates=None)
+df_dem = read_file(path_to_dem_file, dem_columns, dem_columns_select, parse_dates=None)
+df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'], chunk_size=20000)
+df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date'], chunk_size=20000) 
+df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'], chunk_size=20000)
+df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'], chunk_size=20000)
 
 # Merge all DataFrames on 'EMPI'
 merged_df = df_all.merge(df_con, on='EMPI', how='outer')
 merged_df = merged_df.merge(df_dem, on='EMPI', how='outer')
 merged_df = merged_df.merge(df_dia, on='EMPI', how='outer')
 merged_df = merged_df.merge(df_enc, on='EMPI', how='outer')
-#merged_df = merged_df.merge(df_mrn, on='EMPI', how='outer')
 merged_df = merged_df.merge(df_phy, on='EMPI', how='outer')
 merged_df = merged_df.merge(df_prc, on='EMPI', how='outer')
 
