@@ -1,4 +1,4 @@
-# diabetes_pred
+# Diabetes predictive modelling with RNNs and TCNs
 Identification of Temporal Data Patterns Predictive of Adverse Outcomes in Patients with Diabetes
 
 ## Requirements
@@ -12,6 +12,21 @@ Requires PyTorch 1.8.1 compiled for CUDA 11.2.
 NVIDIA Driver Version: 460.91.03
 
 GPU: GeForce RTX 2080
+
+## Code Files in `src/`
+
+- `data_loader.py`
+	- Loads and preprocesses data from CSV files. Creates additional features from provider notes using NLP methods; converts the processed data into a PyTorch Tensor, and saves it to file.
+
+- `data_splitter.py`
+	- Randomly splits the processed dataset into training (70%), validation (20%), and test (10%) sets. Saves the split datasets to disk.
+
+- `train.py`
+	- Trains deep learning models, supporting LSTM with Attention and Temporal Convolutional Neural Network (TCN). Includes 5-fold cross-validation and saves the best model.
+
+- `test.py`
+	- Loads the cross-validated model from `train.py` and evaluates it on a test dataset.
+
 
 ## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
 

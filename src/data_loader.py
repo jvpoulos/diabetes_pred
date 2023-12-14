@@ -1,8 +1,8 @@
 # 1. Read Each Text File: Use Pandas to read each of the eight types of text files.
 # 2. Merge Data: Merge the data from all files by the 'EMPI' column.
 # 3. Pre-process Data: Convert categorical data to numerical form using one-hot encoding and denote missing values with -999.
-# 4. Extract features from provider notes using NLP methods.
-# 5. Convert to PyTorch Tensor: Finally, convert the processed data into a PyTorch Tensor and save it to file.
+# 4. Create additional features: Extract features from provider notes using NLP methods.
+# 5. Convert to PyTorch Tensor: Convert the processed data into a PyTorch Tensor and save it to file.
 
 import pandas as pd
 import torch
@@ -23,6 +23,17 @@ try:
 except LookupError:
     # If not present, download it
     nltk.download('vader_lexicon')
+
+def optimize_dataframe(df):
+    # Convert columns to more efficient types if possible
+    # For example, convert object columns to category if they have limited unique values
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            num_unique_values = len(df[col].unique())
+            num_total_values = len(df[col])
+            if num_unique_values / num_total_values < 0.5:  # Adjust this threshold as needed
+                df[col] = df[col].astype('category')
+    return df
 
 def extract_nlp_features(df, text_columns):
     """Function to process the text columns and extract features, then using PCA to reduce the dimensionality of the NLP features."""
@@ -206,10 +217,28 @@ path_to_phy_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Phy.tx
 df_all = read_file(path_to_all_file, all_columns, all_columns_select, parse_dates=None)
 df_con = read_file(path_to_con_file, con_columns, con_columns_select, parse_dates=None)
 df_dem = read_file(path_to_dem_file, dem_columns, dem_columns_select, parse_dates=None)
-df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'], chunk_size=20000)
-df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date'], chunk_size=20000) 
-df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'], chunk_size=20000)
-df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'], chunk_size=20000)
+df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'], chunk_size=40000)
+df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date'], chunk_size=40000) 
+df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'], chunk_size=40000)
+df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'], chunk_size=40000)
+
+# Optimize DataFrames before merging
+df_all = optimize_dataframe(df_all)
+df_con = optimize_dataframe(df_con)
+df_dem = optimize_dataframe(df_dem)
+df_dia = optimize_dataframe(df_dia)
+df_enc = optimize_dataframe(df_enc)
+df_prc = optimize_dataframe(df_prc)
+df_phy = optimize_dataframe(df_phy)
+
+# Check and handle duplicates
+df_all = df_all.drop_duplicates(subset='EMPI')
+df_con = df_con.drop_duplicates(subset='EMPI')
+df_dem = df_dem.drop_duplicates(subset='EMPI')
+df_dia = df_dia.drop_duplicates(subset='EMPI')
+df_enc = df_enc.drop_duplicates(subset='EMPI')
+df_prc = df_prc.drop_duplicates(subset='EMPI')
+df_phy = df_phy.drop_duplicates(subset='EMPI')
 
 # Merge all DataFrames on 'EMPI'
 merged_df = df_all.merge(df_con, on='EMPI', how='outer')
