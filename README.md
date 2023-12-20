@@ -16,7 +16,7 @@ GPU: GeForce RTX 2080
 ## Code Files in `src/`
 
 - `data_loader.py`
-	- Loads and preprocesses data from CSV files. Creates additional features from provider notes using NLP methods; converts the processed data into a PyTorch Tensor, and saves it to file.
+	- Loads and merges data from CSV files. Preprocesses merged data. Creates additional features from provider notes using NLP methods; converts the processed data into a PyTorch Tensor, and saves it to file.
 
 - `data_splitter.py`
 	- Randomly splits the processed dataset into training (70%), validation (20%), and test (10%) sets. Saves the split datasets to disk.
@@ -60,7 +60,7 @@ $ pip3 install -r requirements.txt
 
 ## Run the code
 
-1. Load and preprocess the data. Extract features from provider notes using NLP methods, and convert to PyTorch Tensor.
+1. Load and merge the data. Preprocess the data. Extract features from provider comments using NLP methods, and convert to PyTorch Tensor.
 
 ```bash
 $ python3 src/data_loader.py

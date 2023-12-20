@@ -1,21 +1,18 @@
 # 1. Read Each Text File: Use Pandas to read each of the eight types of text files.
 # 2. Merge Data: Merge the data from all files by the 'EMPI' column.
-# 3. Pre-process Data: Convert categorical data to numerical form using one-hot encoding and denote missing values with -999.
-# 4. Create additional features: Extract features from provider notes using NLP methods.
-# 5. Convert to PyTorch Tensor: Convert the processed data into a PyTorch Tensor and save it to file.
+# 3. Convert to PyTorch Tensor: Convert the merged data into a PyTorch Tensor and save it to file.
 
 import pandas as pd
 import torch
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import PCA
 import nltk
-from nltk.sentiment import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
 import io
 from tqdm import tqdm
-
-# To do: time var
+from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import gc
 
 # Check if 'vader_lexicon' is already downloaded
 try:
@@ -23,6 +20,38 @@ try:
 except LookupError:
     # If not present, download it
     nltk.download('vader_lexicon')
+
+def extract_nlp_features(df, text_columns):
+    """
+    Extracts NLP features from specified text columns using TF-IDF.
+
+    Parameters:
+        df (DataFrame): The DataFrame containing text columns.
+        text_columns (list): List of column names to extract NLP features from.
+
+    Returns:
+        DataFrame: The DataFrame with added TF-IDF features.
+    """
+    tfidf_vectorizer = TfidfVectorizer()
+
+    for column in text_columns:
+        # Convert categorical columns to object type
+        if pd.api.types.is_categorical_dtype(df[column]):
+            df[column] = df[column].astype('object')
+
+        # Ensure that the operation is not performed on a copy
+        df.loc[:, column] = df.loc[:, column].fillna('')  # Directly modify the DataFrame
+
+        # Generate TF-IDF features
+        tfidf_features = tfidf_vectorizer.fit_transform(df[column])
+
+        # Create a DataFrame from the TF-IDF features
+        tfidf_df = pd.DataFrame(tfidf_features.toarray(), columns=tfidf_vectorizer.get_feature_names())
+
+        # Concatenate the new features with the original DataFrame
+        df = pd.concat([df, tfidf_df], axis=1)
+
+    return df
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -33,45 +62,6 @@ def optimize_dataframe(df):
             num_total_values = len(df[col])
             if num_unique_values / num_total_values < 0.5:  # Adjust this threshold as needed
                 df[col] = df[col].astype('category')
-    return df
-
-def extract_nlp_features(df, text_columns):
-    """Function to process the text columns and extract features, then using PCA to reduce the dimensionality of the NLP features."""
-    # Initialize TF-IDF Vectorizer and Sentiment Analyzer
-    tfidf_vectorizer = TfidfVectorizer(max_features=100)  # Adjust max_features as needed
-    sia = SentimentIntensityAnalyzer()
-    pca = PCA(n_components=50)  # Adjust n_components as needed
-
-    # Create a DataFrame to hold all NLP features
-    all_nlp_features = pd.DataFrame()
-
-    for column in text_columns:
-        # Replace NaNs with empty strings
-        df[column].fillna('', inplace=True)
-
-        # TF-IDF Features
-        tfidf_features = tfidf_vectorizer.fit_transform(df[column])
-
-        # Sentiment Analysis Features
-        sentiment_scores = df[column].apply(lambda x: sia.polarity_scores(x))
-
-        # Add TF-IDF features to the NLP features DataFrame
-        tfidf_df = pd.DataFrame(tfidf_features.toarray(), columns=tfidf_vectorizer.get_feature_names_out())
-        all_nlp_features = pd.concat([all_nlp_features, tfidf_df], axis=1)
-
-        # Add sentiment scores to the NLP features DataFrame
-        sentiment_df = sentiment_scores.apply(pd.Series)
-        all_nlp_features = pd.concat([all_nlp_features, sentiment_df], axis=1)
-
-    # Apply PCA to the NLP features
-    pca_features = pca.fit_transform(all_nlp_features)
-
-    # Create a DataFrame for the PCA-reduced features
-    pca_df = pd.DataFrame(pca_features, columns=[f'pc{i+1}' for i in range(pca_features.shape[1])])
-
-    # Add the PCA-reduced features back to the original DataFrame
-    df = pd.concat([df, pca_df], axis=1)
-
     return df
 
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=10000):
@@ -107,6 +97,20 @@ def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_s
 
     return data
 
+def encode_batch(batch, encoder):
+    """
+    Encodes a batch of data using one-hot encoding.
+
+    Parameters:
+        batch (DataFrame): The batch of data to encode.
+        encoder (OneHotEncoder): The encoder to use for one-hot encoding.
+
+    Returns:
+        DataFrame: The encoded data.
+    """
+    encoded = encoder.transform(batch)
+    return pd.DataFrame(encoded, index=batch.index)
+    
 # Define the column types for each file type
 all_columns = {
     'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
@@ -182,19 +186,19 @@ prc_columns = {
 # Select columns to read in each dataset
 
 all_columns_select = ['EMPI', 'System', 'Allergen', 'Allergen_Type', 'Allergen_Code', 
-    'Reactions', 'Severity', 'Reaction_Type', 'Comments', 'Status']
+    'Reactions', 'Severity', 'Reaction_Type', 'Status'] # 'Comments', 
 con_columns_select = ['EMPI', 'Research_Invitations', 'City', 'State', 'Zip', 'Country', 'VIP', 'Insurance_1', 'Insurance_2', 'Insurance_3']
 dem_columns_select = ['EMPI', 'Gender_Legal_Sex','Age', 'Sex_At_Birth', 'Gender_Identity', 
     'Language', 'Language_group',
     'Marital_status', 'Religion', 'Is_a_veteran','Vital_status']
-dia_columns_select = ['EMPI', 'Code', 'Code_Type','Date','Diagnosis_Flag', 'Hospital','Inpatient_Outpatient'] # 'Diagnosis_Name',  'Clinic',
+dia_columns_select = ['EMPI', 'Code', 'Code_Type','Date','Diagnosis_Flag', 'Diagnosis_Name',  'Clinic', 'Hospital','Inpatient_Outpatient']
 enc_columns_select = [ 'EMPI', 'Admit_Date', 'Encounter_Status', 
     'Hospital', 'Inpatient_Outpatient', 'Service_Line', 
     'LOS_Days', 'Clinic_Name', 'Admit_Source', 
     'Discharge_Disposition', 'Payor', 'Admitting_Diagnosis', 
     'Principal_Diagnosis', 'Diagnosis_1', 'Diagnosis_2', 
     'Diagnosis_3', 'Diagnosis_4', 'Diagnosis_5', 
-    'Diagnosis_6', 'Diagnosis_7', 'Diagnosis_8'] #  'Diagnosis_9', 'Diagnosis_10', 'DRG','Patient_Type', 'Referrer_Discipline'
+    'Diagnosis_6', 'Diagnosis_7', 'Diagnosis_8','Diagnosis_9', 'Diagnosis_10'] # 'DRG','Patient_Type', 'Referrer_Discipline'
 phy_columns_select = ['EMPI', 'Concept_Name', 'Date',
     'Code_Type', 'Code', 'Result', 
     'Units', 'Clinic', 
@@ -217,10 +221,13 @@ path_to_phy_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Phy.tx
 df_all = read_file(path_to_all_file, all_columns, all_columns_select, parse_dates=None)
 df_con = read_file(path_to_con_file, con_columns, con_columns_select, parse_dates=None)
 df_dem = read_file(path_to_dem_file, dem_columns, dem_columns_select, parse_dates=None)
-df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'], chunk_size=40000)
-df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date'], chunk_size=40000) 
-df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'], chunk_size=40000)
-df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'], chunk_size=40000)
+df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'])
+df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date']) 
+df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'])
+df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'])
+
+# Manually trigger garbage collection
+gc.collect()
 
 # Optimize DataFrames before merging
 df_all = optimize_dataframe(df_all)
@@ -241,33 +248,74 @@ df_prc = df_prc.drop_duplicates(subset='EMPI')
 df_phy = df_phy.drop_duplicates(subset='EMPI')
 
 # Merge all DataFrames on 'EMPI'
-merged_df = df_all.merge(df_con, on='EMPI', how='outer')
-merged_df = merged_df.merge(df_dem, on='EMPI', how='outer')
-merged_df = merged_df.merge(df_dia, on='EMPI', how='outer')
-merged_df = merged_df.merge(df_enc, on='EMPI', how='outer')
-merged_df = merged_df.merge(df_phy, on='EMPI', how='outer')
-merged_df = merged_df.merge(df_prc, on='EMPI', how='outer')
 
-# Apply NLP Feature Extraction
-text_columns = ['Comments']
-merged_df = extract_nlp_features(merged_df, text_columns)
+temp_merge = df_all.merge(df_con, on='EMPI', how='outer')
+del df_all, df_con
+gc.collect()
+
+temp_merge = temp_merge.merge(df_dem, on='EMPI', how='outer')
+del df_dem
+gc.collect()
+
+temp_merge = temp_merge.merge(df_dia, on='EMPI', how='outer')
+del df_dia
+gc.collect()
+
+temp_merge = temp_merge.merge(df_enc, on='EMPI', how='outer')
+del df_enc
+gc.collect()
+
+temp_merge = temp_merge.merge(df_phy, on='EMPI', how='outer')
+del df_phy
+gc.collect()
+
+merged_df = temp_merge.merge(df_prc, on='EMPI', how='outer')
+del df_prc
+gc.collect()
+
+# Apply NLP Feature Extraction (skip for comments)
+# text_columns = ['Comments']
+# merged_df = extract_nlp_features(merged_df, text_columns)
 
 # Identify categorical columns for one-hot encoding
-categorical_columns = [col for col in merged_df.columns if merged_df[col].dtype == 'object']
+categorical_columns = merged_df.select_dtypes(include=['object']).columns.tolist()
 
-# Replace missing values with -999
-merged_df.fillna(-999, inplace=True)
+# Replace missing values with -1
+# Fill NaN in numeric columns
+numeric_columns = merged_df.select_dtypes(include=[np.number]).columns.tolist()
+merged_df[numeric_columns] = merged_df[numeric_columns].fillna(-1)
 
-# One-hot encode categorical columns
+# Handle NaN in categorical columns
+for col in categorical_columns:
+    if pd.api.types.is_categorical_dtype(merged_df[col]):
+        # Add -1 as a new category and fill NaN values
+        merged_df[col] = merged_df[col].cat.add_categories([-1])
+        merged_df[col] = merged_df[col].fillna(-1)
+
+# Initialize OneHotEncoder
 one_hot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
-encoded_categorical = one_hot_encoder.fit_transform(merged_df[categorical_columns])
+one_hot_encoder.fit(merged_df[categorical_columns])  # Fit the encoder on the full data
+
+# Define batch size
+batch_size = 10000  # Adjust this based on your system's capabilities
+
+# Process in batches
+encoded_batches = []
+for start in range(0, merged_df.shape[0], batch_size):
+    end = min(start + batch_size, merged_df.shape[0])
+    batch = merged_df.iloc[start:end]
+    encoded_batch = encode_batch(batch[categorical_columns], one_hot_encoder)
+    encoded_batches.append(encoded_batch)
+
+# Concatenate all encoded batches
+encoded_categorical = pd.concat(encoded_batches)
 
 # Drop original categorical columns and add encoded columns
 merged_df.drop(categorical_columns, axis=1, inplace=True)
-encoded_df = pd.concat([merged_df, pd.DataFrame(encoded_categorical)], axis=1)
+encoded_df = pd.concat([merged_df, encoded_categorical], axis=1)
 
 # Convert to PyTorch tensor
-pytorch_tensor = torch.tensor(encoded_df.values)
+pytorch_tensor = torch.tensor(encoded_df.values, dtype=torch.float32)
 
 # Save the tensor to a file
 torch.save(pytorch_tensor, 'preprocessed_tensor.pt')
