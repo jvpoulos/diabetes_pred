@@ -60,19 +60,25 @@ $ pip3 install -r requirements.txt
 
 ## Run the code
 
-1. Load and merge the data. Preprocess the data. Extract features from provider comments using NLP methods, and convert to PyTorch Tensor.
+1. Load and merge the data. Preprocess the data and convert to PyTorch Tensor.
 
 ```bash
 $ python3 src/data_loader.py
 ```
 
-2. Split a PyTorch tensor into training, validation, and test sets in a 70-20-10 ratio:
+3. Loads the PyTorch tensor and further preprocess the data by applying feature selection techniques:
+
+```bash
+$ python3 src/data_preprocessor.py
+```
+
+4. Split the preprocessed dataset into training, validation, and test sets in a 70-20-10 ratio:
 
 ```bash
 $ python3 src/data_splitter.py
 ```
 
-3. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
+5. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
 
 ```bash
 $ python3 train.py --model_type LSTMAttention
@@ -83,7 +89,7 @@ or
 $ python3 train.py --model_type TCN
 ```
 
-4. Evaluate best model on test set:
+6. Evaluate best model on test set:
 
 ```bash
 $ python3 test.py --model_type LSTMAttention --model_path best_model.pth

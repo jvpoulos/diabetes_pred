@@ -5,7 +5,6 @@
 import pandas as pd
 import torch
 from sklearn.preprocessing import OneHotEncoder
-from sklearn.feature_extraction.text import TfidfVectorizer
 import nltk
 from nltk.corpus import stopwords
 import io
@@ -13,45 +12,7 @@ from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
 import gc
-
-# Check if 'vader_lexicon' is already downloaded
-try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except LookupError:
-    # If not present, download it
-    nltk.download('vader_lexicon')
-
-def extract_nlp_features(df, text_columns):
-    """
-    Extracts NLP features from specified text columns using TF-IDF.
-
-    Parameters:
-        df (DataFrame): The DataFrame containing text columns.
-        text_columns (list): List of column names to extract NLP features from.
-
-    Returns:
-        DataFrame: The DataFrame with added TF-IDF features.
-    """
-    tfidf_vectorizer = TfidfVectorizer()
-
-    for column in text_columns:
-        # Convert categorical columns to object type
-        if pd.api.types.is_categorical_dtype(df[column]):
-            df[column] = df[column].astype('object')
-
-        # Ensure that the operation is not performed on a copy
-        df.loc[:, column] = df.loc[:, column].fillna('')  # Directly modify the DataFrame
-
-        # Generate TF-IDF features
-        tfidf_features = tfidf_vectorizer.fit_transform(df[column])
-
-        # Create a DataFrame from the TF-IDF features
-        tfidf_df = pd.DataFrame(tfidf_features.toarray(), columns=tfidf_vectorizer.get_feature_names())
-
-        # Concatenate the new features with the original DataFrame
-        df = pd.concat([df, tfidf_df], axis=1)
-
-    return df
+import json
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -110,200 +71,247 @@ def encode_batch(batch, encoder):
     """
     encoded = encoder.transform(batch)
     return pd.DataFrame(encoded, index=batch.index)
-    
+
 # Define the column types for each file type
+
+created_columns = {
+    'Dataset_EMPI': 'float32', 
+    'ElevatedA1cDate': 'object', 
+    'IndexDate': 'object', 
+    'InitialA1cDate': 'object', 
+    'InitialA1c': 'float32',
+    'A1cDateAfter12Months': 'object', 
+    'A1cAfter12Months': 'object'
+}
+
 all_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'System': 'object', 'Noted_Date': 'object', 
-    'Allergen': 'object', 'Allergen_Type': 'object', 'Allergen_Code': 'float64', 
-    'Reactions': 'object', 'Severity': 'object', 'Reaction_Type': 'object', 
-    'Comments': 'object', 'Status': 'object', 'Deleted_Reason_Comments': 'object'
+    'Allp_EPIC_PMRN': 'float32', 
+    'Allp_MRN_Type': 'object', 
+    'Allp_MRN': 'object', 
+    'Allp_System': 'object', 
+    'Allp_Noted_Date': 'object', 
+    'Allp_Allergen': 'object', 
+    'Allp_Allergen_Type': 'object', 
+    'Allp_Allergen_Code': 'float32', 
+    'Allp_Reactions': 'object', 
+    'Allp_Severity': 'object', 
+    'Allp_Reaction_Type': 'object', 
+    'Allp_Comments': 'object', 
+    'Allp_Status': 'object', 
+    'Allp_Deleted_Reason_Comments': 'object'
 }
 
 con_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Last_Name': 'object', 'First_Name': 'object', 
-    'Middle_Name': 'object', 'Research_Invitations': 'object', 
-    'Address1': 'object', 'Address2': 'object', 'City': 'object', 
-    'State': 'object', 'Zip': 'object', 'Country': 'object', 'Home_Phone': 'object', 
-    'Day_Phone': 'object', 'SSN': 'object', 'VIP': 'object', 'Previous_Name': 'object', 
-    'Patient_ID_List': 'object', 'Insurance_1': 'object', 'Insurance_2': 'object', 
-    'Insurance_3': 'object', 'Primary_Care_Physician': 'object', 
-    'Resident_Primary_Care_Physician': 'object'
+    'Conp_EPIC_PMRN': 'float32', 
+    'Conp_MRN_Type': 'object', 
+    'Conp_MRN': 'object', 
+    'Conp_Last_Name': 'object', 
+    'Conp_First_Name': 'object', 
+    'Conp_Middle_Name': 'object', 
+    'Conp_Research_Invitations': 'object', 
+    'Conp_Address1': 'object', 
+    'Conp_Address2': 'object', 
+    'Conp_City': 'object', 
+    'Conp_State': 'object', 
+    'Conp_Zip': 'object', 
+    'Conp_Country': 'object', 
+    'Conp_Home_Phone': 'object', 
+    'Conp_Day_Phone': 'object', 
+    'Conp_SSN': 'object',
+    'Conp_VIP': 'object', 
+    'Conp_Previous_Name': 'object', 
+    'Conp_Patient_ID_List': 'object', 
+    'Conp_Insurance_1': 'object', 
+    'Conp_Insurance_2': 'object', 
+    'Conp_Insurance_3': 'object', 
+    'Conp_Primary_Care_Physician': 'object', 
+    'Conp_Resident_Primary_Care_Physician': 'object'
 }
 
 dem_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Gender_Legal_Sex': 'object', 'Date_of_Birth': 'object', 
-    'Age': 'float64', 'Sex_At_Birth': 'object', 'Gender_Identity': 'object', 
-    'Language': 'object', 'Language_group': 'object', 'Race1': 'object', 
-    'Race2': 'object', 'Race_Group': 'object', 'Ethnic_Group': 'object', 
-    'Marital_status': 'object', 'Religion': 'object', 'Is_a_veteran': 'object', 
-    'Zip_code': 'object', 'Country': 'object', 'Vital_status': 'object', 
-    'Date_Of_Death': 'object'
+    'Demp_EPIC_PMRN': 'float32', 
+    'Demp_MRN_Type': 'object', 
+    'Demp_MRN': 'object', 
+    'Demp_Gender_Legal_Sex': 'object', 
+    'Demp_Date_of_Birth': 'object', 
+    'Demp_Age': 'float32', 
+    'Demp_Sex_At_Birth': 'object', 
+    'Demp_Gender_Identity': 'object', 
+    'Demp_Language': 'object', 
+    'Demp_Language_group': 'object', 
+    'Demp_Race1': 'object', 
+    'Demp_Race2': 'object', 
+    'Demp_Race_Group': 'object', 
+    'Demp_Ethnic_Group': 'object', 
+    'Demp_Marital_status': 'object', 
+    'Demp_Religion': 'object', 
+    'Demp_Is_a_veteran': 'object', 
+    'Demp_Zip_code': 'object', 
+    'Demp_Country': 'object', 
+    'Demp_Vital_status': 'object', 
+    'Demp_Date_Of_Death': 'object'
 }
 
 dia_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Date': 'object', 'Diagnosis_Name': 'object', 
-    'Code_Type': 'object', 'Code': 'object', 'Diagnosis_Flag': 'object', 
-    'Provider': 'object', 'Clinic': 'object', 'Hospital': 'object', 
-    'Inpatient_Outpatient': 'object', 'Encounter_number': 'object'
+    'Diap_EPIC_PMRN': 'float32', 
+    'Diap_MRN_Type': 'object', 
+    'Diap_MRN': 'object', 'Date': 'object', 
+    'Diap_Diagnosis_Name': 'object', 
+    'Diap_Code_Type': 'object', 
+    'Diap_Code': 'object', 
+    'Diap_Diagnosis_Flag': 'object', 
+    'Diap_Provider': 'object', 
+    'Diap_Clinic': 'object', 
+    'Diap_Hospital': 'object', 
+    'Diap_Inpatient_Outpatient': 'object', 
+    'Diap_Encounter_number': 'object'
 }
 
 enc_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Encounter_number': 'object', 'Encounter_Status': 'object', 
-    'Hospital': 'object', 'Inpatient_Outpatient': 'object', 'Service_Line': 'object', 
-    'Attending_MD': 'object', 'Admit_Date': 'object', 'Discharge_Date': 'object', 
-    'LOS_Days': 'float64', 'Clinic_Name': 'object', 'Admit_Source': 'object', 
-    'Discharge_Disposition': 'object', 'Payor': 'object', 'Admitting_Diagnosis': 'object', 
-    'Principal_Diagnosis': 'object', 'Diagnosis_1': 'object', 'Diagnosis_2': 'object', 
-    'Diagnosis_3': 'object', 'Diagnosis_4': 'object', 'Diagnosis_5': 'object', 
-    'Diagnosis_6': 'object', 'Diagnosis_7': 'object', 'Diagnosis_8': 'object', 
-    'Diagnosis_9': 'object', 'Diagnosis_10': 'object', 'DRG': 'object', 
-    'Patient_Type': 'object', 'Referrer_Discipline': 'object'
+    'Encp_EPIC_PMRN': 'float32', 
+    'Encp_MRN_Type': 'object', 
+    'Encp_MRN': 'object', 
+    'Encp_Encounter_number': 'object', 
+    'Encp_Encounter_Status': 'object', 
+    'Encp_Hospital': 'object', 
+    'Encp_Inpatient_Outpatient': 'object', 
+    'Encp_Service_Line': 'object', 
+    'Encp_Attending_MD': 'object', 
+    'Encp_Admit_Date': 'object', 
+    'Encp_Discharge_Date': 'object', 
+    'Encp_LOS_Days': 'float32', 
+    'Encp_Clinic_Name': 'object', 
+    'Encp_Admit_Source': 'object', 
+    'Encp_Discharge_Disposition': 'object', 
+    'Encp_Payor': 'object', 
+    'Encp_Admitting_Diagnosis': 'object', 
+    'Encp_Principal_Diagnosis': 'object', 
+    'Encp_Diagnosis_1': 'object', 
+    'Encp_Diagnosis_2': 'object', 
+    'Encp_Diagnosis_3': 'object', 
+    'Encp_Diagnosis_4': 'object', 
+    'Encp_Diagnosis_5': 'object', 
+    'Encp_Diagnosis_6': 'object', 
+    'Encp_Diagnosis_7': 'object', 
+    'Encp_Diagnosis_8': 'object', 
+    'Encp_Diagnosis_9': 'object', 
+    'Encp_Diagnosis_10': 'object', 
+    'Encp_DRG': 'object', 
+    'Encp_Patient_Type': 'object', 
+    'Encp_Referrer_Discipline': 'object'
 }
 
 phy_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Date': 'object', 'Concept_Name': 'object', 
-    'Code_Type': 'object', 'Code': 'object', 'Result': 'object', 
-    'Units': 'object', 'Provider': 'object', 'Clinic': 'object', 
-    'Hospital': 'object', 'Inpatient_Outpatient': 'object', 
-    'Encounter_number': 'object'
+    'Phyp_EPIC_PMRN': 'float32', 
+    'Phyp_MRN_Type': 'object', 
+    'Phyp_MRN': 'object', 
+    'Phyp_Date': 'object', 
+    'Phyp_Concept_Name': 'object', 
+    'Phyp_Code_Type': 'object', 
+    'Phyp_Code': 'object', 
+    'Phyp_Result': 'object', 
+    'Phyp_Units': 'object', 
+    'Phyp_Provider': 'object', 
+    'Phyp_Clinic': 'object', 
+    'Phyp_Hospital': 'object', 
+    'Phyp_Inpatient_Outpatient': 'object', 
+    'Phyp_Encounter_number': 'object'
 }
 
 prc_columns = {
-    'EMPI': 'float64', 'EPIC_PMRN': 'float64', 'MRN_Type': 'object', 
-    'MRN': 'object', 'Date': 'object', 'Procedure_Name': 'object', 
-    'Code_Type': 'object', 'Code': 'object', 'Procedure_Flag': 'object', 
-    'Quantity': 'float64', 'Provider': 'object', 'Clinic': 'object', 
-    'Hospital': 'object', 'Inpatient_Outpatient': 'object', 
-    'Encounter_number': 'object'
+    'Prcp_EPIC_PMRN': 'float32', 
+    'Prcp_MRN_Type': 'object', 
+    'Prcp_MRN': 'object', 
+    'Prcp_Date': 'object', 
+    'Prcp_Procedure_Name': 'object', 
+    'Prcp_Code_Type': 'object', 
+    'Prcp_Code': 'object', 
+    'Prcp_Procedure_Flag': 'object', 
+    'Prcp_Quantity': 'float32', 
+    'Prcp_Provider': 'object', 
+    'Prcp_Clinic': 'object', 
+    'Prcp_Hospital': 'object', 
+    'Prcp_Inpatient_Outpatient': 'object', 
+    'Prcp_Encounter_number': 'object'
 }
 
 # Select columns to read in each dataset
 
-all_columns_select = ['EMPI', 'System', 'Allergen', 'Allergen_Type', 'Allergen_Code', 
-    'Reactions', 'Severity', 'Reaction_Type', 'Status'] # 'Comments', 
-con_columns_select = ['EMPI', 'Research_Invitations', 'City', 'State', 'Zip', 'Country', 'VIP', 'Insurance_1', 'Insurance_2', 'Insurance_3']
-dem_columns_select = ['EMPI', 'Gender_Legal_Sex','Age', 'Sex_At_Birth', 'Gender_Identity', 
-    'Language', 'Language_group',
-    'Marital_status', 'Religion', 'Is_a_veteran','Vital_status']
-dia_columns_select = ['EMPI', 'Code', 'Code_Type','Date','Diagnosis_Flag', 'Diagnosis_Name',  'Clinic', 'Hospital','Inpatient_Outpatient']
-enc_columns_select = [ 'EMPI', 'Admit_Date', 'Encounter_Status', 
-    'Hospital', 'Inpatient_Outpatient', 'Service_Line', 
-    'LOS_Days', 'Clinic_Name', 'Admit_Source', 
-    'Discharge_Disposition', 'Payor', 'Admitting_Diagnosis', 
-    'Principal_Diagnosis', 'Diagnosis_1', 'Diagnosis_2', 
-    'Diagnosis_3', 'Diagnosis_4', 'Diagnosis_5', 
-    'Diagnosis_6', 'Diagnosis_7', 'Diagnosis_8','Diagnosis_9', 'Diagnosis_10'] # 'DRG','Patient_Type', 'Referrer_Discipline'
-phy_columns_select = ['EMPI', 'Concept_Name', 'Date',
-    'Code_Type', 'Code', 'Result', 
-    'Units', 'Clinic', 
-    'Hospital', 'Inpatient_Outpatient']
-prc_columns_select = ['EMPI', 'Procedure_Name', 'Date',
-    'Code_Type', 'Code', 'Procedure_Flag', 
-    'Quantity', 'Clinic', 
-    'Hospital', 'Inpatient_Outpatient']
+created_columns_select = {
+    'Dataset_EMPI', 'ElevatedA1cDate','IndexDate','InitialA1cDate','InitialA1c','A1cDateAfter12Months','A1cAfter12Months'
+}
 
-# Define file paths (read in partial data for now)
-path_to_all_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_All.txt'
-path_to_con_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Con.txt'
-path_to_dem_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Dem.txt'
-path_to_dia_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Dia.txt'
-path_to_enc_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Enc.txt'
-path_to_prc_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Prc.txt'
-path_to_phy_file = 'data/2023P001659_20231129_153637/AT43_20231129_153637_Phy.txt'
+all_columns_select = ['Allp_Allergen', 'Allp_Allergen_Type', 'Allp_Allergen_Code', 
+    'Allp_Reactions', 'Allp_Severity', 'Allp_Reaction_Type', 'Allp_Status'] # many
+con_columns_select = ['Conp_Research_Invitations', 'Conp_City', 'Conp_State', 'Conp_Zip', 'Conp_Country', 'Conp_VIP', 'Conp_Insurance_1', 'Conp_Insurance_2', 'Conp_Insurance_3']
+dem_columns_select = ['Conp_Gender_Legal_Sex','Conp_Age', 'Conp_Sex_At_Birth', 'Conp_Gender_Identity', 
+    'Conp_Language', 'Conp_Language_group',
+    'Conp_Marital_status', 'Conp_Religion', 'Conp_Is_a_veteran', 'Conp_Zip_code','Conp_Country','Conp_Vital_status','Conp_Date_of_Death'] # Conp_Date_of_Death'
+dia_columns_select = ['Diap_Diagnosis_Name','Diap_Code', 'Diap_Code_Type','Diap_Date','Diap_Diagnosis_Flag', 'Diap_Clinic', 'Diap_Hospital','Diap_Inpatient_Outpatient'] # many # Diap_Date
+enc_columns_select = [ 'Encp_Admit_Date', 'Encp_Encounter_Status', 
+    'Encp_Hospital', 'Encp_Inpatient_Outpatient', 'Encp_Service_Line', 
+    'Encp_LOS_Days', 'Encp_Clinic_Name', 'Encp_Admit_Source', 
+    'Encp_Discharge_Disposition', 'Encp_Payor', 'Encp_Admitting_Diagnosis', 
+    'Encp_Principal_Diagnosis', 'Encp_Diagnosis_1', 'Encp_Diagnosis_2', 
+    'Encp_Diagnosis_3', 'Encp_Diagnosis_4', 'Encp_Diagnosis_5', 
+    'Encp_Diagnosis_6', 'Encp_Diagnosis_7', 'Encp_Diagnosis_8','Encp_Diagnosis_9', 'Encp_Diagnosis_10'] # many # Encp_Admit_Date
+phy_columns_select = ['Phyp_Concept_Name', 'Phyp_Date',
+    'Phyp_Code_Type', 'Phyp_Code', 'Phyp_Result', 
+    'Phyp_Units', 'Phyp_Clinic', 
+    'Phyp_Hospital', 'Phyp_Inpatient_Outpatient'] # Phyp_Date
+prc_columns_select = ['Prcp_Procedure_Name', 'Prcp_Date',
+    'Prcp_Code_Type', 'Prcp_Code', 'Prcp_Procedure_Flag', 
+    'Prcp_Quantity', 'Prcp_Clinic', 
+    'Prcp_Hospital', 'Prcp_Inpatient_Outpatient'] # Prcp_Date
+
+# Define file path and selected columns
+file_path= 'data/FinalDataset.txt'
+
+selected_columns = created_columns_select + con_columns_select + dem_columns_select + dia_columns_select
+
+selected_column_types = created_columns + con_columns + dem_columns + dia_columns
 
 # Read each file into a DataFrame
-df_all = read_file(path_to_all_file, all_columns, all_columns_select, parse_dates=None)
-df_con = read_file(path_to_con_file, con_columns, con_columns_select, parse_dates=None)
-df_dem = read_file(path_to_dem_file, dem_columns, dem_columns_select, parse_dates=None)
-df_dia = read_file(path_to_dia_file, dia_columns, dia_columns_select, parse_dates=['Date'])
-df_enc = read_file(path_to_enc_file, enc_columns, enc_columns_select, parse_dates=['Admit_Date']) 
-df_prc = read_file(path_to_prc_file, prc_columns, prc_columns_select, parse_dates=['Date'])
-df_phy = read_file(path_to_phy_file, phy_columns, phy_columns_select, parse_dates=['Date'])
+df = read_file(file_path, selected_column_types, selected_columns, parse_dates=['ElevatedA1cDate','IndexDate','InitialA1cDate','Conp_Date_of_Death','Diap_Date'])
 
-# Manually trigger garbage collection
-gc.collect()
-
-# Optimize DataFrames before merging
-df_all = optimize_dataframe(df_all)
-df_con = optimize_dataframe(df_con)
-df_dem = optimize_dataframe(df_dem)
-df_dia = optimize_dataframe(df_dia)
-df_enc = optimize_dataframe(df_enc)
-df_prc = optimize_dataframe(df_prc)
-df_phy = optimize_dataframe(df_phy)
+# Optimize DataFrames
+df_all = optimize_dataframe(df)
 
 # Check and handle duplicates
-df_all = df_all.drop_duplicates(subset='EMPI')
-df_con = df_con.drop_duplicates(subset='EMPI')
-df_dem = df_dem.drop_duplicates(subset='EMPI')
-df_dia = df_dia.drop_duplicates(subset='EMPI')
-df_enc = df_enc.drop_duplicates(subset='EMPI')
-df_prc = df_prc.drop_duplicates(subset='EMPI')
-df_phy = df_phy.drop_duplicates(subset='EMPI')
-
-# Merge all DataFrames on 'EMPI'
-
-temp_merge = df_all.merge(df_con, on='EMPI', how='outer')
-del df_all, df_con
-gc.collect()
-
-temp_merge = temp_merge.merge(df_dem, on='EMPI', how='outer')
-del df_dem
-gc.collect()
-
-temp_merge = temp_merge.merge(df_dia, on='EMPI', how='outer')
-del df_dia
-gc.collect()
-
-temp_merge = temp_merge.merge(df_enc, on='EMPI', how='outer')
-del df_enc
-gc.collect()
-
-temp_merge = temp_merge.merge(df_phy, on='EMPI', how='outer')
-del df_phy
-gc.collect()
-
-merged_df = temp_merge.merge(df_prc, on='EMPI', how='outer')
-del df_prc
-gc.collect()
-
-# Apply NLP Feature Extraction (skip for comments)
-# text_columns = ['Comments']
-# merged_df = extract_nlp_features(merged_df, text_columns)
+print("Number of rows before dropping duplicates:", len(df))
+df = df.drop_duplicates(subset='EMPI') # keeps first EMPI
+print("Number of rows after dropping duplicates:", len(df))
 
 # Identify categorical columns for one-hot encoding
-categorical_columns = merged_df.select_dtypes(include=['object']).columns.tolist()
+categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
+
+with open('categorical_columns.json', 'w') as file: # save to file
+    json.dump(categorical_columns, file)
 
 # Replace missing values with -1
 # Fill NaN in numeric columns
-numeric_columns = merged_df.select_dtypes(include=[np.number]).columns.tolist()
-merged_df[numeric_columns] = merged_df[numeric_columns].fillna(-1)
+numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+df[numeric_columns] = df[numeric_columns].fillna(-1)
 
 # Handle NaN in categorical columns
 for col in categorical_columns:
-    if pd.api.types.is_categorical_dtype(merged_df[col]):
+    if pd.api.types.is_categorical_dtype(df[col]):
         # Add -1 as a new category and fill NaN values
-        merged_df[col] = merged_df[col].cat.add_categories([-1])
-        merged_df[col] = merged_df[col].fillna(-1)
+        df[col] = df[col].cat.add_categories([-1])
+        df[col] = df[col].fillna(-1)
 
 # Initialize OneHotEncoder
 one_hot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
-one_hot_encoder.fit(merged_df[categorical_columns])  # Fit the encoder on the full data
+one_hot_encoder.fit(df[categorical_columns])  # Fit the encoder on the full data
 
 # Define batch size
-batch_size = 10000  # Adjust this based on your system's capabilities
+batch_size = 10000  
 
 # Process in batches
 encoded_batches = []
-for start in range(0, merged_df.shape[0], batch_size):
-    end = min(start + batch_size, merged_df.shape[0])
-    batch = merged_df.iloc[start:end]
+for start in range(0, df.shape[0], batch_size):
+    end = min(start + batch_size, df.shape[0])
+    batch = df.iloc[start:end]
     encoded_batch = encode_batch(batch[categorical_columns], one_hot_encoder)
     encoded_batches.append(encoded_batch)
 
@@ -311,8 +319,8 @@ for start in range(0, merged_df.shape[0], batch_size):
 encoded_categorical = pd.concat(encoded_batches)
 
 # Drop original categorical columns and add encoded columns
-merged_df.drop(categorical_columns, axis=1, inplace=True)
-encoded_df = pd.concat([merged_df, encoded_categorical], axis=1)
+df.drop(categorical_columns, axis=1, inplace=True)
+encoded_df = pd.concat([df, encoded_categorical], axis=1)
 
 # Convert to PyTorch tensor
 pytorch_tensor = torch.tensor(encoded_df.values, dtype=torch.float32)

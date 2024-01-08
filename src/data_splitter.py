@@ -3,7 +3,7 @@ from torch.utils.data import TensorDataset, random_split
 
 
 # Load the tensor from the file
-loaded_tensor = torch.load('preprocessed_tensor.pt')
+loaded_tensor = torch.load('filtered_tensor.pt')
 
 # Assuming pytorch_tensor is your tensor
 dataset = TensorDataset(loaded_tensor)
