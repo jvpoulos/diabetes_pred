@@ -27,7 +27,6 @@ GPU: GeForce RTX 2080
 - `test.py`
 	- Loads the cross-validated model from `train.py` and evaluates it on a test dataset.
 
-
 ## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
 
 1. Check if `pip` is installed:
@@ -66,19 +65,19 @@ $ pip3 install -r requirements.txt
 $ python3 src/data_loader.py
 ```
 
+2. Split the preprocessed dataset into training, validation, and test sets in a 70-20-10 ratio:
+
+```bash
+$ python3 src/data_splitter.py
+```
+
 3. Loads the PyTorch tensor and further preprocess the data by applying feature selection techniques:
 
 ```bash
 $ python3 src/data_preprocessor.py
 ```
 
-4. Split the preprocessed dataset into training, validation, and test sets in a 70-20-10 ratio:
-
-```bash
-$ python3 src/data_splitter.py
-```
-
-5. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
+4. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
 
 ```bash
 $ python3 train.py --model_type LSTMAttention
@@ -89,7 +88,7 @@ or
 $ python3 train.py --model_type TCN
 ```
 
-6. Evaluate best model on test set:
+5. Evaluate best model on test set:
 
 ```bash
 $ python3 test.py --model_type LSTMAttention --model_path best_model.pth

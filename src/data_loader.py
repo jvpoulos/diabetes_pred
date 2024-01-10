@@ -5,8 +5,6 @@
 import pandas as pd
 import torch
 from sklearn.preprocessing import OneHotEncoder
-import nltk
-from nltk.corpus import stopwords
 import io
 from tqdm import tqdm
 from sklearn.preprocessing import LabelEncoder
@@ -69,7 +67,9 @@ def encode_batch(batch, encoder):
     Returns:
         DataFrame: The encoded data.
     """
-    encoded = encoder.transform(batch)
+   # Ensure all data in batch is string type for consistent encoding
+    batch_str = batch.astype(str)
+    encoded = encoder.transform(batch_str)
     return pd.DataFrame(encoded, index=batch.index)
 
 # Define the column types for each file type
@@ -80,7 +80,7 @@ created_columns = {
     'IndexDate': 'object', 
     'InitialA1cDate': 'object', 
     'InitialA1c': 'float32',
-    'A1cDateAfter12Months': 'object', 
+    'ElevatedA1cDate': 'object', 
     'A1cAfter12Months': 'object'
 }
 
@@ -237,16 +237,14 @@ prc_columns = {
 
 # Select columns to read in each dataset
 
-created_columns_select = {
-    'Dataset_EMPI', 'ElevatedA1cDate','IndexDate','InitialA1cDate','InitialA1c','A1cDateAfter12Months','A1cAfter12Months'
-}
+created_columns_select = ['Dataset_EMPI', 'ElevatedA1cDate','IndexDate','ElevatedA1cDate','InitialA1c','A1cDateAfter12Months','A1cAfter12Months']
 
 all_columns_select = ['Allp_Allergen', 'Allp_Allergen_Type', 'Allp_Allergen_Code', 
     'Allp_Reactions', 'Allp_Severity', 'Allp_Reaction_Type', 'Allp_Status'] # many
 con_columns_select = ['Conp_Research_Invitations', 'Conp_City', 'Conp_State', 'Conp_Zip', 'Conp_Country', 'Conp_VIP', 'Conp_Insurance_1', 'Conp_Insurance_2', 'Conp_Insurance_3']
-dem_columns_select = ['Conp_Gender_Legal_Sex','Conp_Age', 'Conp_Sex_At_Birth', 'Conp_Gender_Identity', 
-    'Conp_Language', 'Conp_Language_group',
-    'Conp_Marital_status', 'Conp_Religion', 'Conp_Is_a_veteran', 'Conp_Zip_code','Conp_Country','Conp_Vital_status','Conp_Date_of_Death'] # Conp_Date_of_Death'
+dem_columns_select = ['Demp_Gender_Legal_Sex','Demp_Age', 'Demp_Sex_At_Birth',
+    'Demp_Language', 'Demp_Language_group',
+    'Demp_Marital_status', 'Demp_Religion', 'Demp_Is_a_veteran', 'Demp_Zip_code','Demp_Country','Demp_Vital_status'] # Demp_Date_of_Death'
 dia_columns_select = ['Diap_Diagnosis_Name','Diap_Code', 'Diap_Code_Type','Diap_Date','Diap_Diagnosis_Flag', 'Diap_Clinic', 'Diap_Hospital','Diap_Inpatient_Outpatient'] # many # Diap_Date
 enc_columns_select = [ 'Encp_Admit_Date', 'Encp_Encounter_Status', 
     'Encp_Hospital', 'Encp_Inpatient_Outpatient', 'Encp_Service_Line', 
@@ -258,72 +256,103 @@ enc_columns_select = [ 'Encp_Admit_Date', 'Encp_Encounter_Status',
 phy_columns_select = ['Phyp_Concept_Name', 'Phyp_Date',
     'Phyp_Code_Type', 'Phyp_Code', 'Phyp_Result', 
     'Phyp_Units', 'Phyp_Clinic', 
-    'Phyp_Hospital', 'Phyp_Inpatient_Outpatient'] # Phyp_Date
+    'Phyp_Hospital', 'Phyp_Inpatient_Outpatient'] # MANY Phyp_Date
 prc_columns_select = ['Prcp_Procedure_Name', 'Prcp_Date',
     'Prcp_Code_Type', 'Prcp_Code', 'Prcp_Procedure_Flag', 
     'Prcp_Quantity', 'Prcp_Clinic', 
-    'Prcp_Hospital', 'Prcp_Inpatient_Outpatient'] # Prcp_Date
+    'Prcp_Hospital', 'Prcp_Inpatient_Outpatient'] # MANY Prcp_Date
 
 # Define file path and selected columns
-file_path= 'data/FinalDataset.txt'
+file_path= 'data/DiabetesOutcomes.txt'
 
-selected_columns = created_columns_select + con_columns_select + dem_columns_select + dia_columns_select
+selected_columns = list(created_columns_select) + con_columns_select + dem_columns_select
 
-selected_column_types = created_columns + con_columns + dem_columns + dia_columns
+selected_column_types = {**created_columns, **con_columns, **dem_columns}
 
 # Read each file into a DataFrame
-df = read_file(file_path, selected_column_types, selected_columns, parse_dates=['ElevatedA1cDate','IndexDate','InitialA1cDate','Conp_Date_of_Death','Diap_Date'])
+df = read_file(file_path, selected_column_types, selected_columns, parse_dates=['ElevatedA1cDate','IndexDate']) # ,'Demp_Date_of_Death'
 
-# Optimize DataFrames
-df_all = optimize_dataframe(df)
+# Optimize DataFrame
+df = optimize_dataframe(df)
+gc.collect()
 
 # Check and handle duplicates
 print("Number of rows before dropping duplicates:", len(df))
-df = df.drop_duplicates(subset='EMPI') # keeps first EMPI
+df = df.drop_duplicates(subset='Dataset_EMPI') # keeps first EMPI
 print("Number of rows after dropping duplicates:", len(df))
 
-# Identify categorical columns for one-hot encoding
-categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
+print("Total features (original):", df.shape[1])
 
-with open('categorical_columns.json', 'w') as file: # save to file
+# Avoid chained assignment warnings
+df.loc[:, 'Dataset_EMPI'] = df['Dataset_EMPI'].fillna(-1)
+
+# Handle missing values safely
+numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+for col in numeric_columns:
+    df.loc[:, col] = df[col].fillna(-1)
+
+# Handle categorical data
+categorical_columns = df.select_dtypes(include=['object', 'category']).columns.tolist()
+
+with open('categorical_columns.json', 'w') as file:
     json.dump(categorical_columns, file)
 
-# Replace missing values with -1
-# Fill NaN in numeric columns
-numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-df[numeric_columns] = df[numeric_columns].fillna(-1)
+with open('numeric_columns.json', 'w') as file:
+    json.dump(numeric_columns, file)
 
-# Handle NaN in categorical columns
+# # Summary statistics for categorical features
+# categorical_stats = df[categorical_columns].apply(lambda col: col.value_counts(normalize=True))
+# print(categorical_stats)
+
+# Convert categorical columns to string and limit categories
+# filter each categorical column to keep only the top x most frequent categories and replace other categories with a common placeholder like 'Other'
+max_categories = 150 # Adjust this value as needed
+
 for col in categorical_columns:
-    if pd.api.types.is_categorical_dtype(df[col]):
-        # Add -1 as a new category and fill NaN values
-        df[col] = df[col].cat.add_categories([-1])
-        df[col] = df[col].fillna(-1)
+    top_categories = df[col].value_counts().nlargest(max_categories).index
+    df[col] = df[col].astype(str)
+    df[col] = df[col].where(df[col].isin(top_categories), other='Other')
 
-# Initialize OneHotEncoder
+# Initialize OneHotEncoder with limited categories
 one_hot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
-one_hot_encoder.fit(df[categorical_columns])  # Fit the encoder on the full data
+one_hot_encoder.fit(df[categorical_columns])
 
-# Define batch size
-batch_size = 10000  
-
-# Process in batches
+batch_size = 1000  # Adjust batch size as needed
 encoded_batches = []
-for start in range(0, df.shape[0], batch_size):
-    end = min(start + batch_size, df.shape[0])
+for start in range(0, len(df), batch_size):
+    end = min(start + batch_size, len(df))
     batch = df.iloc[start:end]
-    encoded_batch = encode_batch(batch[categorical_columns], one_hot_encoder)
+    encoded_batch = one_hot_encoder.transform(batch[categorical_columns].astype(str))
     encoded_batches.append(encoded_batch)
 
-# Concatenate all encoded batches
+# Concatenate all encoded batches and drop original categorical columns
+encoded_batches = []
+for start in range(0, len(df), batch_size):
+    end = min(start + batch_size, len(df))
+    batch = df.iloc[start:end]
+    encoded_batch = one_hot_encoder.transform(batch[categorical_columns].astype(str))
+    # Convert numpy array to DataFrame
+    encoded_batch_df = pd.DataFrame(encoded_batch, index=batch.index)
+    encoded_batches.append(encoded_batch_df)
+
+# concatenate using pd.concat
 encoded_categorical = pd.concat(encoded_batches)
 
-# Drop original categorical columns and add encoded columns
 df.drop(categorical_columns, axis=1, inplace=True)
 encoded_df = pd.concat([df, encoded_categorical], axis=1)
 
-# Convert to PyTorch tensor
-pytorch_tensor = torch.tensor(encoded_df.values, dtype=torch.float32)
+# Ensure all columns are numeric and convert to float32
+for col in encoded_df.columns:
+    if not pd.api.types.is_numeric_dtype(encoded_df[col]):
+        # Handle non-numeric columns (e.g., drop or encode)
+        # For example, dropping the column
+        encoded_df.drop(col, axis=1, inplace=True)
+    else:
+        # Convert numeric columns to float32
+        encoded_df[col] = encoded_df[col].astype('float32')
 
-# Save the tensor to a file
+print("Total features (preprocessed):", encoded_df.shape[1])
+
+# Convert to PyTorch tensor and save
+pytorch_tensor = torch.tensor(encoded_df.values, dtype=torch.float32)
 torch.save(pytorch_tensor, 'preprocessed_tensor.pt')

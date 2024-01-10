@@ -1,4 +1,6 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
+import nltk
+from nltk.corpus import stopwords
 
 # Check if 'vader_lexicon' is already downloaded
 try:
