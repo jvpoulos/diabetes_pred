@@ -306,8 +306,9 @@ with open('numeric_columns.json', 'w') as file:
 
 # Convert categorical columns to string and limit categories
 # filter each categorical column to keep only the top x most frequent categories and replace other categories with a common placeholder like 'Other'
-max_categories = 150 # Adjust this value as needed
+max_categories = 100  # Adjust this value as needed
 
+# Reduce categories to top 'max_categories' and label others as 'Other'
 for col in categorical_columns:
     top_categories = df[col].value_counts().nlargest(max_categories).index
     df[col] = df[col].astype(str)
@@ -315,44 +316,57 @@ for col in categorical_columns:
 
 # Initialize OneHotEncoder with limited categories
 one_hot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
-one_hot_encoder.fit(df[categorical_columns])
+one_hot_encoder.fit(df[categorical_columns].astype(str))
 
+# Process in batches
 batch_size = 1000  # Adjust batch size as needed
 encoded_batches = []
-for start in range(0, len(df), batch_size):
-    end = min(start + batch_size, len(df))
-    batch = df.iloc[start:end]
-    encoded_batch = one_hot_encoder.transform(batch[categorical_columns].astype(str))
-    encoded_batches.append(encoded_batch)
 
-# Concatenate all encoded batches and drop original categorical columns
-encoded_batches = []
 for start in range(0, len(df), batch_size):
     end = min(start + batch_size, len(df))
     batch = df.iloc[start:end]
     encoded_batch = one_hot_encoder.transform(batch[categorical_columns].astype(str))
-    # Convert numpy array to DataFrame
-    encoded_batch_df = pd.DataFrame(encoded_batch, index=batch.index)
+
+    # Get new column names for one-hot encoded variables
+    encoded_feature_names = one_hot_encoder.get_feature_names(input_features=categorical_columns)
+
+    # Convert feature names to a more readable format
+    encoded_feature_names = [name.replace("x0_", "").replace("_", "-") for name in encoded_feature_names]
+
+    # Convert numpy array to DataFrame with appropriate column names
+    encoded_batch_df = pd.DataFrame(encoded_batch, columns=encoded_feature_names, index=batch.index)
+
+    # Add missing value column for each categorical variable
+    for col in categorical_columns:
+        encoded_batch_df[f'{col}-1'] = (batch[col] == 'Other').astype(int)
+
     encoded_batches.append(encoded_batch_df)
 
-# concatenate using pd.concat
+# Concatenate all encoded batches
 encoded_categorical = pd.concat(encoded_batches)
 
+# Combine the original DataFrame with the encoded DataFrame
+df = pd.concat([df, encoded_categorical], axis=1)
+
+# Drop the original categorical columns
 df.drop(categorical_columns, axis=1, inplace=True)
-encoded_df = pd.concat([df, encoded_categorical], axis=1)
 
-# Ensure all columns are numeric and convert to float32
-for col in encoded_df.columns:
-    if not pd.api.types.is_numeric_dtype(encoded_df[col]):
-        # Handle non-numeric columns (e.g., drop or encode)
-        # For example, dropping the column
-        encoded_df.drop(col, axis=1, inplace=True)
-    else:
-        # Convert numeric columns to float32
-        encoded_df[col] = encoded_df[col].astype('float32')
+# Drop datetime columns
+datetime_cols = df.select_dtypes(include=['datetime']).columns
+df.drop(datetime_cols, axis=1, inplace=True)
 
-print("Total features (preprocessed):", encoded_df.shape[1])
+# Convert all remaining columns to float32
+df = df.astype('float32')
+
+# Print column names for verification
+print("Column Names after One-Hot Encoding and Adding Missing Value Columns:")
+print(df.columns.tolist())
+
+print("Total features (preprocessed):", df.shape[1])
+
+with open('column_names.json', 'w') as file:
+    json.dump(df.columns.tolist(), file)
 
 # Convert to PyTorch tensor and save
-pytorch_tensor = torch.tensor(encoded_df.values, dtype=torch.float32)
+pytorch_tensor = torch.tensor(df.values, dtype=torch.float32)
 torch.save(pytorch_tensor, 'preprocessed_tensor.pt')

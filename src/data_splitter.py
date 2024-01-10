@@ -1,24 +1,39 @@
 import torch
-from torch.utils.data import TensorDataset, random_split
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from torch.utils.data import TensorDataset  # Import TensorDataset
+import json
 
+# Load column names from a separate file
+with open('column_names.json', 'r') as file:
+    column_names = json.load(file)
 
 # Load the tensor from the file
 loaded_tensor = torch.load('preprocessed_tensor.pt')
 
-# Assuming pytorch_tensor is your tensor
-dataset = TensorDataset(loaded_tensor)
+# Convert the tensor to a DataFrame and assign column names
+df = pd.DataFrame(loaded_tensor.numpy(), columns=column_names)
 
-# Calculate the lengths of each split
-total_size = len(dataset)
-train_size = int(0.7 * total_size)
-print("Training set size:", train_size)
-validation_size = int(0.2 * total_size)
-print("Validation set size:", validation_size)
-test_size = total_size - train_size - validation_size
-print("Test set size:", test_size)
+# Print column names for verification
+print("Column Names:")
+print(df.columns.tolist())
 
-# Perform the split
-train_dataset, validation_dataset, test_dataset = random_split(dataset, [train_size, validation_size, test_size])
+# Split the data into train, validation, and test sets
+train_df, temp_df = train_test_split(df, test_size=0.3, random_state=42)
+validation_df, test_df = train_test_split(temp_df, test_size=(1/3), random_state=42)
+
+print("Training set size:", train_df.shape[0])
+print("Validation set size:", validation_df.shape[0])
+print("Test set size:", test_df.shape[0])
+
+# # Print column names
+# print("Training set column Names (preprocessed):")
+# print(train_df.columns.tolist())
+
+# Convert the DataFrames back to tensors for PyTorch processing
+train_dataset = TensorDataset(torch.tensor(train_df.values, dtype=torch.float32))
+validation_dataset = TensorDataset(torch.tensor(validation_df.values, dtype=torch.float32))
+test_dataset = TensorDataset(torch.tensor(test_df.values, dtype=torch.float32))
 
 # Save the datasets to files
 torch.save(train_dataset, 'train_dataset.pt')
