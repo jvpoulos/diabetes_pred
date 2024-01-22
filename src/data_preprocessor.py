@@ -61,8 +61,8 @@ one_hot_missing_rate = df_train[one_hot_missing_columns].mean()
 if one_hot_missing_columns:
     one_hot_missing_rate = (df_train[one_hot_missing_columns] == 1).mean()
 
-    # Filter out features with a missing rate of 0
-    positive_missing_rate = one_hot_missing_rate[one_hot_missing_rate > 0]
+    # Filter out features with a missing rate of 1% or less
+    positive_missing_rate = one_hot_missing_rate[one_hot_missing_rate > 0.01]
 
     print(positive_missing_rate)
 
@@ -100,8 +100,8 @@ one_hot_missing_columns_filtered = [col for col in one_hot_missing_columns if co
 if one_hot_missing_columns_filtered:
     one_hot_missing_rate_filtered = (df_train_filtered[one_hot_missing_columns_filtered] == 1).mean()
 
-    # Filter out features with a missing rate of 0 in the filtered dataset
-    positive_missing_rate_filtered = one_hot_missing_rate_filtered[one_hot_missing_rate_filtered > 0]
+    # Filter out features with a missing rate of 1% or less in the filtered dataset
+    positive_missing_rate_filtered = one_hot_missing_rate_filtered[one_hot_missing_rate_filtered > 0.01]
 
     print(positive_missing_rate_filtered)
 

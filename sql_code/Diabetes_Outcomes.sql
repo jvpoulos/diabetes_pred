@@ -1,7 +1,8 @@
 --Modified from Q:\Projects\DiabetesPredictiveModeling\SQL_examples\DataProcessingExamples\SampleCodeFromDiabetesOutcomesProjectV05.sql
               --Q:\Projects\DiabetesPredictiveModeling\SQL_examples\DataProcessingExamples\SnippetsforInclusionCriteria.sql
+              --Q:\Projects\DiabetesPredictiveModeling\SQL_examples\DataProcessingExamples\CreateDeclineAnalyticalTable_Combined_v2.sql
 
---creates Final analysis table: DiabetesOutcomes..DiabetesOutcomesAnalysisDataset
+--creates analysis table: DiabetesOutcomes
 
 --------------------------------------------------------------------------------------------------------
 --Defined values
@@ -20,15 +21,12 @@ SET @maxEntryDate = '2022-06-30'
 SET @minDate = '1990-01-01'
 SET @maxDate = '2022-12-31' 
 
---DECLARE @FollowUpMonths INT = 12;
-
 SET @min_A1c = 4.0
 SET @max_A1c = 20.0
 DECLARE @min_A1c_inclusion FLOAT = 7.0
 
---start with n=91557
 --------------------------------------------------------------------------------------------------------
---Inclusion and exlusion criteria
+--Inclusion and exlusion criteria (start with n=91557)
 --------------------------------------------------------------------------------------------------------
 
 --Identify Patients with At Least Two Encounters
@@ -58,119 +56,13 @@ JOIN dem_2_pcp_combined d ON d.EMPI = a.EMPI
 JOIN EMPIs2PrimaryCareEnc02 pc ON pc.empi = a.empi
 GROUP BY a.EMPI, d.Date_of_Birth, d.Gender_Legal_Sex
 HAVING COUNT(DISTINCT a.serviceDate) > 1; --n=90259
-
---HbA1c ≥ 7.0% during the study period
-
-IF OBJECT_ID('tempdb..#tmp_A1cElevated') IS NOT NULL
-    DROP TABLE #tmp_A1cElevated;
-
--- Create a temporary table to store dates of elevated A1c along with additional columns
-CREATE TABLE #tmp_A1cElevated (
-    EMPI VARCHAR(50),
-    A1cDate DATE,
-    Age INT,
-    Gender VARCHAR(10),
-    LabDate DATE,
-    GroupCD VARCHAR(255),
-    nval FLOAT
-)
-
--- Insert into #tmp_A1cElevated from labsLMR
-INSERT INTO #tmp_A1cElevated (EMPI, A1cDate, Age, Gender, LabDate, GroupCD, nval)
-SELECT DISTINCT 
-    b.EMPI, 
-    b.LabDate AS A1cDate, 
-    DATEDIFF(year, p.Date_of_Birth, b.LabDate) AS Age, 
-    p.Gender_Legal_Sex AS Gender,
-    b.LabDate,
-    b.GroupCD,
-    TRY_CONVERT(FLOAT, b.nval) AS nval
-FROM dbo.labsLMR b
-JOIN dem_2_pcp_combined p ON p.EMPI = b.EMPI
-WHERE b.LabDate > @minEntryDate 
-  AND b.GroupCD LIKE '%A1c%'
-  AND TRY_CONVERT(FLOAT, b.nval) >= @min_A1c_inclusion; --n=375674
-
--- Insert into #tmp_A1cElevated from labsLMRArchive
-INSERT INTO #tmp_A1cElevated (EMPI, A1cDate, Age, Gender, LabDate, GroupCD, nval)
-SELECT DISTINCT 
-    a.EMPI, 
-    a.LabDate AS A1cDate, 
-    DATEDIFF(year, p.Date_of_Birth, a.LabDate) AS Age, 
-    p.Gender_Legal_Sex AS Gender,
-    a.LabDate,
-    a.GroupCD,
-    TRY_CONVERT(FLOAT, a.nval) AS nval
-FROM dbo.labsLMRArchive a
-JOIN dem_2_pcp_combined p ON p.EMPI = a.EMPI
-WHERE a.LabDate > @minEntryDate 
-  AND a.GroupCD LIKE '%A1c%'
-  AND TRY_CONVERT(FLOAT, a.nval) >= @min_A1c_inclusion; --n=205692
-
--- Insert into #tmp_A1cElevated from labsEPIC
-INSERT INTO #tmp_A1cElevated (EMPI, A1cDate, Age, Gender, LabDate, GroupCD, nval)
-SELECT DISTINCT 
-    e.EMPI, 
-    e.LabDate AS A1cDate, 
-    DATEDIFF(year, p.Date_of_Birth, e.LabDate) AS Age, 
-    p.Gender_Legal_Sex AS Gender,
-    e.LabDate,
-    e.StudyLabCode AS GroupCD,
-    TRY_CONVERT(FLOAT, e.nval) AS nval
-FROM labsEPIC e
-JOIN dem_2_pcp_combined p ON p.EMPI = e.EMPI
-WHERE e.LabDate > @minEntryDate 
-  AND e.StudyLabCode LIKE '%A1c%'
-  AND TRY_CONVERT(FLOAT, e.nval) >= @min_A1c_inclusion; --n=697535
-
-IF OBJECT_ID('tempdb..#tmp_indexDate') IS NOT NULL
-    DROP TABLE #tmp_indexDate;
-
--- Determine Eligible Periods and Index Date
-SELECT p.EMPI, MIN(a.A1cDate) AS IndexDate
-INTO #tmp_indexDate
-FROM #tmp_PrimCarePatients p
-INNER JOIN #tmp_A1cElevated a ON a.EMPI = p.EMPI
-INNER JOIN dem_2_pcp_combined d ON p.EMPI = d.EMPI
-WHERE a.A1cDate BETWEEN p.FirstEncounterDate AND p.LastEncounterDate
-      AND TRY_CONVERT(FLOAT, a.nval) >= @min_A1c_inclusion
-      AND DATEDIFF(year, d.Date_of_Birth, a.A1cDate) BETWEEN 18 AND 75
-   --   AND (d.Date_of_Death IS NULL OR DATEDIFF(month, a.A1cDate, TRY_CONVERT(DATE, d.Date_of_Death, 101)) > @FollowUpMonths)
-      AND a.A1cDate BETWEEN @minEntryDate AND @maxEntryDate
-GROUP BY p.EMPI; --n=61103
-
---------------------------------------------------------------------------------------------------------
---Additional exclusion criteria
---------------------------------------------------------------------------------------------------------
-
---Exclude those whose age is < 18 years or > 75 years (done in prev. step)
-IF OBJECT_ID('tempdb..#tmp_Under75') IS NOT NULL
-    DROP TABLE #tmp_Under75
-
-SELECT a.*
-INTO #tmp_Under75
-FROM 
-(
-    SELECT i.*, DATEDIFF(year, p.Date_of_Birth, i.IndexDate) AS AgeYears, p.Gender, p.Date_of_Birth
-    FROM #tmp_indexDate i
-    JOIN #tmp_PrimCarePatients p ON p.EMPI = i.EMPI
-) AS a
-WHERE a.AgeYears BETWEEN 18 AND 75 --n=61103
-
-IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
-    DROP TABLE #tmp_studyPop
-
---Exclusion criteria: exclude those with unknown gender
-select *
-into #tmp_studyPop
-from #tmp_Under75
-where gender in ('Female', 'Male') --n=61100
+--SELECT * FROM #tmp_PrimCarePatients
 
 --------------------------------------------------------------------------------------------------------
 --A1c data
 --------------------------------------------------------------------------------------------------------
 
---Clean A1c Values for those in study pop.
+-- Clean A1c Values for those in primary care patients
 IF OBJECT_ID('tempdb..#CleanedA1cAverages') IS NOT NULL
     DROP TABLE #CleanedA1cAverages;
 
@@ -179,110 +71,386 @@ INTO #CleanedA1cAverages
 FROM (
     SELECT l.EMPI, CAST(l.LabDate AS DATE) AS A1cDate, l.nval AS 'A1c'
     FROM labsEPIC l
-    INNER JOIN #tmp_studyPop s ON l.EMPI = s.EMPI
+    INNER JOIN #tmp_PrimCarePatients pc ON l.EMPI = pc.EMPI
     WHERE l.StudyLabCode LIKE '%A1c%' 
           AND ISNUMERIC(l.nval) > 0 
           AND l.nval >= @min_A1c AND l.nval <= @max_A1c
     UNION ALL
     SELECT lm.EMPI, CAST(lm.LabDate AS DATE) AS A1cDate, lm.nval AS 'A1c'
     FROM labsLMR lm
-    INNER JOIN #tmp_studyPop s ON lm.EMPI = s.EMPI
+    INNER JOIN #tmp_PrimCarePatients pc ON lm.EMPI = pc.EMPI
     WHERE lm.GroupCD LIKE '%A1c%'
           AND ISNUMERIC(lm.nval) > 0 
           AND lm.nval >= @min_A1c AND lm.nval <= @max_A1c
     UNION ALL
     SELECT la.EMPI, CAST(la.LabDate AS DATE) AS A1cDate, la.nval AS 'A1c'
     FROM labsLMRArchive la
-    INNER JOIN #tmp_studyPop s ON la.EMPI = s.EMPI
+    INNER JOIN #tmp_PrimCarePatients pc ON la.EMPI = pc.EMPI
     WHERE la.GroupCD LIKE '%A1c%' 
           AND ISNUMERIC(la.nval) > 0 
           AND la.nval >= @min_A1c AND la.nval <= @max_A1c
 ) AS e
-GROUP BY e.EMPI, e.A1cDate; --n=1435435
+GROUP BY e.EMPI, e.A1cDate; --n=1922522
+--SELECT TOP 50 PERCENT * FROM #CleanedA1cAverages
+
+--HbA1c ≥ 7.0% during the study period
+
+-- Create a temporary table to store dates of elevated A1c along with additional columns
+IF OBJECT_ID('tempdb..#tmp_A1cElevated') IS NOT NULL
+    DROP TABLE #tmp_A1cElevated;
+
+CREATE TABLE #tmp_A1cElevated (
+    EMPI VARCHAR(50),
+    A1cDate DATE,
+    Age INT,
+    Gender VARCHAR(10),
+    nval FLOAT
+);
+
+-- Insert into #tmp_A1cElevated from #CleanedA1cAverages
+INSERT INTO #tmp_A1cElevated (EMPI, A1cDate, Age, Gender, nval)
+SELECT DISTINCT 
+    ca.EMPI, 
+    ca.A1cDate, 
+    DATEDIFF(year, p.Date_of_Birth, ca.A1cDate) AS Age, 
+    p.Gender_Legal_Sex AS Gender,
+    ca.A1c
+FROM #CleanedA1cAverages ca
+JOIN dem_2_pcp_combined p ON p.EMPI = ca.EMPI
+WHERE ca.A1c >= @min_A1c_inclusion
+  AND ca.A1cDate > @minEntryDate; --n=977412
+--SELECT TOP 50 PERCENT * FROM #tmp_A1cElevated;
+
+-- Determine Eligible Periods and Index Date
+--1. Calculate the latest of the three dates (patient turns 18, study start date, first PCP note) for each patient.
+--2. Identify the most recent A1c measurement prior to this calculated date.
+--3. If this A1c measurement is less than 7, find the next date where it is greater than or equal to 7.
+--4. Ensure that the search for an IndexDate does not go beyond @maxEntryDate and the last PCP encounter date.
+--5. Guarantee that each patient has an IndexDate and avoid NULL values.
+
+IF OBJECT_ID('tempdb..#tmp_indexDate') IS NOT NULL
+    DROP TABLE #tmp_indexDate;
+
+-- Calculate the latest of three conditions for each patient
+WITH PatientConditions AS (
+    SELECT 
+        p.EMPI, 
+        p.Date_of_Birth, 
+        p.FirstEncounterDate,
+        -- Calculate the latest of the three dates
+        CASE 
+            WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN DATEADD(YEAR, 18, p.Date_of_Birth)
+            WHEN p.FirstEncounterDate > @minEntryDate THEN p.FirstEncounterDate
+            ELSE @minEntryDate
+        END AS LatestDate
+    FROM #tmp_PrimCarePatients p
+),
+IndexDates AS (
+    SELECT 
+        pc.EMPI,
+        COALESCE(
+            -- Try to find the most recent A1c measurement before the LatestDate
+            (
+                SELECT TOP 1 a.A1cDate
+                FROM #tmp_A1cElevated a
+                WHERE a.EMPI = pc.EMPI
+                  AND a.A1cDate < pc.LatestDate
+                  AND a.nval >= @min_A1c_inclusion
+                ORDER BY a.A1cDate DESC
+            ),
+            -- If not found, use the LatestDate as a fallback IndexDate
+            pc.LatestDate
+        ) AS IndexDate
+    FROM PatientConditions pc
+)
+
+-- Store the result in #tmp_indexDate
+SELECT * 
+INTO #tmp_indexDate
+FROM IndexDates; --n=90259
+--SELECT * FROM #tmp_indexDate
+
+--------------------------------------------------------------------------------------------------------
+--Additional exclusion criteria
+--------------------------------------------------------------------------------------------------------
+
+--Exclude those whose age is < 18 years or > 75 years
+IF OBJECT_ID('tempdb..#tmp_Under75') IS NOT NULL
+    DROP TABLE #tmp_Under75;
+
+SELECT 
+    id.EMPI,
+    id.IndexDate,
+    DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) AS AgeYears,
+    d.Gender_Legal_Sex
+INTO #tmp_Under75
+FROM #tmp_indexDate id
+INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
+WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=79837
+
+--Exclude those with unknown gender
+IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
+    DROP TABLE #tmp_studyPop;
+
+SELECT *
+INTO #tmp_studyPop
+FROM #tmp_Under75
+WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=79833
+--SELECT * FROM #tmp_studyPop
 
 --------------------------------------------------------------------------------------------------------
 --Identify hyperglycemic periods
 --------------------------------------------------------------------------------------------------------
 
---1.Identify the first elevated A1c measurement (7 or greater) for each patient.
---2.Find the A1c measurement approximately 12 months later.
---3.Handle cases where the A1c fluctuates during the year.
+IF OBJECT_ID('tempdb..#A1c12MonthsLaterTable') IS NOT NULL
+    DROP TABLE #A1c12MonthsLaterTable;
 
-IF OBJECT_ID('dbo.A1c12MonthsLaterTable', 'U') IS NOT NULL
-    DROP TABLE dbo.A1c12MonthsLaterTable;
-
--- Step 1: Identify the first elevated A1c measurement for each patient in #tmp_studyPop
+-- Step 1: Identify the first elevated A1c measurement for each patient in #tmp_studyPop using #tmp_A1cElevated
 WITH FirstElevatedA1c AS (
     SELECT 
-        c.EMPI, 
-        c.A1cDate,
-        c.A1c,
-        ROW_NUMBER() OVER (PARTITION BY c.EMPI ORDER BY c.A1cDate) AS RowNum
-    FROM #CleanedA1cAverages c
-    INNER JOIN #tmp_studyPop s ON c.EMPI = s.EMPI
-    WHERE c.A1c >= 7
+        ae.EMPI, 
+        ae.A1cDate AS InitialA1cDate,
+        ae.nval AS InitialA1c,
+        ROW_NUMBER() OVER (PARTITION BY ae.EMPI ORDER BY ae.A1cDate) AS RowNum
+    FROM #tmp_A1cElevated ae
+    INNER JOIN #tmp_studyPop s ON ae.EMPI = s.EMPI
+    WHERE ae.nval >= 7
+    AND ae.A1cDate <= @maxEntryDate -- Ensuring the date is within the study period
 ),
--- Step 2: Find all A1c measurements approximately 12 months later for those in #tmp_studyPop
-AllA1c12MonthsLater AS (
+
+-- Step 2: Find the A1c measurement approximately 12 months later
+A1c12MonthsLater AS (
     SELECT 
         f.EMPI,
-        f.A1cDate AS InitialA1cDate,
-        f.A1c AS InitialA1c,
-        a.A1c AS A1cAfter12Months,
-        a.A1cDate AS A1cDateAfter12Months,
-        CASE 
-            WHEN a.A1c >= 7 THEN 1
-            ELSE 0
-        END AS A1cGreaterThan7,
-        ROW_NUMBER() OVER (
-            PARTITION BY f.EMPI 
-            ORDER BY ABS(DATEDIFF(day, DATEADD(month, 12, f.A1cDate), a.A1cDate))
-        ) AS RowNum
+        f.InitialA1cDate,
+        f.InitialA1c,
+        MIN(ca.A1cDate) AS A1cDateAfter12Months,
+        MIN(ca.A1c) AS A1cAfter12Months
     FROM FirstElevatedA1c f
-    LEFT JOIN #CleanedA1cAverages a ON f.EMPI = a.EMPI
-        AND a.A1cDate >= DATEADD(month, 9, f.A1cDate)
-        AND a.A1cDate <= DATEADD(month, 15, f.A1cDate)
+    INNER JOIN #CleanedA1cAverages ca ON f.EMPI = ca.EMPI
+        AND ca.A1cDate >= DATEADD(month, 9, f.InitialA1cDate) -- At least 9 months after
+        AND ca.A1cDate <= DATEADD(month, 15, f.InitialA1cDate) -- No more than 15 months after
     WHERE f.RowNum = 1
+    GROUP BY f.EMPI, f.InitialA1cDate, f.InitialA1c
 )
 
--- Final selection
+-- Final selection into a temporary table
 SELECT
-    EMPI,
-    InitialA1cDate,
-    InitialA1c,
-    A1cDateAfter12Months,
-    A1cAfter12Months,
-    A1cGreaterThan7
-INTO A1c12MonthsLaterTable -- Save as a table
-FROM AllA1c12MonthsLater
-WHERE RowNum = 1 AND A1cAfter12Months IS NOT NULL; --n=40363 -- Ensures that only the closest A1c measurement within the timeframe is selected
+    a.EMPI,
+    a.InitialA1cDate,
+    a.InitialA1c,
+    a.A1cDateAfter12Months,
+    a.A1cAfter12Months,
+    CASE WHEN a.A1cAfter12Months >= 7 THEN 1 ELSE 0 END AS A1cGreaterThan7
+INTO #A1c12MonthsLaterTable
+FROM A1c12MonthsLater a; --n=45711
+--SELECT TOP 50 PERCENT * FROM #A1c12MonthsLaterTable
 
+
+--------------------------------------------------------------------------------------------------------
+--Patient characteristics
+--------------------------------------------------------------------------------------------------------
+
+-- Add necessary columns to #A1c12MonthsLaterTable if they don't exist
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarital') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoMarital varchar(50);
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarried') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoMarried int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGovIns') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoGovIns int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGender') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoGender varchar(50);
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoFemale') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoFemale int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoEnglish') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoEnglish int;
+
+-- Create a temporary table for gender updates
+IF OBJECT_ID('tempdb..#tempGenderUpdates') IS NOT NULL
+    DROP TABLE #tempGenderUpdates;
+
+SELECT 
+    a.EMPI, 
+    d.Gender_Legal_Sex AS demoGender,
+    CASE WHEN d.Gender_Legal_Sex = 'Female' THEN 1 ELSE 0 END AS demoFemale
+INTO #tempGenderUpdates
+FROM #A1c12MonthsLaterTable a
+JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=45711
+
+-- Merge the gender data back into #A1c12MonthsLaterTable
+MERGE INTO #A1c12MonthsLaterTable AS Target
+USING #tempGenderUpdates AS Source
+ON Target.EMPI = Source.EMPI
+WHEN MATCHED THEN 
+    UPDATE SET 
+        Target.demoGender = Source.demoGender,
+        Target.demoFemale = Source.demoFemale;
+
+-- Categorize patient primary language
+IF OBJECT_ID('tempdb..#tmp_demoLanguage') IS NOT NULL
+    DROP TABLE #tmp_demoLanguage;
+
+SELECT
+    #A1c12MonthsLaterTable.EMPI,
+    dem_2_pcp_combined.Language
+INTO #tmp_demoLanguage
+FROM #A1c12MonthsLaterTable
+JOIN dem_2_pcp_combined ON #A1c12MonthsLaterTable.EMPI = dem_2_pcp_combined.EMPI; --n=45711
+
+ALTER TABLE #tmp_demoLanguage
+ADD demoEnglish int;
+
+UPDATE #tmp_demoLanguage
+SET demoEnglish = CASE
+    WHEN Language LIKE 'ENG%' THEN 1
+    ELSE 0
+END;
+
+MERGE INTO #A1c12MonthsLaterTable
+USING #tmp_demoLanguage
+ON #A1c12MonthsLaterTable.EMPI = #tmp_demoLanguage.EMPI
+WHEN MATCHED THEN
+    UPDATE SET #A1c12MonthsLaterTable.demoEnglish = #tmp_demoLanguage.demoEnglish;
+
+-- Categorize patient marital status
+-- Ensure that #tmp_demoMarital is dropped if it exists
+IF OBJECT_ID('tempdb..#tmp_demoMarital') IS NOT NULL
+    DROP TABLE #tmp_demoMarital;
+
+-- Create the #tmp_demoMarital table
+SELECT
+    #A1c12MonthsLaterTable.EMPI,
+    dem_2_pcp_combined.Marital_status
+INTO #tmp_demoMarital
+FROM #A1c12MonthsLaterTable
+JOIN dem_2_pcp_combined ON #A1c12MonthsLaterTable.EMPI = dem_2_pcp_combined.EMPI; --n=45711
+
+ALTER TABLE #tmp_demoMarital
+ADD maritalStatusGroup varchar(50);
+
+UPDATE #tmp_demoMarital
+SET maritalStatusGroup = CASE
+    WHEN Marital_status LIKE '%Widow%' THEN 'Widowed'
+    WHEN Marital_status LIKE '%Law%' THEN 'Married/Partnered'
+    WHEN Marital_status LIKE '%Partner%' THEN 'Married/Partnered'
+    WHEN Marital_status LIKE '%Married%' THEN 'Married/Partnered'
+    WHEN Marital_status LIKE '%Separated%' THEN 'Separated'
+    WHEN Marital_status LIKE '%Divorce%' THEN 'Separated'
+    WHEN Marital_status LIKE '%Single%' THEN 'Single'
+    ELSE 'Unknown'
+END;
+
+MERGE INTO #A1c12MonthsLaterTable
+USING #tmp_demoMarital
+ON #A1c12MonthsLaterTable.EMPI = #tmp_demoMarital.EMPI
+WHEN MATCHED THEN
+    UPDATE SET #A1c12MonthsLaterTable.demoMarital = #tmp_demoMarital.maritalStatusGroup;
+
+-- Ensure the #A1c12MonthsLaterTable exists and add demoMarried column if it doesn't exist
+IF OBJECT_ID('#A1c12MonthsLaterTable', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarried') IS NULL
+    BEGIN
+        ALTER TABLE #A1c12MonthsLaterTable ADD demoMarried int;
+    END;
+END;
+
+-- Now update the demoMarried column
+UPDATE #A1c12MonthsLaterTable
+SET demoMarried = CASE
+    WHEN demoMarital = 'Married/Partnered' THEN 1
+    ELSE 0
+END;
+
+UPDATE #A1c12MonthsLaterTable
+SET demoFemale = 1 WHERE demoGender = 'Female'; --n=45711
+
+-- Categorize patient insurance information
+
+-- Drop the #tmp_demoInsurance table if it exists
+IF OBJECT_ID('tempdb..#tmp_demoInsurance') IS NOT NULL
+    DROP TABLE #tmp_demoInsurance;
+
+-- Create the #tmp_demoInsurance table
+SELECT 
+    a.EMPI, 
+    c.insurance_1, 
+    c.insurance_2, 
+    c.insurance_3
+INTO #tmp_demoInsurance
+FROM #A1c12MonthsLaterTable a
+JOIN con_2_pcp_combined c ON a.EMPI = c.EMPI; --n=45711
+
+-- Add governmentInsurance column to #tmp_demoInsurance
+ALTER TABLE #tmp_demoInsurance
+ADD governmentInsurance int;
+
+-- Update #tmp_demoInsurance with governmentInsurance values
+UPDATE #tmp_demoInsurance
+SET governmentInsurance = 
+    CASE
+        WHEN insurance_1 LIKE '%MEDICARE%' OR
+             insurance_2 LIKE '%MEDICARE%' OR
+             insurance_3 LIKE '%MEDICARE%' THEN 1
+        WHEN insurance_1 LIKE '%MEDICAID%' OR
+             insurance_2 LIKE '%MEDICAID%' OR
+             insurance_3 LIKE '%MEDICAID%' THEN 1
+        WHEN insurance_1 LIKE '%MASSHEALTH%' OR
+             insurance_2 LIKE '%MASSHEALTH%' OR
+             insurance_3 LIKE '%MASSHEALTH%' THEN 1
+        -- Add similar conditions for other government insurances as needed
+        ELSE 0
+    END;
+
+-- Merge #tmp_demoInsurance into #A1c12MonthsLaterTable
+MERGE INTO #A1c12MonthsLaterTable AS Target
+USING #tmp_demoInsurance AS Source
+ON Target.EMPI = Source.EMPI
+WHEN MATCHED THEN 
+    UPDATE SET Target.demoGovIns = Source.governmentInsurance;
+--SELECT * FROM #A1c12MonthsLaterTable
 --------------------------------------------------------------------------------------------------------
 --Create dataset
 --------------------------------------------------------------------------------------------------------
+--initialize the DiabetesOutcomes table directly from #A1c12MonthsLaterTable
+--include relevant columns from #tmp_studyPop and #tmp_PrimCarePatients
 
--- uses the A1c measurement from the A1c12MonthsLaterTable for generating the 12-month follow-up in the DiabetesOutcomes table
 IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
     DROP TABLE dbo.DiabetesOutcomes;
 
-WITH UniqueIndexDate AS (
-    SELECT 
-        EMPI,
-        MAX(IndexDate) AS LatestIndexDate -- or use MIN
-    FROM #tmp_indexDate
-    GROUP BY EMPI
-)
+-- Create the DiabetesOutcomes table with all columns from #A1c12MonthsLaterTable and additional columns
 SELECT 
-    s.EMPI,
-    a12.InitialA1cDate AS ElevatedA1cDate,
-    id.LatestIndexDate AS IndexDate,
-    a12.A1cDateAfter12Months,
-    a12.A1cAfter12Months
-INTO DiabetesOutcomes
-FROM #tmp_studyPop s
-LEFT JOIN UniqueIndexDate id ON s.EMPI = id.EMPI
-INNER JOIN A1c12MonthsLaterTable a12 ON s.EMPI = a12.EMPI;--n=40363
+    a12.*, -- Select all columns from #A1c12MonthsLaterTable
+    id.IndexDate AS ElevatedA1cDate, -- IndexDate as the date of the first elevated A1c measurement
+    sp.AgeYears, -- AgeYears from #tmp_studyPop
+    ppc.NumberEncounters -- NumberEncounters from #tmp_PrimCarePatients
+INTO dbo.DiabetesOutcomes
+FROM #A1c12MonthsLaterTable a12
+INNER JOIN #tmp_indexDate id ON a12.EMPI = id.EMPI
+INNER JOIN #tmp_studyPop sp ON a12.EMPI = sp.EMPI
+INNER JOIN #tmp_PrimCarePatients ppc ON a12.EMPI = ppc.EMPI; --n=45711
+--SELECT TOP 100 * FROM dbo.DiabetesOutcomes;
 
+/*
+-- Check cases where InitialA1cDate is earlier than ElevatedA1cDate
+SELECT 
+    EMPI,
+    InitialA1cDate,
+    ElevatedA1cDate,
+    InitialA1c,
+    A1cDateAfter12Months,
+    A1cAfter12Months,
+    A1cGreaterThan7,
+    AgeYears,
+    NumberEncounters
+FROM dbo.DiabetesOutcomes
+WHERE InitialA1cDate < ElevatedA1cDate;
+
+-- Count how many such cases exist
+SELECT COUNT(*)
+FROM dbo.DiabetesOutcomes
+WHERE InitialA1cDate < ElevatedA1cDate;
+*/
 -- Merge columns from selected RDPR tables into DiabetesOutcomes
 
 IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
@@ -295,7 +463,7 @@ SELECT
     id.LatestIndexDate AS IndexDate,
     a12.A1cDateAfter12Months,
     a12.InitialA1c,
-    a12.A1cAfter12Months, --n=40363
+    a12.A1cAfter12Months, --n=46157
 
     /*
     -- Columns from all_2_pcp_combined with Allp_ prefix
@@ -455,7 +623,7 @@ SELECT
  --   nhe.*, 
 --    nhl.*
 INTO dbo.DiabetesOutcomes
-FROM A1c12MonthsLaterTable a12
+FROM #A1c12MonthsLaterTable a12
 LEFT JOIN con_2_pcp_combined conp ON a12.EMPI = conp.EMPI
 LEFT JOIN dem_2_pcp_combined demp ON a12.EMPI = demp.EMPI
 LEFT JOIN (
@@ -464,7 +632,7 @@ LEFT JOIN (
         MAX(IndexDate) AS LatestIndexDate
     FROM #tmp_indexDate
     GROUP BY EMPI
-) id ON a12.EMPI = id.EMPI; --n=40363
+) id ON a12.EMPI = id.EMPI; --n=46157
 --LEFT JOIN dia_2_pcp_combined diap ON a12.EMPI = diap.EMPI
 --LEFT JOIN enc_2_pcp_combined encp ON a12.EMPI = encp.EMPI
 --LEFT JOIN phy_2_pcp_combined phyp ON a12.EMPI = phyp.EMPI
