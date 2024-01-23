@@ -56,7 +56,7 @@ JOIN dem_2_pcp_combined d ON d.EMPI = a.EMPI
 JOIN EMPIs2PrimaryCareEnc02 pc ON pc.empi = a.empi
 GROUP BY a.EMPI, d.Date_of_Birth, d.Gender_Legal_Sex
 HAVING COUNT(DISTINCT a.serviceDate) > 1; --n=90259
---SELECT * FROM #tmp_PrimCarePatients
+--SELECT TOP 50 PERCENT * FROM #tmp_PrimCarePatients
 
 --------------------------------------------------------------------------------------------------------
 --A1c data
@@ -125,19 +125,23 @@ WHERE ca.A1c >= @min_A1c_inclusion
 --1. Calculate the latest of the three dates (patient turns 18, study start date, first PCP note) for each patient.
 --2. Identify the most recent A1c measurement prior to this calculated date.
 --3. If this A1c measurement is less than 7, find the next date where it is greater than or equal to 7.
+-- The date of the A1c measurement greater than or equal to 7 is the study entry date (IndexDate)
 --4. Ensure that the search for an IndexDate does not go beyond @maxEntryDate and the last PCP encounter date.
---5. Guarantee that each patient has an IndexDate and avoid NULL values.
 
 IF OBJECT_ID('tempdb..#tmp_indexDate') IS NOT NULL
     DROP TABLE #tmp_indexDate;
 
--- Calculate the latest of three conditions for each patient
 WITH PatientConditions AS (
     SELECT 
         p.EMPI, 
         p.Date_of_Birth, 
         p.FirstEncounterDate,
-        -- Calculate the latest of the three dates
+        p.LastEncounterDate,
+        CASE 
+            WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN '18th Birthday'
+            WHEN p.FirstEncounterDate > @minEntryDate THEN 'First PCP Note'
+            ELSE 'Study Start Date'
+        END AS ConditionUsed,
         CASE 
             WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN DATEADD(YEAR, 18, p.Date_of_Birth)
             WHEN p.FirstEncounterDate > @minEntryDate THEN p.FirstEncounterDate
@@ -148,27 +152,57 @@ WITH PatientConditions AS (
 IndexDates AS (
     SELECT 
         pc.EMPI,
-        COALESCE(
-            -- Try to find the most recent A1c measurement before the LatestDate
+        pc.Date_of_Birth AS PatientTurns18,
+        pc.FirstEncounterDate,
+        pc.LastEncounterDate,
+        pc.ConditionUsed,
+        pc.LatestDate,
+        -- Find the A1c measurement date prior to or equal to LatestDate
+        ISNULL(
             (
                 SELECT TOP 1 a.A1cDate
                 FROM #tmp_A1cElevated a
-                WHERE a.EMPI = pc.EMPI
-                  AND a.A1cDate < pc.LatestDate
-                  AND a.nval >= @min_A1c_inclusion
+                WHERE a.EMPI = pc.EMPI AND a.A1cDate <= pc.LatestDate AND a.nval >= @min_A1c_inclusion
                 ORDER BY a.A1cDate DESC
             ),
-            -- If not found, use the LatestDate as a fallback IndexDate
-            pc.LatestDate
+            -- If not found, find the next A1c measurement after LatestDate but before CappedLatestDate
+            (
+                SELECT TOP 1 a.A1cDate
+                FROM #tmp_A1cElevated a
+                WHERE a.EMPI = pc.EMPI AND a.A1cDate > pc.LatestDate AND a.A1cDate <= 
+                    CASE 
+                        WHEN pc.LastEncounterDate < @maxEntryDate THEN pc.LastEncounterDate
+                        ELSE @maxEntryDate 
+                    END AND a.nval >= @min_A1c_inclusion
+                ORDER BY a.A1cDate
+            )
         ) AS IndexDate
     FROM PatientConditions pc
+),
+A1cValues AS (
+    SELECT 
+        id.EMPI,
+        id.PatientTurns18,
+        id.FirstEncounterDate,
+        id.LastEncounterDate,
+        id.ConditionUsed,
+        id.LatestDate,
+        id.IndexDate,
+        -- Get the A1c value corresponding to the IndexDate
+        (
+            SELECT TOP 1 a.nval
+            FROM #tmp_A1cElevated a
+            WHERE a.EMPI = id.EMPI AND a.A1cDate = id.IndexDate
+        ) AS A1cValueAtIndexDate
+    FROM IndexDates id
 )
 
--- Store the result in #tmp_indexDate
 SELECT * 
 INTO #tmp_indexDate
-FROM IndexDates; --n=90259
---SELECT * FROM #tmp_indexDate
+FROM A1cValues;
+
+ --n=90259
+--SELECT TOP 50 PERCENT * FROM #tmp_indexDate
 
 --------------------------------------------------------------------------------------------------------
 --Additional exclusion criteria
@@ -186,7 +220,7 @@ SELECT
 INTO #tmp_Under75
 FROM #tmp_indexDate id
 INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
-WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=79837
+WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=79811
 
 --Exclude those with unknown gender
 IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
@@ -195,7 +229,7 @@ IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
 SELECT *
 INTO #tmp_studyPop
 FROM #tmp_Under75
-WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=79833
+WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=79807
 --SELECT * FROM #tmp_studyPop
 
 --------------------------------------------------------------------------------------------------------
@@ -243,9 +277,8 @@ SELECT
     a.A1cAfter12Months,
     CASE WHEN a.A1cAfter12Months >= 7 THEN 1 ELSE 0 END AS A1cGreaterThan7
 INTO #A1c12MonthsLaterTable
-FROM A1c12MonthsLater a; --n=45711
+FROM A1c12MonthsLater a; --n=45705
 --SELECT TOP 50 PERCENT * FROM #A1c12MonthsLaterTable
-
 
 --------------------------------------------------------------------------------------------------------
 --Patient characteristics
@@ -284,7 +317,7 @@ ON Target.EMPI = Source.EMPI
 WHEN MATCHED THEN 
     UPDATE SET 
         Target.demoGender = Source.demoGender,
-        Target.demoFemale = Source.demoFemale;
+        Target.demoFemale = Source.demoFemale; --n=45711
 
 -- Categorize patient primary language
 IF OBJECT_ID('tempdb..#tmp_demoLanguage') IS NOT NULL
@@ -418,8 +451,9 @@ WHEN MATCHED THEN
 IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
     DROP TABLE dbo.DiabetesOutcomes;
 
--- Create the DiabetesOutcomes table with all columns from #A1c12MonthsLaterTable and additional columns
+-- Create the DiabetesOutcomes table with a new study-specific ID
 SELECT 
+    ROW_NUMBER() OVER (ORDER BY a12.EMPI) AS newID, -- Generate a unique identifier
     a12.*, -- Select all columns from #A1c12MonthsLaterTable
     id.IndexDate AS ElevatedA1cDate, -- IndexDate as the date of the first elevated A1c measurement
     sp.AgeYears, -- AgeYears from #tmp_studyPop
