@@ -7,7 +7,6 @@
 --------------------------------------------------------------------------------------------------------
 --Defined values
 --------------------------------------------------------------------------------------------------------
-
 DECLARE @minEntryDate DATE     -- earliest accepted EntryDate
 DECLARE @maxEntryDate DATE     -- latest accepted EntryDate 
 DECLARE @minDate DATE          -- earliest logical date cutoff for criterion tables
@@ -122,87 +121,99 @@ WHERE ca.A1c >= @min_A1c_inclusion
 --SELECT TOP 50 PERCENT * FROM #tmp_A1cElevated;
 
 -- Determine Eligible Periods and Index Date
---1. Calculate the latest of the three dates (patient turns 18, study start date, first PCP note) for each patient.
---2. Identify the most recent A1c measurement prior to this calculated date.
---3. If this A1c measurement is less than 7, find the next date where it is greater than or equal to 7.
--- The date of the A1c measurement greater than or equal to 7 is the study entry date (IndexDate)
---4. Ensure that the search for an IndexDate does not go beyond @maxEntryDate and the last PCP encounter date.
+--1. Identify the latest date among the patient turning 18, the study start date, and the first PCP note for each patient.
+--2. Find the most recent A1c measurement greater than or equal to 7 before LatestDate and after @minDate.
+--3. If no such A1c measurement is found before the LatestDate, find the next A1c measurement greater than or equal to 7.
+--4. The study entry date (IndexDate) is the latest date among the LatestDate and A1cDate.
+--5. Ensure that the search for an IndexDate does not go beyond @maxEntryDate or LastEncounterDate.
+
+IF OBJECT_ID('tempdb..#PatientConditions') IS NOT NULL
+    DROP TABLE #PatientConditions;
+
+IF OBJECT_ID('tempdb..#A1cMeasurements') IS NOT NULL
+    DROP TABLE #A1cMeasurements;
 
 IF OBJECT_ID('tempdb..#tmp_indexDate') IS NOT NULL
     DROP TABLE #tmp_indexDate;
 
-WITH PatientConditions AS (
+-- Create temporary tables
+SELECT 
+    p.EMPI, 
+    DATEADD(YEAR, 18, p.Date_of_Birth) AS PatientTurns18,
+    p.FirstEncounterDate,
+    p.LastEncounterDate,
+    CASE 
+        WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN DATEADD(YEAR, 18, p.Date_of_Birth)
+        WHEN p.FirstEncounterDate > @minEntryDate THEN p.FirstEncounterDate
+        ELSE @minEntryDate
+    END AS LatestDate
+INTO #PatientConditions
+FROM #tmp_PrimCarePatients p;
+CREATE INDEX idx_patient ON #PatientConditions(EMPI); --n=90259
+--SELECT * FROM #PatientConditions; 
+
+SELECT
+    a.EMPI,
+    a.A1cDate,
+    a.nval
+INTO #A1cMeasurements
+FROM #tmp_A1cElevated a
+WHERE a.nval >= @min_A1c_inclusion AND a.A1cDate BETWEEN @minDate AND @maxEntryDate;
+CREATE INDEX idx_a1c ON #A1cMeasurements(EMPI, A1cDate); --n=888967
+--SELECT * FROM #A1cMeasurements; 
+
+-- Determine IndexDate, A1cValue, and A1cDate
+WITH A1cData AS (
     SELECT 
-        p.EMPI, 
-        p.Date_of_Birth, 
-        p.FirstEncounterDate,
-        p.LastEncounterDate,
-        CASE 
-            WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN '18th Birthday'
-            WHEN p.FirstEncounterDate > @minEntryDate THEN 'First PCP Note'
-            ELSE 'Study Start Date'
-        END AS ConditionUsed,
-        CASE 
-            WHEN DATEADD(YEAR, 18, p.Date_of_Birth) > p.FirstEncounterDate AND DATEADD(YEAR, 18, p.Date_of_Birth) > @minEntryDate THEN DATEADD(YEAR, 18, p.Date_of_Birth)
-            WHEN p.FirstEncounterDate > @minEntryDate THEN p.FirstEncounterDate
-            ELSE @minEntryDate
-        END AS LatestDate
-    FROM #tmp_PrimCarePatients p
-),
-IndexDates AS (
-    SELECT 
-        pc.EMPI,
-        pc.Date_of_Birth AS PatientTurns18,
-        pc.FirstEncounterDate,
-        pc.LastEncounterDate,
-        pc.ConditionUsed,
-        pc.LatestDate,
-        -- Find the A1c measurement date prior to or equal to LatestDate
-        ISNULL(
-            (
-                SELECT TOP 1 a.A1cDate
-                FROM #tmp_A1cElevated a
-                WHERE a.EMPI = pc.EMPI AND a.A1cDate <= pc.LatestDate AND a.nval >= @min_A1c_inclusion
-                ORDER BY a.A1cDate DESC
-            ),
-            -- If not found, find the next A1c measurement after LatestDate but before CappedLatestDate
-            (
-                SELECT TOP 1 a.A1cDate
-                FROM #tmp_A1cElevated a
-                WHERE a.EMPI = pc.EMPI AND a.A1cDate > pc.LatestDate AND a.A1cDate <= 
-                    CASE 
-                        WHEN pc.LastEncounterDate < @maxEntryDate THEN pc.LastEncounterDate
-                        ELSE @maxEntryDate 
-                    END AND a.nval >= @min_A1c_inclusion
-                ORDER BY a.A1cDate
-            )
-        ) AS IndexDate
-    FROM PatientConditions pc
-),
-A1cValues AS (
-    SELECT 
-        id.EMPI,
-        id.PatientTurns18,
-        id.FirstEncounterDate,
-        id.LastEncounterDate,
-        id.ConditionUsed,
-        id.LatestDate,
-        id.IndexDate,
-        -- Get the A1c value corresponding to the IndexDate
-        (
-            SELECT TOP 1 a.nval
-            FROM #tmp_A1cElevated a
-            WHERE a.EMPI = id.EMPI AND a.A1cDate = id.IndexDate
-        ) AS A1cValueAtIndexDate
-    FROM IndexDates id
+        am.EMPI,
+        am.A1cDate,
+        am.nval AS A1cValue,
+        ROW_NUMBER() OVER (
+            PARTITION BY am.EMPI 
+            ORDER BY 
+                CASE 
+                    WHEN am.A1cDate <= pc.LatestDate AND am.nval >= 7 THEN 0 
+                    ELSE 1 
+                END,
+                ABS(DATEDIFF(DAY, am.A1cDate, pc.LatestDate))
+        ) AS rn
+    FROM #A1cMeasurements am
+    INNER JOIN #PatientConditions pc ON am.EMPI = pc.EMPI
+    WHERE (am.A1cDate <= pc.LatestDate AND am.nval >= 7) OR 
+          (am.A1cDate > pc.LatestDate AND am.nval >= 7 AND am.A1cDate <= pc.LastEncounterDate)
 )
-
-SELECT * 
+SELECT 
+    pc.EMPI,
+    pc.PatientTurns18,
+    pc.FirstEncounterDate,
+    pc.LastEncounterDate,
+    pc.LatestDate,
+    CASE 
+        WHEN ad.A1cDate IS NOT NULL THEN 
+            CASE 
+                WHEN ad.A1cDate > pc.LatestDate THEN 
+                    CASE 
+                        WHEN ad.A1cDate <= @maxEntryDate AND ad.A1cDate <= pc.LastEncounterDate THEN ad.A1cDate 
+                        ELSE pc.LatestDate 
+                    END
+                ELSE pc.LatestDate 
+            END
+        ELSE pc.LatestDate
+    END AS IndexDate,
+    ad.A1cValue,
+    ad.A1cDate
 INTO #tmp_indexDate
-FROM A1cValues;
+FROM #PatientConditions pc
+LEFT JOIN A1cData ad ON pc.EMPI = ad.EMPI AND ad.rn = 1
+WHERE ad.A1cValue IS NOT NULL --n=76460
 
- --n=90259
---SELECT TOP 50 PERCENT * FROM #tmp_indexDate
+-- Delete 431 rows where IndexDate exceeds @maxEntryDate or LastEncounterDate
+DELETE FROM #tmp_indexDate
+WHERE 
+    (IndexDate > @maxEntryDate) OR 
+    (IndexDate > LastEncounterDate)
+
+SELECT * FROM #tmp_indexDate --n =76029
 
 --------------------------------------------------------------------------------------------------------
 --Additional exclusion criteria
@@ -220,7 +231,7 @@ SELECT
 INTO #tmp_Under75
 FROM #tmp_indexDate id
 INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
-WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=79811
+WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=64614
 
 --Exclude those with unknown gender
 IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
@@ -229,7 +240,7 @@ IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
 SELECT *
 INTO #tmp_studyPop
 FROM #tmp_Under75
-WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=79807
+WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=64611
 --SELECT * FROM #tmp_studyPop
 
 --------------------------------------------------------------------------------------------------------
@@ -239,34 +250,29 @@ WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=79807
 IF OBJECT_ID('tempdb..#A1c12MonthsLaterTable') IS NOT NULL
     DROP TABLE #A1c12MonthsLaterTable;
 
--- Step 1: Identify the first elevated A1c measurement for each patient in #tmp_studyPop using #tmp_A1cElevated
-WITH FirstElevatedA1c AS (
+-- Use A1cValueAtIndexDate from #tmp_indexDate
+WITH InitialA1c AS (
     SELECT 
-        ae.EMPI, 
-        ae.A1cDate AS InitialA1cDate,
-        ae.nval AS InitialA1c,
-        ROW_NUMBER() OVER (PARTITION BY ae.EMPI ORDER BY ae.A1cDate) AS RowNum
-    FROM #tmp_A1cElevated ae
-    INNER JOIN #tmp_studyPop s ON ae.EMPI = s.EMPI
-    WHERE ae.nval >= 7
-    AND ae.A1cDate <= @maxEntryDate -- Ensuring the date is within the study period
+        idx.EMPI,
+        idx.IndexDate AS InitialA1cDate,
+        idx.A1cValue AS InitialA1c
+    FROM #tmp_indexDate idx
 ),
 
--- Step 2: Find the A1c measurement approximately 12 months later
+-- Find the A1c measurement approximately 12 months later
 A1c12MonthsLater AS (
     SELECT 
-        f.EMPI,
-        f.InitialA1cDate,
-        f.InitialA1c,
-        MIN(ca.A1cDate) AS A1cDateAfter12Months,
-        MIN(ca.A1c) AS A1cAfter12Months
-    FROM FirstElevatedA1c f
-    INNER JOIN #CleanedA1cAverages ca ON f.EMPI = ca.EMPI
-        AND ca.A1cDate >= DATEADD(month, 9, f.InitialA1cDate) -- At least 9 months after
-        AND ca.A1cDate <= DATEADD(month, 15, f.InitialA1cDate) -- No more than 15 months after
-    WHERE f.RowNum = 1
-    GROUP BY f.EMPI, f.InitialA1cDate, f.InitialA1c
-)
+        i.EMPI,
+        i.InitialA1cDate,
+        i.InitialA1c,
+        ca.A1cDate AS A1cDateAfter12Months,
+        ca.A1c AS A1cAfter12Months,
+        ROW_NUMBER() OVER (PARTITION BY i.EMPI ORDER BY ABS(DATEDIFF(MONTH, i.InitialA1cDate, ca.A1cDate) - 12)) AS rn
+    FROM InitialA1c i
+    INNER JOIN #CleanedA1cAverages ca ON i.EMPI = ca.EMPI
+    WHERE ca.A1cDate > i.InitialA1cDate
+    AND ca.A1cDate <= DATEADD(MONTH, 15, i.InitialA1cDate)
+) --n=68319
 
 -- Final selection into a temporary table
 SELECT
@@ -277,171 +283,57 @@ SELECT
     a.A1cAfter12Months,
     CASE WHEN a.A1cAfter12Months >= 7 THEN 1 ELSE 0 END AS A1cGreaterThan7
 INTO #A1c12MonthsLaterTable
-FROM A1c12MonthsLater a; --n=45705
---SELECT TOP 50 PERCENT * FROM #A1c12MonthsLaterTable
+FROM A1c12MonthsLater a
+WHERE a.rn = 1;
+
+SELECT * FROM #A1c12MonthsLaterTable; --n=68319
 
 --------------------------------------------------------------------------------------------------------
 --Patient characteristics
 --------------------------------------------------------------------------------------------------------
 
--- Add necessary columns to #A1c12MonthsLaterTable if they don't exist
+-- Add columns to #A1c12MonthsLaterTable if they don't exist
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGender') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoGender varchar(50);
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoFemale') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD demoFemale int;
 IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarital') IS NULL
     ALTER TABLE #A1c12MonthsLaterTable ADD demoMarital varchar(50);
 IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarried') IS NULL
     ALTER TABLE #A1c12MonthsLaterTable ADD demoMarried int;
 IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGovIns') IS NULL
     ALTER TABLE #A1c12MonthsLaterTable ADD demoGovIns int;
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGender') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoGender varchar(50);
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoFemale') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoFemale int;
 IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoEnglish') IS NULL
     ALTER TABLE #A1c12MonthsLaterTable ADD demoEnglish int;
 
--- Create a temporary table for gender updates
-IF OBJECT_ID('tempdb..#tempGenderUpdates') IS NOT NULL
-    DROP TABLE #tempGenderUpdates;
-
-SELECT 
-    a.EMPI, 
-    d.Gender_Legal_Sex AS demoGender,
-    CASE WHEN d.Gender_Legal_Sex = 'Female' THEN 1 ELSE 0 END AS demoFemale
-INTO #tempGenderUpdates
+-- Update demographic data
+UPDATE a
+SET a.demoGender = d.Gender_Legal_Sex,
+    a.demoFemale = CASE WHEN d.Gender_Legal_Sex = 'Female' THEN 1 ELSE 0 END,
+    a.demoEnglish = CASE WHEN d.Language LIKE 'ENG%' THEN 1 ELSE 0 END,
+    a.demoMarital = CASE 
+                        WHEN d.Marital_status IN ('Widow', 'Law', 'Partner', 'Married') THEN 'Married/Partnered'
+                        WHEN d.Marital_status IN ('Separated', 'Divorce') THEN 'Separated'
+                        WHEN d.Marital_status = 'Single' THEN 'Single'
+                        ELSE 'Unknown'
+                    END,
+    a.demoMarried = CASE WHEN d.Marital_status IN ('Married', 'Law', 'Partner') THEN 1 ELSE 0 END
 FROM #A1c12MonthsLaterTable a
-JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=45711
+JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=68319
 
--- Merge the gender data back into #A1c12MonthsLaterTable
-MERGE INTO #A1c12MonthsLaterTable AS Target
-USING #tempGenderUpdates AS Source
-ON Target.EMPI = Source.EMPI
-WHEN MATCHED THEN 
-    UPDATE SET 
-        Target.demoGender = Source.demoGender,
-        Target.demoFemale = Source.demoFemale; --n=45711
-
--- Categorize patient primary language
-IF OBJECT_ID('tempdb..#tmp_demoLanguage') IS NOT NULL
-    DROP TABLE #tmp_demoLanguage;
-
-SELECT
-    #A1c12MonthsLaterTable.EMPI,
-    dem_2_pcp_combined.Language
-INTO #tmp_demoLanguage
-FROM #A1c12MonthsLaterTable
-JOIN dem_2_pcp_combined ON #A1c12MonthsLaterTable.EMPI = dem_2_pcp_combined.EMPI; --n=45711
-
-ALTER TABLE #tmp_demoLanguage
-ADD demoEnglish int;
-
-UPDATE #tmp_demoLanguage
-SET demoEnglish = CASE
-    WHEN Language LIKE 'ENG%' THEN 1
-    ELSE 0
-END;
-
-MERGE INTO #A1c12MonthsLaterTable
-USING #tmp_demoLanguage
-ON #A1c12MonthsLaterTable.EMPI = #tmp_demoLanguage.EMPI
-WHEN MATCHED THEN
-    UPDATE SET #A1c12MonthsLaterTable.demoEnglish = #tmp_demoLanguage.demoEnglish;
-
--- Categorize patient marital status
--- Ensure that #tmp_demoMarital is dropped if it exists
-IF OBJECT_ID('tempdb..#tmp_demoMarital') IS NOT NULL
-    DROP TABLE #tmp_demoMarital;
-
--- Create the #tmp_demoMarital table
-SELECT
-    #A1c12MonthsLaterTable.EMPI,
-    dem_2_pcp_combined.Marital_status
-INTO #tmp_demoMarital
-FROM #A1c12MonthsLaterTable
-JOIN dem_2_pcp_combined ON #A1c12MonthsLaterTable.EMPI = dem_2_pcp_combined.EMPI; --n=45711
-
-ALTER TABLE #tmp_demoMarital
-ADD maritalStatusGroup varchar(50);
-
-UPDATE #tmp_demoMarital
-SET maritalStatusGroup = CASE
-    WHEN Marital_status LIKE '%Widow%' THEN 'Widowed'
-    WHEN Marital_status LIKE '%Law%' THEN 'Married/Partnered'
-    WHEN Marital_status LIKE '%Partner%' THEN 'Married/Partnered'
-    WHEN Marital_status LIKE '%Married%' THEN 'Married/Partnered'
-    WHEN Marital_status LIKE '%Separated%' THEN 'Separated'
-    WHEN Marital_status LIKE '%Divorce%' THEN 'Separated'
-    WHEN Marital_status LIKE '%Single%' THEN 'Single'
-    ELSE 'Unknown'
-END;
-
-MERGE INTO #A1c12MonthsLaterTable
-USING #tmp_demoMarital
-ON #A1c12MonthsLaterTable.EMPI = #tmp_demoMarital.EMPI
-WHEN MATCHED THEN
-    UPDATE SET #A1c12MonthsLaterTable.demoMarital = #tmp_demoMarital.maritalStatusGroup;
-
--- Ensure the #A1c12MonthsLaterTable exists and add demoMarried column if it doesn't exist
-IF OBJECT_ID('#A1c12MonthsLaterTable', 'U') IS NOT NULL
-BEGIN
-    IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarried') IS NULL
-    BEGIN
-        ALTER TABLE #A1c12MonthsLaterTable ADD demoMarried int;
-    END;
-END;
-
--- Now update the demoMarried column
-UPDATE #A1c12MonthsLaterTable
-SET demoMarried = CASE
-    WHEN demoMarital = 'Married/Partnered' THEN 1
-    ELSE 0
-END;
-
-UPDATE #A1c12MonthsLaterTable
-SET demoFemale = 1 WHERE demoGender = 'Female'; --n=45711
-
--- Categorize patient insurance information
-
--- Drop the #tmp_demoInsurance table if it exists
-IF OBJECT_ID('tempdb..#tmp_demoInsurance') IS NOT NULL
-    DROP TABLE #tmp_demoInsurance;
-
--- Create the #tmp_demoInsurance table
-SELECT 
-    a.EMPI, 
-    c.insurance_1, 
-    c.insurance_2, 
-    c.insurance_3
-INTO #tmp_demoInsurance
+-- Update government insurance data
+UPDATE a
+SET a.demoGovIns = CASE 
+                    WHEN c.insurance_1 LIKE '%MEDICARE%' OR c.insurance_2 LIKE '%MEDICARE%' OR c.insurance_3 LIKE '%MEDICARE%' THEN 1
+                    WHEN c.insurance_1 LIKE '%MEDICAID%' OR c.insurance_2 LIKE '%MEDICAID%' OR c.insurance_3 LIKE '%MEDICAID%' THEN 1
+                    WHEN c.insurance_1 LIKE '%MASSHEALTH%' OR c.insurance_2 LIKE '%MASSHEALTH%' OR c.insurance_3 LIKE '%MASSHEALTH%' THEN 1
+                    ELSE 0
+                END
 FROM #A1c12MonthsLaterTable a
-JOIN con_2_pcp_combined c ON a.EMPI = c.EMPI; --n=45711
+JOIN con_2_pcp_combined c ON a.EMPI = c.EMPI;
 
--- Add governmentInsurance column to #tmp_demoInsurance
-ALTER TABLE #tmp_demoInsurance
-ADD governmentInsurance int;
+SELECT * FROM #A1c12MonthsLaterTable; --n=68319
 
--- Update #tmp_demoInsurance with governmentInsurance values
-UPDATE #tmp_demoInsurance
-SET governmentInsurance = 
-    CASE
-        WHEN insurance_1 LIKE '%MEDICARE%' OR
-             insurance_2 LIKE '%MEDICARE%' OR
-             insurance_3 LIKE '%MEDICARE%' THEN 1
-        WHEN insurance_1 LIKE '%MEDICAID%' OR
-             insurance_2 LIKE '%MEDICAID%' OR
-             insurance_3 LIKE '%MEDICAID%' THEN 1
-        WHEN insurance_1 LIKE '%MASSHEALTH%' OR
-             insurance_2 LIKE '%MASSHEALTH%' OR
-             insurance_3 LIKE '%MASSHEALTH%' THEN 1
-        -- Add similar conditions for other government insurances as needed
-        ELSE 0
-    END;
-
--- Merge #tmp_demoInsurance into #A1c12MonthsLaterTable
-MERGE INTO #A1c12MonthsLaterTable AS Target
-USING #tmp_demoInsurance AS Source
-ON Target.EMPI = Source.EMPI
-WHEN MATCHED THEN 
-    UPDATE SET Target.demoGovIns = Source.governmentInsurance;
---SELECT * FROM #A1c12MonthsLaterTable
 --------------------------------------------------------------------------------------------------------
 --Create dataset
 --------------------------------------------------------------------------------------------------------
