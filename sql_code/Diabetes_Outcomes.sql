@@ -214,7 +214,11 @@ WHERE
     (IndexDate > LastEncounterDate)
 
 SELECT * FROM #tmp_indexDate --n =76029
-
+--WHERE A1cDate = LatestDate --n = 3925
+--WHERE A1cDate > LatestDate --n = 44223
+--WHERE A1cDate < LatestDate --n = 27881
+--WHERE A1cDate < IndexDate --n = 27881
+--WHERE A1cDate = IndexDate --n = 48148
 --------------------------------------------------------------------------------------------------------
 --Additional exclusion criteria
 --------------------------------------------------------------------------------------------------------
@@ -254,7 +258,8 @@ IF OBJECT_ID('tempdb..#A1c12MonthsLaterTable') IS NOT NULL
 WITH InitialA1c AS (
     SELECT 
         idx.EMPI,
-        idx.IndexDate AS InitialA1cDate,
+        idx.IndexDate,
+        idx.A1cDate AS InitialA1cDate,
         idx.A1cValue AS InitialA1c
     FROM #tmp_indexDate idx
 ),
@@ -263,6 +268,7 @@ WITH InitialA1c AS (
 A1c12MonthsLater AS (
     SELECT 
         i.EMPI,
+        i.IndexDate,
         i.InitialA1cDate,
         i.InitialA1c,
         ca.A1cDate AS A1cDateAfter12Months,
@@ -277,6 +283,7 @@ A1c12MonthsLater AS (
 -- Final selection into a temporary table
 SELECT
     a.EMPI,
+    a.IndexDate,
     a.InitialA1cDate,
     a.InitialA1c,
     a.A1cDateAfter12Months,
@@ -344,41 +351,36 @@ IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
     DROP TABLE dbo.DiabetesOutcomes;
 
 -- Create the DiabetesOutcomes table with a new study-specific ID
+-- Keep EMPI for now
 SELECT 
     ROW_NUMBER() OVER (ORDER BY a12.EMPI) AS newID, -- Generate a unique identifier
-    a12.*, -- Select all columns from #A1c12MonthsLaterTable
-    id.IndexDate AS ElevatedA1cDate, -- IndexDate as the date of the first elevated A1c measurement
+    a12.EMPI,
+    a12.InitialA1c,
+    a12.A1cAfter12Months,
+    a12.A1cGreaterThan7,
+    a12.demoFemale,
+    a12.demoMarried,
+    a12.demoGovIns,
+    a12.demoEnglish,
+    DATEDIFF(DAY, id.IndexDate, a12.InitialA1cDate) AS DaysFromIndexToInitialA1cDate,
+    DATEDIFF(DAY, id.IndexDate, a12.A1cDateAfter12Months) AS DaysFromIndexToA1cDateAfter12Months,
+    DATEDIFF(DAY, id.IndexDate, id.FirstEncounterDate) AS DaysFromIndexToFirstEncounterDate,
+    DATEDIFF(DAY, id.IndexDate, id.LastEncounterDate) AS DaysFromIndexToLastEncounterDate,
+    DATEDIFF(DAY, id.IndexDate, id.LatestDate) AS DaysFromIndexToLatestDate,
+    DATEDIFF(DAY, id.IndexDate, id.PatientTurns18) AS DaysFromIndexToPatientTurns18,
+   -- id.IndexDate, -- Keeping the original IndexDate for reference
     sp.AgeYears, -- AgeYears from #tmp_studyPop
     ppc.NumberEncounters -- NumberEncounters from #tmp_PrimCarePatients
 INTO dbo.DiabetesOutcomes
 FROM #A1c12MonthsLaterTable a12
 INNER JOIN #tmp_indexDate id ON a12.EMPI = id.EMPI
 INNER JOIN #tmp_studyPop sp ON a12.EMPI = sp.EMPI
-INNER JOIN #tmp_PrimCarePatients ppc ON a12.EMPI = ppc.EMPI; --n=45711
---SELECT TOP 100 * FROM dbo.DiabetesOutcomes;
+INNER JOIN #tmp_PrimCarePatients ppc ON a12.EMPI = ppc.EMPI;--n=55667
+SELECT * FROM dbo.DiabetesOutcomes;
 
-/*
--- Check cases where InitialA1cDate is earlier than ElevatedA1cDate
-SELECT 
-    EMPI,
-    InitialA1cDate,
-    ElevatedA1cDate,
-    InitialA1c,
-    A1cDateAfter12Months,
-    A1cAfter12Months,
-    A1cGreaterThan7,
-    AgeYears,
-    NumberEncounters
-FROM dbo.DiabetesOutcomes
-WHERE InitialA1cDate < ElevatedA1cDate;
 
--- Count how many such cases exist
-SELECT COUNT(*)
-FROM dbo.DiabetesOutcomes
-WHERE InitialA1cDate < ElevatedA1cDate;
-*/
 -- Merge columns from selected RDPR tables into DiabetesOutcomes
-
+ /*
 IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
     DROP TABLE dbo.DiabetesOutcomes;
 
@@ -572,3 +574,5 @@ LEFT JOIN (
 --LEFT JOIN ClinicSpecialtiesLMR cs ON a12.EMPI = cs.EMPI
 --LEFT JOIN noteHeadersEpic nhe ON a12.EMPI = nhe.EMPI
 --LEFT JOIN noteHeadersLMR nhl ON a12.EMPI = nhl.EMPI;
+
+ */
