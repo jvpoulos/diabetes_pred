@@ -219,33 +219,6 @@ SELECT * FROM #tmp_indexDate --n =76029
 --WHERE A1cDate < LatestDate --n = 27881
 --WHERE A1cDate < IndexDate --n = 27881
 --WHERE A1cDate = IndexDate --n = 48148
---------------------------------------------------------------------------------------------------------
---Additional exclusion criteria
---------------------------------------------------------------------------------------------------------
-
---Exclude those whose age is < 18 years or > 75 years
-IF OBJECT_ID('tempdb..#tmp_Under75') IS NOT NULL
-    DROP TABLE #tmp_Under75;
-
-SELECT 
-    id.EMPI,
-    id.IndexDate,
-    DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) AS AgeYears,
-    d.Gender_Legal_Sex
-INTO #tmp_Under75
-FROM #tmp_indexDate id
-INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
-WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=64614
-
---Exclude those with unknown gender
-IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
-    DROP TABLE #tmp_studyPop;
-
-SELECT *
-INTO #tmp_studyPop
-FROM #tmp_Under75
-WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=64611
---SELECT * FROM #tmp_studyPop
 
 --------------------------------------------------------------------------------------------------------
 --Identify hyperglycemic periods
@@ -278,7 +251,7 @@ A1c12MonthsLater AS (
     INNER JOIN #CleanedA1cAverages ca ON i.EMPI = ca.EMPI
     WHERE ca.A1cDate > i.InitialA1cDate
     AND ca.A1cDate <= DATEADD(MONTH, 15, i.InitialA1cDate)
-) --n=68319
+) --n=65327
 
 -- Final selection into a temporary table
 SELECT
@@ -293,44 +266,72 @@ INTO #A1c12MonthsLaterTable
 FROM A1c12MonthsLater a
 WHERE a.rn = 1;
 
-SELECT * FROM #A1c12MonthsLaterTable; --n=68319
+SELECT * FROM #A1c12MonthsLaterTable; --n=65327
+--------------------------------------------------------------------------------------------------------
+--Additional exclusion criteria
+--------------------------------------------------------------------------------------------------------
+
+--Exclude those whose age is < 18 years or > 75 years
+IF OBJECT_ID('tempdb..#tmp_Under75') IS NOT NULL
+    DROP TABLE #tmp_Under75;
+
+SELECT 
+    id.EMPI,
+    id.IndexDate,
+    DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) AS AgeYears, -- age at IndexDate
+    d.Gender_Legal_Sex,
+    YEAR(d.Date_of_Birth) AS BirthYear -- Extracts the birth year
+INTO #tmp_Under75
+FROM #tmp_indexDate id
+INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
+WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=64614
+
+--Exclude those with unknown gender
+IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
+    DROP TABLE #tmp_studyPop;
+
+SELECT *
+INTO #tmp_studyPop
+FROM #tmp_Under75
+WHERE Gender_Legal_Sex IN ('Female', 'Male'); --n=64611
+--SELECT * FROM #tmp_studyPop
 
 --------------------------------------------------------------------------------------------------------
 --Patient characteristics
 --------------------------------------------------------------------------------------------------------
 
 -- Add columns to #A1c12MonthsLaterTable if they don't exist
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGender') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoGender varchar(50);
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoFemale') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoFemale int;
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarital') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoMarital varchar(50);
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoMarried') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoMarried int;
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoGovIns') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoGovIns int;
-IF COL_LENGTH('#A1c12MonthsLaterTable', 'demoEnglish') IS NULL
-    ALTER TABLE #A1c12MonthsLaterTable ADD demoEnglish int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'Gender') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD Gender varchar(50);
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'Female') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD Female int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'Marital') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD Marital varchar(50);
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'Married') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD Married int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'GovIns') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD GovIns int;
+IF COL_LENGTH('#A1c12MonthsLaterTable', 'English') IS NULL
+    ALTER TABLE #A1c12MonthsLaterTable ADD English int;
 
 -- Update demographic data
 UPDATE a
-SET a.demoGender = d.Gender_Legal_Sex,
-    a.demoFemale = CASE WHEN d.Gender_Legal_Sex = 'Female' THEN 1 ELSE 0 END,
-    a.demoEnglish = CASE WHEN d.Language LIKE 'ENG%' THEN 1 ELSE 0 END,
-    a.demoMarital = CASE 
+SET a.Gender = d.Gender_Legal_Sex,
+    a.Female = CASE WHEN d.Gender_Legal_Sex = 'Female' THEN 1 ELSE 0 END,
+    a.English = CASE WHEN d.Language LIKE 'ENG%' THEN 1 ELSE 0 END,
+    a.Marital = CASE 
                         WHEN d.Marital_status IN ('Widow', 'Law', 'Partner', 'Married') THEN 'Married/Partnered'
                         WHEN d.Marital_status IN ('Separated', 'Divorce') THEN 'Separated'
                         WHEN d.Marital_status = 'Single' THEN 'Single'
                         ELSE 'Unknown'
                     END,
-    a.demoMarried = CASE WHEN d.Marital_status IN ('Married', 'Law', 'Partner') THEN 1 ELSE 0 END
+    a.Married = CASE WHEN d.Marital_status IN ('Married', 'Law', 'Partner') THEN 1 ELSE 0 END
 FROM #A1c12MonthsLaterTable a
-JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=68319
+JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=65327
 
 -- Update government insurance data
 UPDATE a
-SET a.demoGovIns = CASE 
+SET a.GovIns = CASE 
                     WHEN c.insurance_1 LIKE '%MEDICARE%' OR c.insurance_2 LIKE '%MEDICARE%' OR c.insurance_3 LIKE '%MEDICARE%' THEN 1
                     WHEN c.insurance_1 LIKE '%MEDICAID%' OR c.insurance_2 LIKE '%MEDICAID%' OR c.insurance_3 LIKE '%MEDICAID%' THEN 1
                     WHEN c.insurance_1 LIKE '%MASSHEALTH%' OR c.insurance_2 LIKE '%MASSHEALTH%' OR c.insurance_3 LIKE '%MASSHEALTH%' THEN 1
@@ -339,29 +340,81 @@ SET a.demoGovIns = CASE
 FROM #A1c12MonthsLaterTable a
 JOIN con_2_pcp_combined c ON a.EMPI = c.EMPI;
 
-SELECT * FROM #A1c12MonthsLaterTable; --n=68319
+SELECT * FROM #A1c12MonthsLaterTable; --n=65327
+
+--------------------------------------------------------------------------------------------------------
+--SDI based on zip code
+--------------------------------------------------------------------------------------------------------
+-- Map SDI to zip code from contact table
+
+IF OBJECT_ID('tempdb..#CleanedZipCodes') IS NOT NULL
+    DROP TABLE #CleanedZipCodes;
+
+-- Clean Zip codes
+SELECT 
+    EMPI, 
+    CASE 
+        -- Add leading zeros if less than 5 digits
+        WHEN LEN(Zip) < 5 THEN RIGHT(CONCAT('00000', Zip), 5)
+        -- Trim to first 5 digits if more than 5 digits
+        ELSE LEFT(Zip, 5)
+    END AS CleanedZip
+INTO #CleanedZipCodes
+FROM con_2_pcp_combined
+WHERE EMPI IN (SELECT EMPI FROM #tmp_studyPop);
+--SELECT * FROM #CleanedZipCodes; --n=64611
+
+-- Map cleaned Zip codes to ZCTA5_FIPS and SDI score
+
+IF OBJECT_ID('tempdb..#MappedZipToSDI') IS NOT NULL
+    DROP TABLE #MappedZipToSDI;
+
+SELECT 
+    cz.EMPI, 
+    cz.CleanedZip, 
+    zcta.SDI_score
+INTO #MappedZipToSDI
+FROM #CleanedZipCodes cz
+INNER JOIN dbo.rgcsdi_2015_2019_zcta zcta ON cz.CleanedZip = zcta.ZCTA5_FIPS;
+--SELECT * FROM #MappedZipToSDI; --n=61589
+
+--------------------------------------------------------------------------------------------------------
+--Additional variables from Demographics table
+--------------------------------------------------------------------------------------------------------
+
+IF OBJECT_ID('tempdb..#VeteranStatus') IS NOT NULL
+    DROP TABLE #VeteranStatus;
+
+SELECT 
+    d.EMPI,
+    CASE WHEN d.Is_a_veteran = 'Yes' THEN 1 ELSE 0 END AS Veteran
+INTO #VeteranStatus
+FROM dem_2_pcp_combined d
+INNER JOIN #tmp_studyPop sp ON d.EMPI = sp.EMPI; --n 64611
+--SELECT * FROM #VeteranStatus;
 
 --------------------------------------------------------------------------------------------------------
 --Create dataset
 --------------------------------------------------------------------------------------------------------
---initialize the DiabetesOutcomes table directly from #A1c12MonthsLaterTable
---include relevant columns from #tmp_studyPop and #tmp_PrimCarePatients
 
+--initialize the DiabetesOutcomes table directly from #A1c12MonthsLaterTable
+--include relevant columns from #tmp_studyPop, #tmp_PrimCarePatients
 IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
     DROP TABLE dbo.DiabetesOutcomes;
 
 -- Create the DiabetesOutcomes table with a new study-specific ID
 -- Keep EMPI for now
 SELECT 
-    ROW_NUMBER() OVER (ORDER BY a12.EMPI) AS newID, -- Generate a unique identifier
+    ROW_NUMBER() OVER (ORDER BY a12.EMPI) AS studyID, -- Generate a unique identifier
     a12.EMPI,
+    a12.IndexDate,
     a12.InitialA1c,
     a12.A1cAfter12Months,
     a12.A1cGreaterThan7,
-    a12.demoFemale,
-    a12.demoMarried,
-    a12.demoGovIns,
-    a12.demoEnglish,
+    a12.Female,
+    a12.Married,
+    a12.GovIns,
+    a12.English,
     DATEDIFF(DAY, id.IndexDate, a12.InitialA1cDate) AS DaysFromIndexToInitialA1cDate,
     DATEDIFF(DAY, id.IndexDate, a12.A1cDateAfter12Months) AS DaysFromIndexToA1cDateAfter12Months,
     DATEDIFF(DAY, id.IndexDate, id.FirstEncounterDate) AS DaysFromIndexToFirstEncounterDate,
@@ -370,6 +423,7 @@ SELECT
     DATEDIFF(DAY, id.IndexDate, id.PatientTurns18) AS DaysFromIndexToPatientTurns18,
    -- id.IndexDate, -- Keeping the original IndexDate for reference
     sp.AgeYears, -- AgeYears from #tmp_studyPop
+    sp.BirthYear, -- AgeYears from #tmp_studyPop
     ppc.NumberEncounters -- NumberEncounters from #tmp_PrimCarePatients
 INTO dbo.DiabetesOutcomes
 FROM #A1c12MonthsLaterTable a12
@@ -378,201 +432,47 @@ INNER JOIN #tmp_studyPop sp ON a12.EMPI = sp.EMPI
 INNER JOIN #tmp_PrimCarePatients ppc ON a12.EMPI = ppc.EMPI;--n=55667
 SELECT * FROM dbo.DiabetesOutcomes;
 
+-- Add the SDI_score column to DiabetesOutcomes if it doesn't exist
+IF COL_LENGTH('dbo.DiabetesOutcomes', 'SDI_score') IS NULL
+    ALTER TABLE dbo.DiabetesOutcomes ADD SDI_score FLOAT;
 
--- Merge columns from selected RDPR tables into DiabetesOutcomes
- /*
-IF OBJECT_ID('dbo.DiabetesOutcomes', 'U') IS NOT NULL
-    DROP TABLE dbo.DiabetesOutcomes;
+-- Update DiabetesOutcomes with SDI_score from #MappedZipToSDI
+UPDATE do
+SET do.SDI_score = mzd.SDI_score
+FROM dbo.DiabetesOutcomes do
+INNER JOIN #MappedZipToSDI mzd ON do.EMPI = mzd.EMPI; --n=53060 (2607 missing)
+--SELECT * FROM dbo.DiabetesOutcomes;
 
--- Create the DiabetesOutcomes table
-SELECT 
-    a12.EMPI AS Dataset_EMPI,
-    a12.InitialA1cDate AS ElevatedA1cDate,
-    id.LatestIndexDate AS IndexDate,
-    a12.A1cDateAfter12Months,
-    a12.InitialA1c,
-    a12.A1cAfter12Months, --n=46157
+-- Add the Veteran column to DiabetesOutcomes if it doesn't exist
+IF COL_LENGTH('dbo.DiabetesOutcomes', 'Veteran') IS NULL
+    ALTER TABLE dbo.DiabetesOutcomes ADD Veteran FLOAT;
 
-    /*
-    -- Columns from all_2_pcp_combined with Allp_ prefix
-    allp.EPIC_PMRN AS Allp_EPIC_PMRN,
-    allp.MRN_Type AS Allp_MRN_Type,
-    allp.MRN AS Allp_MRN,
-    allp.System AS Allp_System,
-    allp.Noted_Date AS Allp_Noted_Date,
-    allp.Allergen AS Allp_Allergen,
-    allp.Allergen_Type AS Allp_Allergen_Type,
-    allp.Allergen_Code AS Allp_Allergen_Code,
-    allp.Reactions AS Allp_Reactions,
-    allp.Severity AS Allp_Severity,
-    allp.Reaction_Type AS Allp_Reaction_Type,
-    allp.Comments AS Allp_Comments,
-    allp.Status AS Allp_Status,
-    allp.Deleted_Reason_Comments AS Allp_Deleted_Reason_Comments,
-    */
+UPDATE do
+SET do.Veteran = vs.Veteran
+FROM dbo.DiabetesOutcomes do
+INNER JOIN #VeteranStatus vs ON do.EMPI = vs.EMPI;
+SELECT * FROM dbo.DiabetesOutcomes; --n=55667
 
-    -- Columns from con_2_pcp_combined with Conp_ prefix
-    conp.EPIC_PMRN AS Conp_EPIC_PMRN,
-    conp.MRN_Type AS Conp_MRN_Type,
-    conp.MRN AS Conp_MRN,
-    conp.Last_Name AS Conp_Last_Name,
-    conp.First_Name AS Conp_First_Name,
-    conp.Middle_Name AS Conp_Middle_Name,
-    conp.Research_Invitations AS Conp_Research_Invitations,
-    conp.Address1 AS Conp_Address1,
-    conp.Address2 AS Conp_Address2,
-    conp.City AS Conp_City,
-    conp.State AS Conp_State,
-    conp.Zip AS Conp_Zip,
-    conp.Country AS Conp_Country,
-    conp.Home_Phone AS Conp_Home_Phone,
-    conp.Day_Phone AS Conp_Day_Phone,
-    conp.SSN AS Conp_SSN,
-    conp.VIP AS Conp_VIP,
-    conp.Previous_Name AS Conp_Previous_Name,
-    conp.Patient_ID_List AS Conp_Patient_ID_List,
-    conp.Insurance_1 AS Conp_Insurance_1,
-    conp.Insurance_2 AS Conp_Insurance_2,
-    conp.Insurance_3 AS Conp_Insurance_3,
-    conp.Primary_Care_Physician AS Conp_Primary_Care_Physician,
-    conp.Resident_Primary_Care_Physician AS Conp_Resident_Primary_Care_Physician,
-    
-    -- Columns from dem_2_pcp_combined with Demp_ prefix
-    demp.EPIC_PMRN AS Demp_EPIC_PMRN,
-    demp.MRN_Type AS Demp_MRN_Type,
-    demp.MRN AS Demp_MRN,
-    demp.Gender_Legal_Sex AS Demp_Gender_Legal_Sex,
-    demp.Date_of_Birth AS Demp_Date_of_Birth,
-    demp.Age AS Demp_Age,
-    demp.Sex_At_Birth AS Demp_Sex_At_Birth,
-    demp.Gender_Identity AS Demp_Gender_Identity,
-    demp.Language AS Demp_Language,
-    demp.Language_group AS Demp_Language_group,
-    demp.Race1 AS Demp_Race1,
-    demp.Race2 AS Demp_Race2,
-    demp.Race_Group AS Demp_Race_Group,
-    demp.Ethnic_Group AS Demp_Ethnic_Group,
-    demp.Marital_status AS Demp_Marital_status,
-    demp.Religion AS Demp_Religion,
-    demp.Is_a_veteran AS Demp_Is_a_veteran,
-    demp.Zip_code AS Demp_Zip_code,
-    demp.Country AS Demp_Country,
-    demp.Vital_status AS Demp_Vital_status,
-    demp.Date_Of_Death AS Demp_Date_Of_Death
+--------------------------------------------------------------------------------------------------------
+--Preprocess diagnoses table (export to file)
+--------------------------------------------------------------------------------------------------------
 
-    /*
-    -- Columns from dia_2_pcp_combined with Diap_ prefix
-    diap.EPIC_PMRN AS Diap_EPIC_PMRN,
-    diap.MRN_Type AS Diap_MRN_Type,
-    diap.MRN AS Diap_MRN,
-    diap.Date AS Diap_Date,
-    diap.Diagnosis_Name AS Diap_Diagnosis_Name,
-    diap.Code_Type AS Diap_Code_Type,
-    diap.Code AS Diap_Code,
-    diap.Diagnosis_Flag AS Diap_Diagnosis_Flag,
-    diap.Provider AS Diap_Provider,
-    diap.Clinic AS Diap_Clinic,
-    diap.Hospital AS Diap_Hospital,
-    diap.Inpatient_Outpatient AS Diap_Inpatient_Outpatient,
-    diap.Encounter_number AS Diap_Encounter_number
+IF OBJECT_ID('dbo.Diagnoses', 'U') IS NOT NULL
+    DROP TABLE dbo.Diagnoses;
 
-    -- Columns from enc_2_pcp_combined with Encp_ prefix
-    encp.EPIC_PMRN AS Encp_EPIC_PMRN,
-    encp.MRN_Type AS Encp_MRN_Type,
-    encp.MRN AS Encp_MRN,
-    encp.Encounter_number AS Encp_Encounter_number,
-    encp.Encounter_Status AS Encp_Encounter_Status,
-    encp.Hospital AS Encp_Hospital,
-    encp.Inpatient_Outpatient AS Encp_Inpatient_Outpatient,
-    encp.Service_Line AS Encp_Service_Line,
-    encp.Attending_MD AS Encp_Attending_MD,
-    encp.Admit_Date AS Encp_Admit_Date,
-    encp.Discharge_Date AS Encp_Discharge_Date,
-    encp.LOS_Days AS Encp_LOS_Days,
-    encp.Clinic_Name AS Encp_Clinic_Name,
-    encp.Admit_Source AS Encp_Admit_Source,
-    encp.Discharge_Disposition AS Encp_Discharge_Disposition,
-    encp.Payor AS Encp_Payor,
-    encp.Admitting_Diagnosis AS Encp_Admitting_Diagnosis,
-    encp.Principal_Diagnosis AS Encp_Principal_Diagnosis,
-    encp.Diagnosis_1 AS Encp_Diagnosis_1,
-    encp.Diagnosis_2 AS Encp_Diagnosis_2,
-    encp.Diagnosis_3 AS Encp_Diagnosis_3,
-    encp.Diagnosis_4 AS Encp_Diagnosis_4,
-    encp.Diagnosis_5 AS Encp_Diagnosis_5,
-    encp.Diagnosis_6 AS Encp_Diagnosis_6,
-    encp.Diagnosis_7 AS Encp_Diagnosis_7,
-    encp.Diagnosis_8 AS Encp_Diagnosis_8,
-    encp.Diagnosis_9 AS Encp_Diagnosis_9,
-    encp.Diagnosis_10 AS Encp_Diagnosis_10,
-    encp.DRG AS Encp_DRG,
-    encp.Patient_Type AS Encp_Patient_Type,
-    encp.Referrer_Discipline AS Encp_Referrer_Discipline,
-
-    -- Columns from phy_2_pcp_combined with Phyp_ prefix
-    phyp.EPIC_PMRN AS Phyp_EPIC_PMRN,
-    phyp.MRN_Type AS Phyp_MRN_Type,
-    phyp.MRN AS Phyp_MRN,
-    phyp.Date AS Phyp_Date,
-    phyp.Concept_Name AS Phyp_Concept_Name,
-    phyp.Code_Type AS Phyp_Code_Type,
-    phyp.Code AS Phyp_Code,
-    phyp.Result AS Phyp_Result,
-    phyp.Units AS Phyp_Units,
-    phyp.Provider AS Phyp_Provider,
-    phyp.Clinic AS Phyp_Clinic,
-    phyp.Hospital AS Phyp_Hospital,
-    phyp.Inpatient_Outpatient AS Phyp_Inpatient_Outpatient,
-    phyp.Encounter_number AS Phyp_Encounter_number,
-
-    -- Columns from prc_2_pcp_combined with Prcp_ prefix
-    prcp.EPIC_PMRN AS Prcp_EPIC_PMRN,
-    prcp.MRN_Type AS Prcp_MRN_Type,
-    prcp.MRN AS Prcp_MRN,
-    prcp.Date AS Prcp_Date,
-    prcp.Procedure_Name AS Prcp_Procedure_Name,
-    prcp.Code_Type AS Prcp_Code_Type,
-    prcp.Code AS Prcp_Code,
-    prcp.Procedure_Flag AS Prcp_Procedure_Flag,
-    prcp.Quantity AS Prcp_Quantity,
-    prcp.Provider AS Prcp_Provider,
-    prcp.Clinic AS Prcp_Clinic,
-    prcp.Hospital AS Prcp_Hospital,
-    prcp.Inpatient_Outpatient AS Prcp_Inpatient_Outpatient,
-    prcp.Encounter_number AS Prcp_Encounter_number
-    */
-   -- mrnp.*, 
- --   labse.*, 
-  --  labsl.*, 
-  --  labsa.*, 
- --   medse.*, 
- --   medsl.*, 
- --   cs.*, 
- --   nhe.*, 
---    nhl.*
-INTO dbo.DiabetesOutcomes
-FROM #A1c12MonthsLaterTable a12
-LEFT JOIN con_2_pcp_combined conp ON a12.EMPI = conp.EMPI
-LEFT JOIN dem_2_pcp_combined demp ON a12.EMPI = demp.EMPI
-LEFT JOIN (
-    SELECT 
-        EMPI,
-        MAX(IndexDate) AS LatestIndexDate
-    FROM #tmp_indexDate
-    GROUP BY EMPI
-) id ON a12.EMPI = id.EMPI; --n=46157
---LEFT JOIN dia_2_pcp_combined diap ON a12.EMPI = diap.EMPI
---LEFT JOIN enc_2_pcp_combined encp ON a12.EMPI = encp.EMPI
---LEFT JOIN phy_2_pcp_combined phyp ON a12.EMPI = phyp.EMPI
---LEFT JOIN prc_2_pcp_combined prcp ON a12.EMPI = prcp.EMPI
---LEFT JOIN mrn_2_pcp_combined mrnp ON a12.EMPI = mrnp.EMPI
---LEFT JOIN labsEPIC labse ON a12.EMPI = labse.EMPI
---LEFT JOIN labsLMR labsl ON a12.EMPI = labsl.EMPI
---LEFT JOIN labsLMRArchive labsa ON a12.EMPI = labsa.EMPI
---LEFT JOIN medsEpic medse ON a12.EMPI = medse.EMPI
---LEFT JOIN medsLMR medsl ON a12.EMPI = medsl.EMPI
---LEFT JOIN ClinicSpecialtiesLMR cs ON a12.EMPI = cs.EMPI
---LEFT JOIN noteHeadersEpic nhe ON a12.EMPI = nhe.EMPI
---LEFT JOIN noteHeadersLMR nhl ON a12.EMPI = nhl.EMPI;
-
- */
+SELECT
+    dia.EMPI,
+    dia.Date,
+    dia.Code,
+    dia.Code_Type,
+    do.IndexDate,
+    CASE WHEN dia.Date <= do.IndexDate THEN 1 ELSE 0 END AS DiagnosisBeforeOrOnIndexDate,
+    CASE 
+        WHEN CHARINDEX('.', dia.Code) > 0 THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) + 1) 
+        ELSE dia.Code 
+    END + '_' + CASE WHEN dia.Code_Type = 'ICD9' THEN '9' WHEN dia.Code_Type = 'ICD10' THEN '10' ELSE '' END AS CodeWithType
+INTO Diagnoses
+FROM dia_2_pcp_combined dia
+INNER JOIN DiabetesOutcomes do ON dia.EMPI = do.EMPI
+WHERE dia.Date BETWEEN @minDate AND @maxDate; --n=59856859
+--SELECT TOP 100 * FROM Diagnoses; 

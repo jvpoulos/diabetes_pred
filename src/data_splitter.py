@@ -26,9 +26,9 @@ print("Training set size:", train_df.shape[0])
 print("Validation set size:", validation_df.shape[0])
 print("Test set size:", test_df.shape[0])
 
-# # Print column names
-# print("Training set column Names (preprocessed):")
-# print(train_df.columns.tolist())
+# Print column names
+print("Training set column Names (preprocessed):")
+print(train_df.columns.tolist())
 
 # Convert the DataFrames back to tensors for PyTorch processing
 train_dataset = TensorDataset(torch.tensor(train_df.values, dtype=torch.float32))

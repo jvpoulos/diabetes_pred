@@ -1,5 +1,6 @@
 import torch
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
@@ -8,8 +9,8 @@ import json
 with open('column_names.json', 'r') as file:
     column_names = json.load(file)
 
-with open('numeric_columns.json', 'r') as file:
-    numeric_columns = json.load(file) # ['Dataset_EMPI', 'InitialA1c', 'Demp_Age']
+with open('columns_with_missing_values.json', 'r') as file:
+    columns_with_missing_values = json.load(file) 
 
 with open('categorical_columns.json', 'r') as file:
     categorical_columns = json.load(file)  
@@ -24,33 +25,26 @@ df_train = pd.DataFrame(loaded_train_dataset.tensors[0].numpy(), columns=column_
 df_validation = pd.DataFrame(loaded_validation_dataset.tensors[0].numpy(), columns=column_names)
 df_test = pd.DataFrame(loaded_test_dataset.tensors[0].numpy(), columns=column_names)
 
-#print("Training set column Names (preprocessed):")
-#print(df_train.columns.tolist())
+print("Training set column Names (preprocessed):")
+print(df_train.columns.tolist())
 
-# Removing 'Dataset_EMPI' from the numeric list
-numeric_columns = [col for col in numeric_columns if col != 'Dataset_EMPI']
+# Normalize specified numeric columns in df_outcomes using the Min-Max scaling approach. 
+# This method is chosen because it handles negative and zero values well, scaling the data to a [0, 1] range.
 
-# Removing 'Dataset_EMPI' from the list
-numeric_columns = [col for col in numeric_columns if col != 'Dataset_EMPI']
+columns_to_normalize = ['InitialA1c', 'A1cAfter12Months', 'DaysFromIndexToInitialA1cDate', 
+                        'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 
+                        'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 
+                        'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 
+                        'NumberEncounters', 'SDI_score']
 
-# Identify missing values for numeric columns (denoted by -1)
-if numeric_columns:  # Check if there are any numeric columns
-    numeric_missing_rate = df_train[numeric_columns].apply(lambda x: (x == -1).mean())
+scaler = MinMaxScaler()
 
-    # Plot and save the missing rate for numeric features
-    if not numeric_missing_rate.empty:
-        plt.figure(figsize=(15, 8))
-        sns.barplot(x=numeric_missing_rate.index, y=numeric_missing_rate.values)
-        plt.title("Missing Rate per Numeric Feature in Training Set")
-        plt.xlabel("Feature")
-        plt.ylabel("Missing Rate")
-        plt.xticks(rotation=90)
-        plt.tight_layout()
-        plt.savefig("numeric_missing_rate_plot.png")
-    else:
-        print("No numeric columns to plot missing rate for.")
-else:
-    print("No numeric columns found in df_train.")
+# Fit on training data
+df_train[columns_to_normalize] = scaler.fit_transform(df_train[columns_to_normalize])
+
+# Transform validation and test data
+df_validation[columns_to_normalize] = scaler.transform(df_validation[columns_to_normalize])
+df_test[columns_to_normalize] = scaler.transform(df_test[columns_to_normalize])
 
 # Identify one-hot encoded columns representing missing values (with _-1 in column name)
 one_hot_missing_columns = [col for col in df_train.columns if '-1' in str(col)] # # convert each column name to string before checking for '-1' substring

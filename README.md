@@ -16,10 +16,13 @@ GPU: GeForce RTX 2080
 ## Code Files in `src/`
 
 - `data_loader.py`
-	- Loads and merges data from CSV files. Preprocesses merged data. Creates additional features from provider notes using NLP methods; converts the processed data into a PyTorch Tensor, and saves it to file.
+	- Loads and merges data from .txt files. Preprocesses merged data. Converts the processed data into a PyTorch Tensor, and saves it to file.
 
 - `data_splitter.py`
 	- Randomly splits the processed dataset into training (70%), validation (20%), and test (10%) sets. Saves the split datasets to disk.
+
+- `data_preprocessor.py`
+	- Further preprocesses the datasets by applying feature selection techniques and visualizes the extent of sparsity in the training set.
 
 - `train.py`
 	- Trains deep learning models, supporting LSTM with Attention and Temporal Convolutional Neural Network (TCN). Includes 5-fold cross-validation and saves the best model.
@@ -59,19 +62,19 @@ $ pip3 install -r requirements.txt
 
 ## Run the code
 
-1. Load and merge the data. Preprocess the data and convert to PyTorch Tensor.
+1. Load and merge data from .txt files. Preprocess the data and convert the merge dataset to PyTorch Tensor:
 
 ```bash
 $ python3 src/data_loader.py
 ```
 
-2. Split the preprocessed dataset into training, validation, and test sets in a 70-20-10 ratio:
+2. Split the dataset into training, validation, and test sets in a 70-20-10 ratio:
 
 ```bash
 $ python3 src/data_splitter.py
 ```
 
-3. Loads the PyTorch tensor and further preprocess the data by applying feature selection techniques:
+3. Further preprocess the datasets by applying feature selection techniques and visualize the extent of sparsity:
 
 ```bash
 $ python3 src/data_preprocessor.py
