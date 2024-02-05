@@ -365,6 +365,8 @@ WHERE EMPI IN (SELECT EMPI FROM #tmp_studyPop);
 --SELECT * FROM #CleanedZipCodes; --n=64611
 
 -- Map cleaned Zip codes to ZCTA5_FIPS and SDI score
+--1. The #CleanedZipCodes table is joined with the ZIPCodetoZCTACrosswalk2022UDS using the cleaned zip codes.
+--2. The ZIPCodetoZCTACrosswalk2022UDS is then joined with rgcsdi_2015_2019_zcta to bring in the SDI score, using the ZCTA codes matched from the crosswalk table.
 
 IF OBJECT_ID('tempdb..#MappedZipToSDI') IS NOT NULL
     DROP TABLE #MappedZipToSDI;
@@ -372,11 +374,13 @@ IF OBJECT_ID('tempdb..#MappedZipToSDI') IS NOT NULL
 SELECT 
     cz.EMPI, 
     cz.CleanedZip, 
-    zcta.SDI_score
+    rz.SDI_score
 INTO #MappedZipToSDI
 FROM #CleanedZipCodes cz
-INNER JOIN dbo.rgcsdi_2015_2019_zcta zcta ON cz.CleanedZip = zcta.ZCTA5_FIPS;
---SELECT * FROM #MappedZipToSDI; --n=61589
+INNER JOIN ZIPCodetoZCTACrosswalk2022UDS crosswalk ON cz.CleanedZip = crosswalk.ZIP_CODE
+INNER JOIN dbo.rgcsdi_2015_2019_zcta rz ON crosswalk.zcta = rz.ZCTA5_FIPS;
+
+--SELECT * FROM #MappedZipToSDI; --n=62481
 
 --------------------------------------------------------------------------------------------------------
 --Additional variables from Demographics table
@@ -440,7 +444,7 @@ IF COL_LENGTH('dbo.DiabetesOutcomes', 'SDI_score') IS NULL
 UPDATE do
 SET do.SDI_score = mzd.SDI_score
 FROM dbo.DiabetesOutcomes do
-INNER JOIN #MappedZipToSDI mzd ON do.EMPI = mzd.EMPI; --n=53060 (2607 missing)
+INNER JOIN #MappedZipToSDI mzd ON do.EMPI = mzd.EMPI; --n=53833 (1834 missing)
 --SELECT * FROM dbo.DiabetesOutcomes;
 
 -- Add the Veteran column to DiabetesOutcomes if it doesn't exist
@@ -457,22 +461,43 @@ SELECT * FROM dbo.DiabetesOutcomes; --n=55667
 --Preprocess diagnoses table (export to file)
 --------------------------------------------------------------------------------------------------------
 
-IF OBJECT_ID('dbo.Diagnoses', 'U') IS NOT NULL
-    DROP TABLE dbo.Diagnoses;
+IF OBJECT_ID('dbo.Diagnoses', 'U') IS NOT NULL DROP TABLE dbo.Diagnoses;
 
-SELECT
-    dia.EMPI,
-    dia.Date,
-    dia.Code,
-    dia.Code_Type,
-    do.IndexDate,
-    CASE WHEN dia.Date <= do.IndexDate THEN 1 ELSE 0 END AS DiagnosisBeforeOrOnIndexDate,
-    CASE 
-        WHEN CHARINDEX('.', dia.Code) > 0 THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) + 1) 
-        ELSE dia.Code 
-    END + '_' + CASE WHEN dia.Code_Type = 'ICD9' THEN '9' WHEN dia.Code_Type = 'ICD10' THEN '10' ELSE '' END AS CodeWithType
-INTO Diagnoses
-FROM dia_2_pcp_combined dia
-INNER JOIN DiabetesOutcomes do ON dia.EMPI = do.EMPI
-WHERE dia.Date BETWEEN @minDate AND @maxDate; --n=59856859
---SELECT TOP 100 * FROM Diagnoses; 
+;WITH CTE_Diagnoses AS (
+    SELECT
+        dia.EMPI,
+        dia.Date,
+        dia.Code,
+        dia.Code_Type,
+        do.IndexDate,
+        CASE WHEN dia.Date <= do.IndexDate THEN 1 ELSE 0 END AS DiagnosisBeforeOrOnIndexDate,
+        CASE 
+            WHEN CHARINDEX('.', dia.Code) > 0 THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) - 1) 
+            ELSE dia.Code 
+        END + '_' + dia.Code_Type AS CodeWithType
+    FROM dia_2_pcp_combined dia
+    INNER JOIN DiabetesOutcomes do ON dia.EMPI = do.EMPI
+    WHERE dia.Code_Type IN ('ICD9', 'ICD10')
+),
+AggregatedDiagnoses AS (
+    SELECT
+        EMPI,
+        MAX(Date) AS Date,
+        Code,
+        Code_Type,
+        MAX(IndexDate) AS IndexDate,
+        MAX(DiagnosisBeforeOrOnIndexDate) AS DiagnosisBeforeOrOnIndexDate,
+        CodeWithType
+      --  MAX(DiagnosisBeforeOrOnIndexDate) AS AggregatedBeforeOrOnIndex
+    FROM CTE_Diagnoses
+    GROUP BY EMPI, Code, Code_Type, CodeWithType
+)
+
+SELECT * INTO dbo.Diagnoses FROM AggregatedDiagnoses;
+SELECT TOP 100 * FROM Diagnoses; --n = 8768532 (unique by EMPI and Code/Code_Type)
+
+-- Count distinct values of CodeWithType and EMPI
+SELECT 
+    COUNT(DISTINCT EMPI) AS UniqueEMPIs,
+    COUNT(DISTINCT CodeWithType) AS UniqueCodes
+FROM dbo.Diagnoses;

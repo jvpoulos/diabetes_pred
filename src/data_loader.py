@@ -7,6 +7,8 @@ import numpy as np
 import gc
 import json
 import re
+import scipy.sparse as sp
+from scipy.sparse import csr_matrix, hstack
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -71,36 +73,36 @@ def encode_batch(batch, encoder):
 # Define the column types for each file type
 
 outcomes_columns = {
-    'studyID': 'int64',
-    'EMPI': 'int64',
+    'studyID': 'int32',
+    'EMPI': 'int32',
     'IndexDate': 'object',
-    'InitialA1c': 'float64',
-    'A1cAfter12Months': 'float64',
-    'A1cGreaterThan7': 'int64',
-    'Female': 'int64',
-    'Married': 'int64',
-    'GovIns': 'int64',
-    'English': 'int64',
-    'DaysFromIndexToInitialA1cDate': 'int64',
-    'DaysFromIndexToA1cDateAfter12Months': 'int64',
-    'DaysFromIndexToFirstEncounterDate': 'int64',
-    'DaysFromIndexToLastEncounterDate': 'int64',
-    'DaysFromIndexToLatestDate': 'int64',
-    'DaysFromIndexToPatientTurns18': 'int64',
-    'AgeYears': 'int64',
-    'BirthYear': 'int64',
-    'NumberEncounters': 'int64',
-    'SDI_score': 'float64',
-    'Veteran': 'int64'
+    'InitialA1c': 'float32',
+    'A1cAfter12Months': 'float32',
+    'A1cGreaterThan7': 'int32',
+    'Female': 'int32',
+    'Married': 'int32',
+    'GovIns': 'int32',
+    'English': 'int32',
+    'DaysFromIndexToInitialA1cDate': 'int32',
+    'DaysFromIndexToA1cDateAfter12Months': 'int32',
+    'DaysFromIndexToFirstEncounterDate': 'int32',
+    'DaysFromIndexToLastEncounterDate': 'int32',
+    'DaysFromIndexToLatestDate': 'int32',
+    'DaysFromIndexToPatientTurns18': 'int32',
+    'AgeYears': 'int32',
+    'BirthYear': 'int32',
+    'NumberEncounters': 'int32',
+    'SDI_score': 'float32',
+    'Veteran': 'int32'
 }
 
 dia_columns = {
-    'EMPI': 'int64',
+    'EMPI': 'int32',
     'Date': 'object', 
     'Code_Type': 'object', 
     'Code': 'object', 
     'IndexDate': 'object', 
-    'DiagnosisBeforeOrOnIndexDate': 'object', 
+    'DiagnosisBeforeOrOnIndexDate': 'int32', 
     'CodeWithType': 'object'
 }
 
@@ -119,12 +121,9 @@ df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_s
 df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
 gc.collect()
 
-# Check and handle duplicates in outcomes data
-print("Number of rows before dropping duplicates:", len(df_outcomes))
-df_outcomes = df_outcomes.drop_duplicates(subset='EMPI') # keeps first EMPI
-print("Number of rows after dropping duplicates:", len(df_outcomes))
-
-print("Total features (original):", df_outcomes.shape[1])
+# Check dimensions in outcomes data
+print("Number of patients:", len(df_outcomes)) # 55667
+print("Total features (original):", df_outcomes.shape[1]) # 20
 
 # Optimize dataFrames
 df_outcomes = optimize_dataframe(df_outcomes)
@@ -137,28 +136,29 @@ columns_with_missing_values = ['SDI_score']
 with open('columns_with_missing_values.json', 'w') as file:
     json.dump(columns_with_missing_values, file)
 
+print("Replacing missing values in ", columns_with_missing_values)
+
 # Only replace missing values in these specified columns
 for col in columns_with_missing_values:
     df_outcomes.loc[:, col] = df_outcomes[col].fillna(0)
 
-# Handle categorical data in diagnoses data
-categorical_columns = df_dia.select_dtypes(include=['object', 'category']).columns.tolist()
+# Create categorical feature for 'DiagnosisBeforeOrOnIndexDate' based on interaction with CodeWithType
+df_dia['CodeWithType_Interaction'] = df_dia.apply(
+    lambda row: f"{row['CodeWithType']}_BeforeOrOnIndex" if row['DiagnosisBeforeOrOnIndexDate'] == 1 else None,
+    axis=1
+)
 
-# Explicitly add 'CodeWithType' to the list if not already included
-if 'CodeWithType' not in categorical_columns:
-    categorical_columns.append('CodeWithType')
+# Handle categorical columns in diagnoses data
+categorical_columns = ['CodeWithType', 'CodeWithType_Interaction']
 
 # Save the list of categorical columns to a JSON file
 with open('categorical_columns.json', 'w') as file:
     json.dump(categorical_columns, file)
 
-# Summary statistics for categorical features
-categorical_stats = df_dia[categorical_columns].apply(lambda col: col.value_counts(normalize=True))
-print(categorical_stats)
-
 # Convert categorical columns to string and limit categories
 # filter each categorical column to keep only the top x most frequent categories and replace other categories with a common placeholder like 'Other'
-max_categories = 1000  # Adjust this value as needed
+max_categories = 3000 # will not restrict diagnoses
+print("One-hot encoding with a max. of", max_categories, "most frequent categories")
 
 # Reduce categories to top 'max_categories' and label others as 'Other'
 for col in categorical_columns:
@@ -166,12 +166,12 @@ for col in categorical_columns:
     df_dia[col] = df_dia[col].astype(str)
     df_dia[col] = df_dia[col].where(df_dia[col].isin(top_categories), other='Other')
 
-# Initialize OneHotEncoder with limited categories
-one_hot_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
+# Initialize OneHotEncoder with limited categories and sparse output
+one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
 one_hot_encoder.fit(df_dia[categorical_columns].astype(str))
 
 # Process in batches
-batch_size = 1000  # Adjust batch size as needed
+batch_size = 1000
 encoded_batches = []
 
 for start in range(0, len(df_dia), batch_size):
@@ -180,57 +180,63 @@ for start in range(0, len(df_dia), batch_size):
     encoded_batch = one_hot_encoder.transform(batch[categorical_columns].astype(str))
 
     # Get new column names for one-hot encoded variables
-    encoded_feature_names = one_hot_encoder.get_feature_names(input_features=categorical_columns)
+    encoded_feature_names = one_hot_encoder.get_feature_names(categorical_columns)
 
-    # Convert feature names to a more readable format
-    encoded_feature_names = [name.replace("x0_", "").replace("_", "-") for name in encoded_feature_names]
+    # Ensure encoded_feature_names is a list
+    encoded_feature_names = list(encoded_feature_names)
 
-    # Convert numpy array to DataFrame with appropriate column names
-    encoded_batch_df = pd.DataFrame(encoded_batch, columns=encoded_feature_names, index=batch.index)
-
-    # Add missing value column for each categorical variable
+    # Proceed with appending new column names for missing value indicators
     for col in categorical_columns:
-        encoded_batch_df[f'{col}-1'] = (batch[col] == 'Other').astype(int)
+        missing_value_indicator = (batch[col] == 'Other').astype(int).values.reshape(-1, 1)
+        missing_value_column_name = f"{col}_missing_indicator"
+        encoded_feature_names.append(missing_value_column_name)
+        missing_value_column = csr_matrix(missing_value_indicator)
+        encoded_batch = hstack([encoded_batch, missing_value_column])
 
-    encoded_batches.append(encoded_batch_df)
+    encoded_batches.append(encoded_batch)
 
-# Concatenate all encoded batches
-encoded_categorical = pd.concat(encoded_batches)
+expected_rows = sum(batch.shape[0] for batch in encoded_batches)
+print(f"Expected shape of encoded_categorical: ({expected_rows}, {len(encoded_feature_names)})")
+
+# Concatenate all encoded batches into a single sparse matrix
+encoded_categorical = sp.vstack(encoded_batches)
+
+print(f"Shape of encoded_categorical: {encoded_categorical.shape}")
+
+# Convert sparse matrix to DataFrame if needed for further processing
+# Note: This step may significantly increase memory usage depending on the sparsity of the matrix
+# Ensure the encoded_feature_names list matches the number of columns in encoded_categorical
+assert len(encoded_feature_names) == encoded_categorical.shape[1], "Mismatch in number of feature names and columns in encoded matrix"
+
+encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_categorical, columns=encoded_feature_names)
 
 # Combine the original DataFrame with the encoded DataFrame
-df_dia = pd.concat([df_dia, encoded_categorical], axis=1)
+df_dia = pd.concat([df_dia, encoded_df], axis=1)
 
 # Drop the original categorical columns
 df_dia.drop(categorical_columns, axis=1, inplace=True)
 
-# Reshape df_dia to have one row per EMPI with one-hot encoded variables as columns
-
-df_dia['count'] = 1 # create a 'count' column to help with pivot_table aggregation
-
-df_dia_wide = pd.pivot_table(df_dia, values='count', index='EMPI', columns='CodeWithType', fill_value=0, aggfunc='max') # pivot table to get one-hot encoding for 'CodeWithType'
-
-df_diagnosis = df_dia.groupby('EMPI')['DiagnosisBeforeOrOnIndexDate'].max().reset_index() # binary indicator aggregated by the maximum value per EMPI, which represents whether any diagnosis was before or on the index date
-df_dia_wide = df_dia_wide.merge(df_diagnosis, on='EMPI', how='left')
-
-df_dia_wide.reset_index(inplace=True)  # if 'EMPI' is not already a column
+# Deduplicate diagnoses so there is one records per patient
+df_dia.drop_duplicates(subset='EMPI', inplace=True)
 
 # Merge dataFrames on 'EMPI'
 
-merged_df = df_outcomes.merge(df_dia_wide, on='EMPI', how='outer')
-del df_outcomes, df_dia, df_dia_wide
+merged_df = df_outcomes.merge(df_dia, on='EMPI', how='outer')
+del df_outcomes, df_dia
 gc.collect()
 
-# Drop 'EMPI'
-merged_df.drop(['EMPI'], axis=1, inplace=True)
+# Drop unnecessary columns
+merged_df.drop(['EMPI','CodeWithType_missing_indicator', 'CodeWithType_Interaction_missing_indicator', 'CodeWithType__ICD9', ], axis=1, inplace=True)
+encoded_feature_names = [name for name in encoded_feature_names if name not in ['CodeWithType_missing_indicator', 'CodeWithType_Interaction_missing_indicator', 'CodeWithType__ICD9']]
 
 # Convert all remaining columns to float32
 merged_df = merged_df.astype('float32')
 
-# Print column names for verification
-print("Column Names after One-Hot Encoding and Adding Missing Value Columns:")
-print(merged_df.columns.tolist())
-
+print("Total patients (preprocessed):", merged_df.shape[0])
 print("Total features (preprocessed):", merged_df.shape[1])
+
+with open('encoded_feature_names.json', 'w') as file:
+    json.dump(encoded_feature_names, file)
 
 with open('column_names.json', 'w') as file:
     json.dump(merged_df.columns.tolist(), file)
