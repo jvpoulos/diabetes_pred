@@ -4,6 +4,7 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
+import numpy as np
 
 # Load column names from files
 with open('column_names.json', 'r') as file:
@@ -22,8 +23,7 @@ df_train = pd.DataFrame(loaded_train_dataset.tensors[0].numpy(), columns=column_
 df_validation = pd.DataFrame(loaded_validation_dataset.tensors[0].numpy(), columns=column_names)
 df_test = pd.DataFrame(loaded_test_dataset.tensors[0].numpy(), columns=column_names)
 
-print("Training set column Names (preprocessed):")
-print(df_train.columns.tolist())
+print(df_train.describe())
 
 # Normalize specified numeric columns in df_outcomes using the Min-Max scaling approach. 
 # This method is chosen because it handles negative and zero values well, scaling the data to a [0, 1] range.
@@ -39,26 +39,26 @@ scaler = MinMaxScaler()
 # Fit on training data
 df_train[columns_to_normalize] = scaler.fit_transform(df_train[columns_to_normalize])
 
+print(df_train[columns_to_normalize].describe())
+
 # Transform validation and test data
 df_validation[columns_to_normalize] = scaler.transform(df_validation[columns_to_normalize])
 df_test[columns_to_normalize] = scaler.transform(df_test[columns_to_normalize])
 
-# Identify one-hot encoded columns representing missing values (with '-1' indicating missing)
-one_hot_missing_columns = [col for col in encoded_feature_names if '-1' in col]
+# Calculate sparsity rate for one-hot encoded columns
 
-one_hot_missing_rate = df_train[one_hot_missing_columns].mean()
-print("One-hot sparsity rate: ", one_hot_missing_rate)
+one_hot_sparsity_rate = 1-df_train[encoded_feature_names].mean()
+print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate)
 
-# Calculate missing rate for identified one-hot encoded columns
-if one_hot_missing_columns:
-    one_hot_missing_rate = df_train[one_hot_missing_columns].mean()
+if encoded_feature_names:
+    one_hot_sparsity_rate = 1-df_train[encoded_feature_names].mean()
 
-    # Filter out features with a missing rate of 1% or less
-    positive_missing_rate = one_hot_missing_rate[one_hot_missing_rate > 0.01]
+    # Filter out features with a positive sparsity rate
+    positive_sparsity_rate = one_hot_sparsity_rate[one_hot_sparsity_rate > 0]
 
-    if not positive_missing_rate.empty:
+    if not positive_sparsity_rate.empty:
         plt.figure(figsize=(15, 8))
-        sns.barplot(x=positive_missing_rate.index, y=positive_missing_rate.values)
+        sns.barplot(x=positive_sparsity_rate.index, y=positive_sparsity_rate.values)
         plt.title("Sparsity Rate per One-Hot Encoded Feature in Training Set")
         plt.xlabel("Feature")
         plt.ylabel("Sparsity Rate")
@@ -66,32 +66,39 @@ if one_hot_missing_columns:
         plt.tight_layout()
         plt.savefig("one_hot_sparsity_rate_positive_plot.png")
     else:
-        print("No one-hot encoded features with positive missing rate to plot.")
+        print("No one-hot encoded features with positive sparsity rate to plot.")
 else:
     print("No one-hot encoded columns found in df_train.")
 
-# Filter out extremely rare features (features with missing rate >= 99%)
-rare_features = one_hot_missing_rate[one_hot_missing_rate >= 0.99].index
+
+# Filter out extremely rare features (features with sparsity rate >= 99%)
+mean_values = df_train[encoded_feature_names].mean()
+nan_features = mean_values.index[mean_values.isna()]
+
+rare_features = mean_values[mean_values >= 0.99].index.union(nan_features)
 df_train_filtered = df_train.drop(columns=rare_features)
 df_validation_filtered = df_validation.drop(columns=rare_features)
 df_test_filtered = df_test.drop(columns=rare_features)
 
 print("Number of features after filtering:", df_train_filtered.shape[1])
 
-# Update the one_hot_missing_columns list to include only those present in df_train_filtered
-one_hot_missing_columns_filtered = [col for col in one_hot_missing_columns if col in df_train_filtered.columns]
+# Update the encoded_feature_names list to include only those present in df_train_filtered
+encoded_feature_names_filtered = [col for col in encoded_feature_names if col in df_train_filtered.columns]
 
-# Calculate missing rate for one-hot encoded columns in df_train_filtered
-if one_hot_missing_columns_filtered:
-    one_hot_missing_rate_filtered = df_train_filtered[one_hot_missing_columns_filtered].mean()
+one_hot_sparsity_rate_filtered = 1-df_train_filtered[encoded_feature_names_filtered].mean()
+print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate_filtered)
 
-    # Filter out features with a missing rate of 1% or less in the filtered dataset
-    positive_missing_rate_filtered = one_hot_missing_rate_filtered[one_hot_missing_rate_filtered > 0.01]
+# Calculate sparsity rate for one-hot encoded columns in df_train_filtered
+if encoded_feature_names_filtered:
+    one_hot_sparsity_rate_filtered = 1- df_train_filtered[encoded_feature_names_filtered].mean()
 
-    # Plotting the missing rate for one-hot encoded features with positive missing rate in the filtered dataset
-    if not positive_missing_rate_filtered.empty:
+    # Select features with a positive sparsity rate in the filtered dataset
+    positive_sparsity_rate_filtered = one_hot_sparsity_rate_filtered[one_hot_sparsity_rate_filtered > 0]
+
+    # Plotting the sparsity rate for one-hot encoded features with positive sparsity rate in the filtered dataset
+    if not positive_sparsity_rate_filtered.empty:
         plt.figure(figsize=(15, 8))
-        sns.barplot(x=positive_missing_rate_filtered.index, y=positive_missing_rate_filtered.values)
+        sns.barplot(x=positive_sparsity_rate_filtered.index, y=positive_sparsity_rate_filtered.values)
         plt.title("Sparsity Rate per One-Hot Encoded Feature in Filtered Training Set")
         plt.xlabel("Feature")
         plt.ylabel("Sparsity Rate")
@@ -99,12 +106,12 @@ if one_hot_missing_columns_filtered:
         plt.tight_layout()  # Adjust layout
         plt.savefig("one_hot_sparsity_rate_positive_filtered_plot.png")  # Save plot to file
     else:
-        print("No one-hot encoded features with positive missing rate to plot in the filtered dataset.")
+        print("No one-hot encoded features with positive sparsity rate to plot in the filtered dataset.")
 else:
     print("No one-hot encoded columns found in df_train_filtered.")
 
-# Print number of features after filtering out rare features
-print("Number of features after filtering:", df_train_filtered.shape[1])
+# save training set as text file
+np.savetxt('df_train_filtered_values.txt', df_train_filtered.values)
 
 # Convert to PyTorch tensors and save
 filtered_train_tensor = torch.tensor(df_train_filtered.values, dtype=torch.float32)

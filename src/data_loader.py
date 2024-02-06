@@ -143,28 +143,33 @@ for col in columns_with_missing_values:
     df_outcomes.loc[:, col] = df_outcomes[col].fillna(0)
 
 # Create categorical feature for 'DiagnosisBeforeOrOnIndexDate' based on interaction with CodeWithType
-df_dia['CodeWithType_Interaction'] = df_dia.apply(
-    lambda row: f"{row['CodeWithType']}_BeforeOrOnIndex" if row['DiagnosisBeforeOrOnIndexDate'] == 1 else None,
+df_dia['CodeWithType_Date'] = df_dia.apply(
+    lambda row: row['CodeWithType'] if row['DiagnosisBeforeOrOnIndexDate'] == 1 else None,
     axis=1
 )
 
 # Handle categorical columns in diagnoses data
-categorical_columns = ['CodeWithType', 'CodeWithType_Interaction']
+categorical_columns = ['CodeWithType', 'CodeWithType_Date']
 
 # Save the list of categorical columns to a JSON file
 with open('categorical_columns.json', 'w') as file:
     json.dump(categorical_columns, file)
 
 # Convert categorical columns to string and limit categories
-# filter each categorical column to keep only the top x most frequent categories and replace other categories with a common placeholder like 'Other'
-max_categories = 3000 # will not restrict diagnoses
-print("One-hot encoding with a max. of", max_categories, "most frequent categories")
+print("Reducing categories to those appearing at least once.")
 
-# Reduce categories to top 'max_categories' and label others as 'Other'
 for col in categorical_columns:
-    top_categories = df_dia[col].value_counts().nlargest(max_categories).index
+    # Calculate the frequency of each category
+    category_counts = df_dia[col].value_counts()
+    
+    # Identify categories that appear at least once
+    categories_to_keep = category_counts[category_counts >= 1].index
+    
+    # Convert the column to string type
     df_dia[col] = df_dia[col].astype(str)
-    df_dia[col] = df_dia[col].where(df_dia[col].isin(top_categories), other='Other')
+    
+    # Keep categories that appear at least once, label others as 'Other'
+    df_dia[col] = df_dia[col].where(df_dia[col].isin(categories_to_keep), other='Other')
 
 # Initialize OneHotEncoder with limited categories and sparse output
 one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
@@ -185,13 +190,13 @@ for start in range(0, len(df_dia), batch_size):
     # Ensure encoded_feature_names is a list
     encoded_feature_names = list(encoded_feature_names)
 
-    # Proceed with appending new column names for missing value indicators
-    for col in categorical_columns:
-        missing_value_indicator = (batch[col] == 'Other').astype(int).values.reshape(-1, 1)
-        missing_value_column_name = f"{col}_missing_indicator"
-        encoded_feature_names.append(missing_value_column_name)
-        missing_value_column = csr_matrix(missing_value_indicator)
-        encoded_batch = hstack([encoded_batch, missing_value_column])
+    # # Proceed with appending new column names for missing value indicators
+    # for col in categorical_columns:
+    #     missing_value_indicator = (batch[col] == 'Other').astype(int).values.reshape(-1, 1)
+    #     missing_value_column_name = f"{col}_Other"
+    #     encoded_feature_names.append(missing_value_column_name)
+    #     missing_value_column = csr_matrix(missing_value_indicator)
+    #     encoded_batch = hstack([encoded_batch, missing_value_column])
 
     encoded_batches.append(encoded_batch)
 
@@ -213,6 +218,51 @@ encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_categorical, columns=enco
 # Combine the original DataFrame with the encoded DataFrame
 df_dia = pd.concat([df_dia, encoded_df], axis=1)
 
+# Binarize one-hot encoded variables based on 'DiagnosisBeforeOrOnIndexDate'
+
+# Identify all one-hot encoded columns for 'CodeWithType_Date'
+encoded_columns = [col for col in df_dia.columns if 'CodeWithType_Date' in col]
+
+# Create a mask where 'DiagnosisBeforeOrOnIndexDate' is 0, which should apply to all encoded columns simultaneously
+mask = df_dia['DiagnosisBeforeOrOnIndexDate'] == 0
+
+for col in encoded_columns:
+    print(f"Processing column: {col}, type: {type(df_dia[col])}")
+    try:
+        # Retrieve the series from df_dia DataFrame
+        series = df_dia[col]
+        
+        # Check if the series is of a sparse data type
+        if pd.api.types.is_sparse(series.dtype):
+            print(f"Processing column: {col}")  # Debug print
+            
+            # Convert the sparse series to a dense format
+            dense_array = series.sparse.to_dense()
+
+            # Apply the mask. Ensure the mask is correctly aligned with the DataFrame's index
+            updated_data = np.where(mask, 0, dense_array)
+
+            # Convert the updated dense data back to a SparseArray with the original fill_value
+            fill_value = series.sparse.fill_value
+            df_dia[col] = pd.arrays.SparseArray(updated_data, fill_value=fill_value, dtype='float32')
+        else:
+            print(f"Column {col} is not sparse. Skipping.")  # Debug print for non-sparse columns
+    except AttributeError as e:
+        print(f"Error processing column {col}: {e}")
+
+# Identify columns with missing values in df_dia for the specified encoded_feature_names
+columns_with_missing_values = df_dia[encoded_feature_names].columns[df_dia[encoded_feature_names].isnull().any()].tolist()
+
+# # Print columns with missing values before filling them
+# print("Columns with missing values before filling:", columns_with_missing_values)
+
+# # Fill missing values with 0
+# df_dia[columns_with_missing_values] = df_dia[columns_with_missing_values].fillna(0)
+
+# Verify by printing the means of the columns to ensure there are no NaN values
+means_after_filling = df_dia[encoded_feature_names].mean()
+print("Means of columns after filling missing values with 0:\n", means_after_filling)
+        
 # Drop the original categorical columns
 df_dia.drop(categorical_columns, axis=1, inplace=True)
 
@@ -226,8 +276,36 @@ del df_outcomes, df_dia
 gc.collect()
 
 # Drop unnecessary columns
-merged_df.drop(['EMPI','CodeWithType_missing_indicator', 'CodeWithType_Interaction_missing_indicator', 'CodeWithType__ICD9', ], axis=1, inplace=True)
-encoded_feature_names = [name for name in encoded_feature_names if name not in ['CodeWithType_missing_indicator', 'CodeWithType_Interaction_missing_indicator', 'CodeWithType__ICD9']]
+merged_df.drop(['EMPI', "studyID", 'DiagnosisBeforeOrOnIndexDate','CodeWithType__ICD9', 'CodeWithType_Date__ICD9'], axis=1, inplace=True)
+encoded_feature_names = [name for name in encoded_feature_names if name not in ['CodeWithType__ICD9','CodeWithType_Date__ICD9']]
+
+# # Drop one-hot encoded columns with all zeros
+# for col in encoded_feature_names:
+#     try:
+#         # Accessing a single column as a Series
+#         series = merged_df[col]
+        
+#         # Now series.dtype is valid, and series should not inadvertently be a DataFrame
+#         if pd.api.types.is_sparse(series.dtype):
+#             print(f"Processing sparse column: {col}")
+#         else:
+#             print(f"Processing non-sparse column: {col}")
+
+#         # No error should be raised by this line if col is correctly a single column name
+#         if (merged_df[col] == 0).all():
+#             print(f"Column {col} has all zeros.")
+#     except Exception as e:
+#         print(f"Error processing column {col}: {e}")
+
+# # Correct approach to filter columns with all zeros
+# columns_with_all_zeros = [col for col in encoded_feature_names if (merged_df[col] == 0).all()]
+# print("Columns with all zeros:", columns_with_all_zeros)
+
+# merged_df.drop(columns=columns_with_all_zeros, inplace=True)
+
+# encoded_feature_names = [col for col in encoded_feature_names if col not in columns_with_all_zeros]
+
+# print("Dropped columns with all zeros:", columns_with_all_zeros)
 
 # Convert all remaining columns to float32
 merged_df = merged_df.astype('float32')
