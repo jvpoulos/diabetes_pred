@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from torch.utils.data import TensorDataset  # Import TensorDataset
 import json
+import numpy as np
 
 # Load column names from a separate file
 with open('column_names.json', 'r') as file:
@@ -21,6 +22,9 @@ validation_df, test_df = train_test_split(temp_df, test_size=(1/3), random_state
 print("Training set size:", train_df.shape[0])
 print("Validation set size:", validation_df.shape[0])
 print("Test set size:", test_df.shape[0])
+
+# save training set as text file
+np.savetxt('train_df_values.txt', train_df.values)
 
 # Convert the DataFrames back to tensors for PyTorch processing
 train_dataset = TensorDataset(torch.tensor(train_df.values, dtype=torch.float32))
