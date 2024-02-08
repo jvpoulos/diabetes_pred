@@ -6,6 +6,10 @@ import seaborn as sns
 import json
 import numpy as np
 
+def get_icd_description(icd_code, code_type):
+    # This is a placeholder. You would implement the lookup logic here, possibly querying a database or using a dictionary.
+    return "Description for " + icd_code
+
 # Load column names from files
 with open('column_names.json', 'r') as file:
     column_names = json.load(file)
@@ -49,6 +53,35 @@ df_test[columns_to_normalize] = scaler.transform(df_test[columns_to_normalize])
 
 one_hot_sparsity_rate = 1-df_train[encoded_feature_names].mean()
 print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate)
+
+# Identify columns that have all-zero values
+all_zero_columns_mask = (df_train[encoded_feature_names] == 0).all(axis=0)
+all_zero_columns = all_zero_columns_mask[all_zero_columns_mask].index.tolist()
+
+# Calculate the share of columns with all-zero values
+share_of_all_zero_columns = len(all_zero_columns) / len(encoded_feature_names)
+
+print(f"Share of columns with all-zero values: {share_of_all_zero_columns:.2%}")
+
+
+# Initialize a list to store data for the new DataFrame
+data_for_df = []
+
+# Iterate over all_zero_columns to extract ICD code type and code
+for col_name in all_zero_columns:
+    code_type, icd_code = col_name.split("_")
+    description = get_icd_description(icd_code, code_type)
+    
+    # Append the extracted information to the data list
+    data_for_df.append({"ICD Code Type": code_type, "ICD Code": icd_code, "Description": description})
+
+# Create a DataFrame from the collected data
+df_icd_info = pd.DataFrame(data_for_df)
+
+# Convert the DataFrame to an HTML table and save it
+html_table = df_icd_info.to_html(index=False)
+with open("icd_codes_descriptions.html", "w") as file:
+    file.write(html_table)
 
 # Limit the number of features or samples due to visual and performance constraints
 sampled_df = df_train[encoded_feature_names].sample(n=min(100, len(df_train)), axis=1, random_state=42) # limits to 100 features

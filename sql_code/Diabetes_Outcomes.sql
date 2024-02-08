@@ -472,12 +472,16 @@ IF OBJECT_ID('dbo.Diagnoses', 'U') IS NOT NULL DROP TABLE dbo.Diagnoses;
         do.IndexDate,
         CASE WHEN dia.Date <= do.IndexDate THEN 1 ELSE 0 END AS DiagnosisBeforeOrOnIndexDate,
         CASE 
-            WHEN CHARINDEX('.', dia.Code) > 0 THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) - 1) 
+            WHEN CHARINDEX('.', dia.Code) > 0 
+            THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) - 1) + -- Get everything before the decimal point
+                 '.' + -- Add the decimal point
+                 SUBSTRING(dia.Code, CHARINDEX('.', dia.Code) + 1, 1) -- Add the first digit after the decimal, if it exists
             ELSE dia.Code 
-        END + '_' + dia.Code_Type AS CodeWithType
+        END + 
+        '_' + dia.Code_Type AS CodeWithType
     FROM dia_2_pcp_combined dia
     INNER JOIN DiabetesOutcomes do ON dia.EMPI = do.EMPI
-    WHERE dia.Code_Type IN ('ICD9', 'ICD10')
+   WHERE dia.Code_Type IN ('ICD9', 'ICD10') AND dia.Code IS NOT NULL AND dia.Code <> ''
 ),
 AggregatedDiagnoses AS (
     SELECT
@@ -494,7 +498,7 @@ AggregatedDiagnoses AS (
 )
 
 SELECT * INTO dbo.Diagnoses FROM AggregatedDiagnoses;
-SELECT TOP 100 * FROM Diagnoses; --n = 8768532 (unique by EMPI and Code/Code_Type)
+SELECT TOP 100 * FROM Diagnoses; --n = 8768424 (unique by EMPI and Code/Code_Type)
 
 -- Count distinct values of CodeWithType and EMPI
 SELECT 
