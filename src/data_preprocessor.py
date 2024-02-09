@@ -6,9 +6,44 @@ import seaborn as sns
 import json
 import numpy as np
 
-def get_icd_description(icd_code, code_type):
-    # This is a placeholder. You would implement the lookup logic here, possibly querying a database or using a dictionary.
-    return "Description for " + icd_code
+# Load the ICD-9 and ICD-10 codes dataframes
+icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl')
+icd10_df = pd.read_excel('data/Section111ValidICD10-Jan2024.xlsx', engine='openpyxl')
+
+# Adjust column names based on the structure of the files
+icd9_df.columns = ['CODE', 'LONG_DESCRIPTION_ICD9', 'NF_EXCL_ICD9']
+icd10_df.columns = ['CODE', 'SHORT_DESCRIPTION_ICD10', 'LONG_DESCRIPTION_ICD10', 'NF_EXCL_ICD10']
+
+# Set the CODE column as the index for faster lookup
+icd9_df.set_index('CODE', inplace=True)
+icd10_df.set_index('CODE', inplace=True)
+
+def get_icd_description(icd_column_name, icd9_df, icd10_df):
+    # Split the column name by the underscore
+    parts = icd_column_name.split('_')
+    # Ignore columns with 'Date' in the name
+    if "Date" in parts:
+        return None
+    
+    # Extract the ICD code and code type from the column name
+    icd_code = parts[0]
+    code_type = parts[1] if len(parts) > 1 else None
+
+    # Check the code type and select the appropriate DataFrame
+    if code_type == 'ICD9':
+        description = icd9_df.get(icd_code, 'Description not found')
+    elif code_type == 'ICD10':
+        description = icd10_df.get(icd_code, 'Description not found')
+    else:
+        description = 'Invalid code type'
+
+    return description
+
+# Assuming icd9_df and icd10_df are dictionaries or DataFrames with ICD codes as keys or indices and descriptions as values
+# Here's how you would call the function for a column name like "001.1_ICD9"
+column_name = "001.1_ICD9"
+description = get_icd_description(column_name, icd9_df, icd10_df)
+print(description)  # Prints the description for the ICD code "001.1" in ICD-9
 
 # Load column names from files
 with open('column_names.json', 'r') as file:
@@ -58,28 +93,40 @@ print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate)
 all_zero_columns_mask = (df_train[encoded_feature_names] == 0).all(axis=0)
 all_zero_columns = all_zero_columns_mask[all_zero_columns_mask].index.tolist()
 
+with open('training_set_all_zero_columns.json', 'w') as file:
+    json.dump(all_zero_columns, file)
+
 # Calculate the share of columns with all-zero values
 share_of_all_zero_columns = len(all_zero_columns) / len(encoded_feature_names)
 
 print(f"Share of columns with all-zero values: {share_of_all_zero_columns:.2%}")
 
-
 # Initialize a list to store data for the new DataFrame
 data_for_df = []
 
-# Iterate over all_zero_columns to extract ICD code type and code
 for col_name in all_zero_columns:
-    code_type, icd_code = col_name.split("_")
-    description = get_icd_description(icd_code, code_type)
-    
-    # Append the extracted information to the data list
-    data_for_df.append({"ICD Code Type": code_type, "ICD Code": icd_code, "Description": description})
+    # Assuming the column name is structured as 'code_type_code'
+    parts = col_name.split('_')
+    icd_code = parts[1]  # This gets the '001.1' from '001.1_ICD9'
+    code_type = parts[2]  # This gets the 'ICD9' from '001.1_ICD9'
 
-# Create a DataFrame from the collected data
+    # Call the function with the extracted code, code type, and the respective DataFrame
+    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+    
+    # Append the results to the data list
+    data_for_df.append({
+        "ICD Code Type": code_type,
+        "ICD Code": icd_code,
+        "Description": description
+    })
+
+# Create a DataFrame from the data list
 df_icd_info = pd.DataFrame(data_for_df)
 
-# Convert the DataFrame to an HTML table and save it
+# Convert the DataFrame to an HTML table
 html_table = df_icd_info.to_html(index=False)
+
+# Save the HTML table to a file
 with open("icd_codes_descriptions.html", "w") as file:
     file.write(html_table)
 

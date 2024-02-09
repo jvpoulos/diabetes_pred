@@ -8,3 +8,6 @@ pandas==1.1.5
 tqdm==4.62.2
 nltk==3.6.7
 seaborn==1.16.0
+openpyxl==3.1.2
+tab-transformer-pytorch==0.3.0
+

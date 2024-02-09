@@ -9,6 +9,7 @@ import json
 import re
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
+from pandas.api.types import is_categorical_dtype
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -158,18 +159,25 @@ with open('categorical_columns.json', 'w') as file:
 print("Converting categorical columns to string and handling missing values.")
 
 for col in categorical_columns:
-    # Use apply method to convert and fill missing values in one go
-    df_dia[col] = df_dia[col].apply(lambda x: 'missing' if pd.isna(x) or x == '' else str(x))
+    # Convert to string, fill missing values, then convert back to categorical if needed
+    df_dia[col] = df_dia[col].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
  
 # Verify no NaN values exist
 assert not df_dia[categorical_columns] .isnull().any().any(), "NaN values found in the diagnoses categorical columns"
+
+
+# Verify the unique values in the 'DiagnosisBeforeOrOnIndexDate' column
+print(f"Unique values in 'DiagnosisBeforeOrOnIndexDate': {df_dia['DiagnosisBeforeOrOnIndexDate'].unique()}")
+
+# Print out the unique values of 'CodeWithType' for a sample of data
+print(f"Sample unique values in 'CodeWithType': {df_dia['CodeWithType'].sample(5).unique()}")
 
 print("Initializing one-hot encoder.")
 
 # Initialize OneHotEncoder with limited categories and sparse output
 one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
-# Fit the encoder to the preprocessed data
-one_hot_encoder.fit(df_dia[categorical_columns].astype(str))
+one_hot_encoder.fit(df_dia[categorical_columns].dropna().astype(str))
+# one_hot_encoder.fit(df_dia[categorical_columns].astype(str))
 
 print("Processing one-hot encoded features in batches.")
 # Process in batches
@@ -180,7 +188,20 @@ for start in range(0, len(df_dia), batch_size):
     end = min(start + batch_size, len(df_dia))
     batch = df_dia.loc[start:end-1, categorical_columns]
     encoded_batch = one_hot_encoder.transform(batch.astype(str))
+    
+    # Ensure that the encoded batch is a 2-D array
+    assert encoded_batch.ndim == 2, f"Batch at rows {start} to {end} is not a 2-D array"
+    
+    # Check if the encoded batch is not all zeros
+    assert encoded_batch.getnnz() > 0, f"All-zero batch at rows {start} to {end}"
+    
     encoded_batches.append(encoded_batch)
+
+# Check if the encoded_batches list is not empty
+assert len(encoded_batches) > 0, "No batches have been encoded. The encoded_batches list is empty."
+
+# After batch processing, inspect one of the batches
+print(f"Sample encoded batch: {encoded_batches[0].toarray()[:5]}")
 
 print("Combining batches into a single sparse matrix.")
 # Combine all batches into a single sparse matrix
@@ -211,6 +232,15 @@ print("Combining batches into a single sparse matrix.")
 
 encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_categorical, columns=encoded_feature_names)
 
+# After creating encoded_df, inspect if it has all zero columns
+non_zero_columns = encoded_categorical.getnnz(axis=0) > 0  # This returns a boolean array
+all_zero_columns = ~non_zero_columns  # Invert to get all-zero columns
+
+# Use the boolean index to filter column names
+all_zero_column_names = [encoded_feature_names[i] for i, is_zero in enumerate(all_zero_columns) if is_zero]
+
+print(f"Columns with all zeros: {all_zero_column_names}")
+
 print("Combining the original DataFrame with the encoded DataFrame.")
 
 # Concatenate using a method that preserves the sparse structure
@@ -224,29 +254,48 @@ encoded_columns = [col for col in df_dia.columns if 'Date' in col]
 # Create a mask where 'DiagnosisBeforeOrOnIndexDate' is 0, which should apply to all encoded columns simultaneously
 mask = df_dia['DiagnosisBeforeOrOnIndexDate'] == 0
 
+# Before binarization, inspect the mask and a sample of encoded_df
+print(f"Mask for binarization: {mask}")
+print(f"Sample data before binarization: {encoded_df.sample(5)}")
+
+# Convert 'DiagnosisBeforeOrOnIndexDate' to a numeric type if it's categorical
+if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
+    df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
+
 for col in encoded_columns:
-    print(f"Processing column: {col}, type: {type(df_dia[col])}")
+    print(f"Processing column: {col}, type: {df_dia[col].dtype}")
+
+    if col == 'DiagnosisBeforeOrOnIndexDate':
+        continue  # Skip if this is the control column to avoid unnecessary operation
+
     try:
-        # Retrieve the series from df_dia DataFrame
-        series = df_dia[col]
-        
-        # Check if the series is of a sparse data type
-        if pd.api.types.is_sparse(series.dtype):
-            print(f"Processing column: {col}")  # Debug print
-            
-            # Convert the sparse series to a dense format
-            dense_array = series.sparse.to_dense()
-
-            # Apply the mask. Ensure the mask is correctly aligned with the DataFrame's index
-            updated_data = np.where(mask, 0, dense_array)
-
-            # Convert the updated dense data back to a SparseArray with the original fill_value
-            fill_value = series.sparse.fill_value
-            df_dia[col] = pd.arrays.SparseArray(updated_data, fill_value=fill_value, dtype='float32')
+        if is_categorical_dtype(df_dia[col]):
+            print(f"Column {col} is categorical, converting to numeric for operation.")
+            df_dia[col] = df_dia[col].cat.codes.astype('int8', copy=False)
         else:
-            print(f"Column {col} is not sparse. Skipping.")  # Debug print for non-sparse columns
-    except AttributeError as e:
+            if (df_dia[col] == 0).mean() > 0.95:
+                # Ensure the column is sparse
+                if not pd.api.types.is_sparse(df_dia[col]):
+                    df_dia[col] = pd.arrays.SparseArray(df_dia[col], fill_value=0, dtype='float32')
+            else:
+                df_dia[col] = df_dia[col].astype('float32', copy=False)
+
+        # Check if both columns are sparse before multiplication
+        if pd.api.types.is_sparse(df_dia[col]) and pd.api.types.is_sparse(df_dia['DiagnosisBeforeOrOnIndexDate']):
+            # Multiply while maintaining sparsity
+            df_dia[col] = df_dia[col].sparse.multiply(df_dia['DiagnosisBeforeOrOnIndexDate'].sparse.to_dense(), fill_value=0)
+        else:
+            # Perform multiplication directly if sparsity is not a concern
+            df_dia[col] = df_dia[col].multiply(df_dia['DiagnosisBeforeOrOnIndexDate'], axis="index")
+            
+    except Exception as e:
         print(f"Error processing column {col}: {e}")
+    
+    # Optional: Invoke garbage collection
+    gc.collect()
+
+# After binarization, inspect the result
+print(f"Sample data after binarization: {df_dia[encoded_columns].sample(5)}")
 
 # Identify columns with missing values in df_dia for the specified encoded_feature_names
 # Initialize an empty list to hold the names of columns with missing values
@@ -290,13 +339,13 @@ merged_df.fillna(0, inplace=True)
 
 # Filter columns with all zeros
 columns_with_all_zeros = [col for col in encoded_feature_names if (merged_df[col] == 0).all()]
-print("Columns with all zeros:", columns_with_all_zeros)
 
 merged_df.drop(columns=columns_with_all_zeros, inplace=True)
 
 encoded_feature_names = [col for col in encoded_feature_names if col not in columns_with_all_zeros]
 
-print("Dropped columns with all zeros:", columns_with_all_zeros)
+with open('columns_with_all_zeros.json', 'w') as file:
+    json.dump(columns_with_all_zeros, file)
 
 assert not merged_df.isnull().any().any(), "NaN values found in the merged DataFrame"
 

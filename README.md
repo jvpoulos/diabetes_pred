@@ -1,5 +1,15 @@
-# Diabetes predictive modelling with RNNs and TCNs
+# Diabetes predictive modelling
 Identification of Temporal Data Patterns Predictive of Adverse Outcomes in Patients with Diabetes
+
+## Models for Prediction
+
+### [Tab Transformer](https://github.com/lucidrains/tab-transformer-pytorch)
+The Tab Transformer is a novel model for tabular data that applies the self-attention mechanism from Transformer models to learn complex relationships between categorical features. It encodes categorical variables into embeddings and uses multiple layers of self-attention to dynamically understand the context of each feature within a row.
+
+### [FT Transformer](https://github.com/lucidrains/tab-transformer-pytorch?tab=readme-ov-file#ft-transformer)
+The FT Transformer extends the concepts from the Tab Transformer by incorporating feature tokenization, allowing it to effectively handle both categorical and continuous features. It improves upon the Tab Transformer by using feature-wise transformations which lead to better performance on a range of tabular datasets.
+
+Both models have shown to outperform traditional deep learning and machine learning approaches on complex tabular datasets, making them a powerful tool for tasks such as classification and regression in structured data.
 
 ## Requirements
 
@@ -25,10 +35,10 @@ GPU: GeForce RTX 2080
 	- Further preprocesses the datasets by applying feature selection techniques and visualizes the extent of sparsity in the training set.
 
 - `train.py`
-	- Trains deep learning models, supporting LSTM with Attention and Temporal Convolutional Neural Network (TCN). Includes 5-fold cross-validation and saves the best model.
+	- Trains deep learning models, supporting Tab Transformer and FT Transformer. Grid searches for the best model hyperparaters on the validation set and saves the best model.
 
 - `test.py`
-	- Loads the cross-validated model from `train.py` and evaluates it on a test dataset.
+	- Loads the validated model from `train.py` and evaluates it on a test dataset.
 
 ## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
 
@@ -80,24 +90,14 @@ $ python3 src/data_splitter.py
 $ python3 src/data_preprocessor.py
 ```
 
-4. Train neural network (LSTMAttention or TCN) on training set, perform 5-fold cross-validation, and evaluate on validation set:
+4. Train neural network ('TabTransformer' or 'FTTransformer') on training set, perform 5-fold cross-validation, and evaluate on validation set:
 
 ```bash
-$ python3 train.py --model_type LSTMAttention
-```
-or 
-
-```bash
-$ python3 train.py --model_type TCN
+$ python3 train.py --model_type TabTransformer
 ```
 
 5. Evaluate best model on test set:
 
 ```bash
-$ python3 test.py --model_type LSTMAttention --model_path best_model.pth
-```
-or 
-
-```bash
-$ python3 test.py --model_type TCN --model_path best_model.pth
+$ python3 test.py --model_type TabTransformer --model_path best_model.pth
 ```
