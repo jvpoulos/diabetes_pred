@@ -9,7 +9,8 @@ import json
 import re
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
-from pandas.api.types import is_categorical_dtype
+from pandas.api.types import is_categorical_dtype, is_sparse
+
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -70,6 +71,29 @@ def encode_batch(batch, encoder):
     batch_str = batch.astype(str)
     encoded = encoder.transform(batch_str)
     return pd.DataFrame(encoded, index=batch.index)
+
+def optimize_column(df, col):
+    try:
+        if is_categorical_dtype(df[col]):
+            df[col] = df[col].cat.codes.astype('int8', copy=False)
+
+        # Multiply directly for both sparse and non-sparse to keep the operation efficient
+        multiplied_result = df[col].multiply(df['DiagnosisBeforeOrOnIndexDate'], axis=0, fill_value=0)
+        
+        # Determine if the result should be kept sparse
+        if isinstance(multiplied_result, pd.Series):
+            sparsity_ratio = (multiplied_result == 0).mean()
+            if sparsity_ratio > 0.95:  # Adjust this threshold based on your dataset
+                df[col] = pd.arrays.SparseArray(multiplied_result, fill_value=0, dtype='float32')
+            else:
+                df[col] = multiplied_result
+        else:
+            df[col] = multiplied_result
+
+    except Exception as e:
+        print(f"Error processing column {col}: {e}")
+
+    gc.collect()
 
 # Define the column types for each file type
 
@@ -174,10 +198,13 @@ print(f"Sample unique values in 'CodeWithType': {df_dia['CodeWithType'].sample(5
 
 print("Initializing one-hot encoder.")
 
+# First, validate that all categories have at least one value
+for col in categorical_columns:
+    assert df_dia[col].nunique() > 0, f"Column {col} has no unique values."
+
 # Initialize OneHotEncoder with limited categories and sparse output
-one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
+one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='error')
 one_hot_encoder.fit(df_dia[categorical_columns].dropna().astype(str))
-# one_hot_encoder.fit(df_dia[categorical_columns].astype(str))
 
 print("Processing one-hot encoded features in batches.")
 # Process in batches
@@ -251,48 +278,18 @@ print("Binarizing one-hot encoded variables based on 'DiagnosisBeforeOrOnIndexDa
 # Identify all one-hot encoded columns for 'Date'
 encoded_columns = [col for col in df_dia.columns if 'Date' in col]
 
-# Create a mask where 'DiagnosisBeforeOrOnIndexDate' is 0, which should apply to all encoded columns simultaneously
-mask = df_dia['DiagnosisBeforeOrOnIndexDate'] == 0
-
-# Before binarization, inspect the mask and a sample of encoded_df
-print(f"Mask for binarization: {mask}")
-print(f"Sample data before binarization: {encoded_df.sample(5)}")
-
 # Convert 'DiagnosisBeforeOrOnIndexDate' to a numeric type if it's categorical
 if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
     df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
 
+# Before processing, ensure df_dia is optimized for memory usage
+df_dia = optimize_dataframe(df_dia)  # This function needs to ensure optimal memory usage
+
+print("Preprocess encoded columns.")
+# Process each encoded column, skipping 'DiagnosisBeforeOrOnIndexDate'
 for col in encoded_columns:
-    print(f"Processing column: {col}, type: {df_dia[col].dtype}")
-
-    if col == 'DiagnosisBeforeOrOnIndexDate':
-        continue  # Skip if this is the control column to avoid unnecessary operation
-
-    try:
-        if is_categorical_dtype(df_dia[col]):
-            print(f"Column {col} is categorical, converting to numeric for operation.")
-            df_dia[col] = df_dia[col].cat.codes.astype('int8', copy=False)
-        else:
-            if (df_dia[col] == 0).mean() > 0.95:
-                # Ensure the column is sparse
-                if not pd.api.types.is_sparse(df_dia[col]):
-                    df_dia[col] = pd.arrays.SparseArray(df_dia[col], fill_value=0, dtype='float32')
-            else:
-                df_dia[col] = df_dia[col].astype('float32', copy=False)
-
-        # Check if both columns are sparse before multiplication
-        if pd.api.types.is_sparse(df_dia[col]) and pd.api.types.is_sparse(df_dia['DiagnosisBeforeOrOnIndexDate']):
-            # Multiply while maintaining sparsity
-            df_dia[col] = df_dia[col].sparse.multiply(df_dia['DiagnosisBeforeOrOnIndexDate'].sparse.to_dense(), fill_value=0)
-        else:
-            # Perform multiplication directly if sparsity is not a concern
-            df_dia[col] = df_dia[col].multiply(df_dia['DiagnosisBeforeOrOnIndexDate'], axis="index")
-            
-    except Exception as e:
-        print(f"Error processing column {col}: {e}")
-    
-    # Optional: Invoke garbage collection
-    gc.collect()
+    if col != 'DiagnosisBeforeOrOnIndexDate':
+        optimize_column(df_dia, col)
 
 # After binarization, inspect the result
 print(f"Sample data after binarization: {df_dia[encoded_columns].sample(5)}")
@@ -320,7 +317,7 @@ print("Means of columns after filling missing values with 0:\n", means_after_fil
 # Drop the original categorical columns
 df_dia.drop(categorical_columns, axis=1, inplace=True)
 
-# Deduplicate diagnoses so there is one records per patient
+# Deduplicate diagnoses so there is one record per patient
 df_dia.drop_duplicates(subset='EMPI', inplace=True)
 
 assert not df_dia.isnull().any().any(), "NaN values found in the diagnoses DataFrame"
