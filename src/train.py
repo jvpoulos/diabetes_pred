@@ -2,10 +2,43 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from sklearn.model_selection import KFold
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
+import os
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score
+import copy
+
+class CustomDataset(Dataset):
+    def __init__(self, dataframe, feature_columns, label_column):
+        self.dataframe = dataframe
+        self.feature_columns = feature_columns
+        self.label_column = label_column
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        features = self.dataframe.loc[idx, self.feature_columns].to_numpy(dtype=float)
+        label = self.dataframe.loc[idx, self.label_column]
+        return torch.tensor(features, dtype=torch.float), torch.tensor(label, dtype=torch.float)
+
+def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'):
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.figure()
+    plt.plot(train_losses, label='Training Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    
+    # Construct filename based on hyperparameters
+    filename = '_'.join([f"{key}-{value}" for key, value in hyperparameters.items()]) + '.png'
+    filepath = os.path.join(plot_dir, filename)
+    
+    plt.savefig(filepath)
+    plt.close()
 
 def train_model(model, train_loader, criterion, optimizer):
     model.train()  # Set the model to training mode
@@ -24,11 +57,12 @@ def train_model(model, train_loader, criterion, optimizer):
     print(f'Training loss: {average_loss:.4f}')
     return average_loss
 
-
 def validate_model(model, validation_loader, criterion):
     model.eval()  # Set the model to evaluation mode
     total_loss = 0
     total, correct = 0, 0
+    all_labels = []  # List to store all true labels
+    all_predictions = []  # List to store all predictions
 
     with torch.no_grad():  # No gradients to track
         for data, labels in validation_loader:
@@ -36,85 +70,136 @@ def validate_model(model, validation_loader, criterion):
             loss = criterion(outputs.squeeze(), labels.float())  # Compute loss
             total_loss += loss.item()
 
-            predicted = torch.round(torch.sigmoid(outputs))  # Convert to binary predictions
+            # Instead of converting predictions to binary, keep the sigmoid outputs for AUC computation
+            probabilities = torch.sigmoid(outputs).squeeze().cpu().numpy()
+            all_predictions.extend(probabilities)
+            all_labels.extend(labels.cpu().numpy())
+
+            predicted = torch.round(torch.sigmoid(outputs))  # Convert to binary predictions for accuracy calculation
             total += labels.size(0)
             correct += (predicted.squeeze() == labels).sum().item()
 
     average_loss = total_loss / len(validation_loader)
     accuracy = correct / total
-    print(f'Validation Loss: {average_loss:.4f}, Accuracy: {accuracy * 100:.2f}%')
-    return average_loss, accuracy
+    auc_score = roc_auc_score(all_labels, all_predictions)  # Compute AUC score
+    print(f'Validation Loss: {average_loss:.4f}, Accuracy: {accuracy * 100:.2f}%, AUC: {auc_score:.4f}')
+    return average_loss, accuracy, auc_score
 
 def main(args):
     # Load datasets
     train_dataset = torch.load('filtered_training_tensor.pt')
     validation_dataset = torch.load('filtered_validation_tensor.pt')
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    validation_loader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
+    with open('column_names.json', 'r') as file:
+    column_names = json.load(file)
 
-    # Define hyperparameters ranges to test
-    learning_rates = [0.001, 0.0001]
-    batch_sizes = [32, 64]
-    # Add other hyperparameters here as needed
+    with open('encoded_feature_names.json', 'r') as file:
+    encoded_feature_names = json.load(file)
 
-    best_validation_score = float('inf')
-    best_hyperparams = {}
+    # Excluded column names
+    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
 
-    for lr in learning_rates:
-        for batch_size in batch_sizes:
-            # Initialize model, criterion, optimizer here with the current set of hyperparameters
-            model = TabTransformer(
-                categories=[2 for _ in range(len(encoded_feature_names))],  # Assuming encoded_feature_names is defined
-                num_continuous=12,
-                dim=32,
-                dim_out=1,
-                depth=6,
-                heads=8,
-                attn_dropout=0.1,
-                ff_dropout=0.1,
-                mlp_hidden_mults=(4, 2),
-                mlp_act=nn.ReLU()
-            ) if args.model_type == 'TabTransformer' else FTTransformer(
-                categories = categories,      # tuple containing the number of unique values within each category
-                num_continuous = 12,                # number of continuous values
-                dim = 32,                           # dimension, paper set at 32
-                dim_out = 1,                        # binary prediction, but could be anything
-                depth = 6,                          # depth, paper recommended 6
-                heads = 8,                          # heads, paper recommends 8
-                attn_dropout = 0.1,                 # post-attention dropout
-                ff_dropout = 0.1                    # feed forward dropout
-            )
+    # Find indices of the columns to be excluded
+    excluded_indices = [column_names.index(col) for col in excluded_columns]
 
-            criterion = nn.BCEWithLogitsLoss()
-            optimizer = optim.Adam(model.parameters(), lr=lr)
+    # Find indices of all columns
+    #  conversion from column names to indices is necessary because PyTorch tensors do not support direct column selection by name
+    all_indices = list(range(len(column_names)))
 
-            # Train the model with the current set of hyperparameters
-            train_model(model, train_loader, criterion, optimizer)
+    # Determine indices for features by excluding the indices of excluded columns
+    feature_indices = [index for index in all_indices if index not in excluded_indices]
 
-            # Evaluate the model on the validation set
-            validation_score, _ = validate_model(model, validation_loader, criterion)
+    # Assuming train_dataset and validation_dataset are tensors, use torch.index_select
+    train_features = torch.index_select(train_dataset, 1, torch.tensor(feature_indices))
+    train_labels = train_dataset[:, column_names.index("A1cGreaterThan7")]
 
-            # Update best hyperparameters based on validation performance
-            if validation_score < best_validation_score:
-                best_validation_score = validation_score
-                best_hyperparams = {'lr': lr, 'batch_size': batch_size}
-                best_model = model
+    validation_features = torch.index_select(validation_dataset, 1, torch.tensor(feature_indices))
+    validation_labels = validation_dataset[:, column_names.index("A1cGreaterThan7")]
 
-    print(f"Best hyperparameters: {best_hyperparams}")
+    # Create custom datasets
+    train_data = CustomDataset(train_features, train_labels)
+    validation_data = CustomDataset(validation_features, validation_labels)
+
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
+
+    categories=[2 for _ in range(len(encoded_feature_names))]
+
+    # Initialize model, criterion, optimizer here with the current set of hyperparameters
+    model = TabTransformer(
+        categories=categories,  # tuple containing the number of unique values within each category
+        num_continuous=12,                                          # number of continuous values
+        dim=32,                                                     # dimension, paper set at 32
+        dim_out=1,                                                  # binary prediction, but could be anything
+        depth=6,                                                    # depth, paper recommended 6
+        heads=8,                                                    # heads, paper recommends 8
+        attn_dropout=0.1,                                           # post-attention dropout
+        ff_dropout=0.1,                                             # feed forward dropout
+        mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
+        mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+    ) if args.model_type == 'TabTransformer' else FTTransformer(
+        categories = categories,      # tuple containing the number of unique values within each category
+        num_continuous = 12,                # number of continuous values
+        dim = 32,                           # dimension, paper set at 32
+        dim_out = 1,                        # binary prediction, but could be anything
+        depth = 6,                          # depth, paper recommended 6
+        heads = 8,                          # heads, paper recommends 8
+        attn_dropout = 0.1,                 # post-attention dropout
+        ff_dropout = 0.1                    # feed forward dropout
+    )
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+
+    # Lists to store loss values
+    train_losses = []
+    val_losses = []
+
+    # Add early stopping parameters
+    best_val_loss = float('inf')
+    patience_counter = 0
+    early_stopping_patience = args.early_stopping_patience  # assuming this argument is added to the parser
+
+    # Training loop
+    for epoch in range(args.epochs):
+        train_loss = train_model(model, train_loader, criterion, optimizer)
+        val_loss, _ = validate_model(model, validation_loader, criterion)
+
+        # Save losses for plotting
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Validation Loss: {val_loss}')
+
+        # Check for early stopping conditions
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            # Save the best model
+            best_model_wts = copy.deepcopy(model.state_dict())
+        else:
+            patience_counter += 1
+            print(f"No improvement in validation loss for {patience_counter} epochs.")
+            if patience_counter >= early_stopping_patience:
+                print(f"Stopping early at epoch {epoch+1}")
+                break
+
+    # Load the best model weights
+    model.load_state_dict(best_model_wts)
+
+    # After training, plot the losses
+    plot_losses(train_losses, val_losses, {'lr': args.learning_rate, 'batch_size': args.batch_size})
 
     # Save the best model to a file
-    torch.save(best_model.state_dict(), 'best_model.pth')
-
-    # Final validation on the separate validation set
-    validation_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False)
-    validate_model(best_model, validation_loader, criterion)
+    torch.save(model.state_dict(), 'trained_model.pth')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
                         choices=['TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
-    # Add argparse arguments for batch_size, learning_rate, etc., if you plan to vary them during runs
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
+    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
+    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
     args = parser.parse_args()
     main(args)

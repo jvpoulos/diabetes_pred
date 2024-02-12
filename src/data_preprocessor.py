@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 import numpy as np
+import plotly.express as px
 
 # Load the ICD-9 and ICD-10 codes dataframes
 icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl')

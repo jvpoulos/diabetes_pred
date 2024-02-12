@@ -35,7 +35,10 @@ GPU: GeForce RTX 2080
 	- Further preprocesses the datasets by applying feature selection techniques and visualizes the extent of sparsity in the training set.
 
 - `train.py`
-	- Trains deep learning models, supporting Tab Transformer and FT Transformer. Grid searches for the best model hyperparaters on the validation set and saves the best model.
+	- Trains transformer model, supporting Tab Transformer and FT Transformer.
+
+- `attention.py`
+	- Extracts and plots attention maps from the last layer of the trained and validated transformer model.
 
 - `test.py`
 	- Loads the validated model from `train.py` and evaluates it on a test dataset.
@@ -90,14 +93,20 @@ $ python3 src/data_splitter.py
 $ python3 src/data_preprocessor.py
 ```
 
-4. Train neural network ('TabTransformer' or 'FTTransformer') on training set, perform 5-fold cross-validation, and evaluate on validation set:
+4. Train and evaluate neural network ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--patience`:
 
 ```bash
-$ python3 train.py --model_type TabTransformer
+$ python3 train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --patience 15
 ```
 
-5. Evaluate best model on test set:
+5. Extract attention weights from the last layer of the network and plot attention maps. Arguments: `--model_type` `--model_path`:
 
 ```bash
-$ python3 test.py --model_type TabTransformer --model_path best_model.pth
+$ python3 attention.py --model_type TabTransformer --model_path trained_model.pth
+```
+
+6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
+
+```bash
+$ python3 test.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
 ```

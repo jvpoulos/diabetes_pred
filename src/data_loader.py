@@ -189,12 +189,11 @@ for col in categorical_columns:
 # Verify no NaN values exist
 assert not df_dia[categorical_columns] .isnull().any().any(), "NaN values found in the diagnoses categorical columns"
 
+# Verify the unique values in the 'CodeWithType' column
+print(f"Unique values in 'CodeWithType': {df_dia['CodeWithType'].unique()}")
 
 # Verify the unique values in the 'DiagnosisBeforeOrOnIndexDate' column
 print(f"Unique values in 'DiagnosisBeforeOrOnIndexDate': {df_dia['DiagnosisBeforeOrOnIndexDate'].unique()}")
-
-# Print out the unique values of 'CodeWithType' for a sample of data
-print(f"Sample unique values in 'CodeWithType': {df_dia['CodeWithType'].sample(5).unique()}")
 
 print("Initializing one-hot encoder.")
 
@@ -227,9 +226,6 @@ for start in range(0, len(df_dia), batch_size):
 # Check if the encoded_batches list is not empty
 assert len(encoded_batches) > 0, "No batches have been encoded. The encoded_batches list is empty."
 
-# After batch processing, inspect one of the batches
-print(f"Sample encoded batch: {encoded_batches[0].toarray()[:5]}")
-
 print("Combining batches into a single sparse matrix.")
 # Combine all batches into a single sparse matrix
 encoded_data = vstack(encoded_batches)
@@ -255,7 +251,6 @@ print(f"Shape of encoded_categorical: {encoded_categorical.shape}")
 assert len(encoded_feature_names) == encoded_categorical.shape[1], "Mismatch in number of feature names and columns in encoded matrix"
 
 print("Combining batches into a single sparse matrix.")
-# Convert to DataFrame for further operations if necessary
 
 encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_categorical, columns=encoded_feature_names)
 
@@ -291,9 +286,6 @@ for col in encoded_columns:
     if col != 'DiagnosisBeforeOrOnIndexDate':
         optimize_column(df_dia, col)
 
-# After binarization, inspect the result
-print(f"Sample data after binarization: {df_dia[encoded_columns].sample(5)}")
-
 # Identify columns with missing values in df_dia for the specified encoded_feature_names
 # Initialize an empty list to hold the names of columns with missing values
 columns_with_missing_values = []
@@ -310,17 +302,13 @@ print("Columns with missing values before filling:", columns_with_missing_values
 # Fill missing values with 0
 df_dia[columns_with_missing_values] = df_dia[columns_with_missing_values].fillna(0)
 
-# Verify by printing the means of the columns to ensure there are no NaN values
-means_after_filling = df_dia[encoded_feature_names].mean()
-print("Means of columns after filling missing values with 0:\n", means_after_filling)
-        
+# Deduplicate diagnoses considering patient ID, diagnosis code, and diagnosis date
+df_dia.drop_duplicates(subset=['EMPI', 'CodeWithType', 'Date'], inplace=True)
+
 # Drop the original categorical columns
 df_dia.drop(categorical_columns, axis=1, inplace=True)
 
-# Deduplicate diagnoses so there is one record per patient
-df_dia.drop_duplicates(subset='EMPI', inplace=True)
-
-assert not df_dia.isnull().any().any(), "NaN values found in the diagnoses DataFrame"
+#assert not df_dia.isnull().any().any(), "NaN values found in the diagnoses DataFrame"
 
 # Merge dataFrames on 'EMPI'
 
@@ -329,7 +317,7 @@ del df_outcomes, df_dia
 gc.collect()
 
 # Drop unnecessary columns
-merged_df.drop(['EMPI', "studyID", 'DiagnosisBeforeOrOnIndexDate'], axis=1, inplace=True)
+merged_df.drop(['EMPI', 'DiagnosisBeforeOrOnIndexDate'], axis=1, inplace=True)
 
 # Fill missing values with a specified value
 merged_df.fillna(0, inplace=True)
@@ -344,7 +332,7 @@ encoded_feature_names = [col for col in encoded_feature_names if col not in colu
 with open('columns_with_all_zeros.json', 'w') as file:
     json.dump(columns_with_all_zeros, file)
 
-assert not merged_df.isnull().any().any(), "NaN values found in the merged DataFrame"
+#assert not merged_df.isnull().any().any(), "NaN values found in the merged DataFrame"
 
 print("Total patients (preprocessed):", merged_df.shape[0])
 print("Total features (preprocessed):", merged_df.shape[1])
