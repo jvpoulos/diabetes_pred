@@ -8,20 +8,21 @@ import os
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
 import copy
+import logging
+
+logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 class CustomDataset(Dataset):
-    def __init__(self, dataframe, feature_columns, label_column):
-        self.dataframe = dataframe
-        self.feature_columns = feature_columns
-        self.label_column = label_column
+    def __init__(self, features, labels):
+        self.features = features
+        self.labels = labels
 
     def __len__(self):
-        return len(self.dataframe)
+        return len(self.features)
 
     def __getitem__(self, idx):
-        features = self.dataframe.loc[idx, self.feature_columns].to_numpy(dtype=float)
-        label = self.dataframe.loc[idx, self.label_column]
-        return torch.tensor(features, dtype=torch.float), torch.tensor(label, dtype=torch.float)
+        # Since features and labels are already tensors, no conversion is needed
+        return self.features[idx], self.labels[idx]
 
 def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'):
     os.makedirs(plot_dir, exist_ok=True)
@@ -45,6 +46,7 @@ def train_model(model, train_loader, criterion, optimizer):
     total_loss = 0
 
     for data, labels in train_loader:
+        data, labels = data.to(device), labels.to(device)
         optimizer.zero_grad()  # Clear gradients for the next train
         outputs = model(data)  # Forward pass: compute the output class given a image
         loss = criterion(outputs.squeeze(), labels.float())  # Calculate the loss
@@ -66,6 +68,7 @@ def validate_model(model, validation_loader, criterion):
 
     with torch.no_grad():  # No gradients to track
         for data, labels in validation_loader:
+            data, labels = data.to(device), labels.to(device)
             outputs = model(data)
             loss = criterion(outputs.squeeze(), labels.float())  # Compute loss
             total_loss += loss.item()
@@ -91,10 +94,7 @@ def main(args):
     validation_dataset = torch.load('filtered_validation_tensor.pt')
 
     with open('column_names.json', 'r') as file:
-    column_names = json.load(file)
-
-    with open('encoded_feature_names.json', 'r') as file:
-    encoded_feature_names = json.load(file)
+        column_names = json.load(file)
 
     # Excluded column names
     excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
@@ -116,12 +116,19 @@ def main(args):
     validation_features = torch.index_select(validation_dataset, 1, torch.tensor(feature_indices))
     validation_labels = validation_dataset[:, column_names.index("A1cGreaterThan7")]
 
+    # Save to file (for attention.py)
+    torch.save(validation_features, 'validation_features.pt')
+    torch.save(validation_labels, 'validation_labels.pt')
+
     # Create custom datasets
     train_data = CustomDataset(train_features, train_labels)
     validation_data = CustomDataset(validation_features, validation_labels)
 
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
+
+    with open('encoded_feature_names.json', 'r') as file:
+        encoded_feature_names = json.load(file)
 
     categories=[2 for _ in range(len(encoded_feature_names))]
 
@@ -140,13 +147,16 @@ def main(args):
     ) if args.model_type == 'TabTransformer' else FTTransformer(
         categories = categories,      # tuple containing the number of unique values within each category
         num_continuous = 12,                # number of continuous values
-        dim = 32,                           # dimension, paper set at 32
+        dim = 192,                           # dimension, paper set at 192
         dim_out = 1,                        # binary prediction, but could be anything
-        depth = 6,                          # depth, paper recommended 6
+        depth = 3,                          # depth, paper recommended 3
         heads = 8,                          # heads, paper recommends 8
-        attn_dropout = 0.1,                 # post-attention dropout
+        attn_dropout = 0.2,                 # post-attention dropout
         ff_dropout = 0.1                    # feed forward dropout
     )
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -200,6 +210,6 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
-    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience')
+    parser.add_argument('--early_stopping_patience', type=int, default=15, help='Early stopping patience')
     args = parser.parse_args()
     main(args)

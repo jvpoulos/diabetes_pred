@@ -24,7 +24,7 @@ print("Validation set size:", validation_df.shape[0])
 print("Test set size:", test_df.shape[0])
 
 # save training set as text file
-np.savetxt('train_df_values.txt', train_df.values)
+train_df.to_csv('train_df.csv', index=False)
 
 # Convert the DataFrames back to tensors for PyTorch processing
 train_dataset = TensorDataset(torch.tensor(train_df.values, dtype=torch.float32))

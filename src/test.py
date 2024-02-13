@@ -6,6 +6,9 @@ from tab_transformer_pytorch import TabTransformer, FTTransformer
 import json
 import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
+import logging
+
+logging.basicConfig(filename='test.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 class CustomDataset(Dataset):
     def __init__(self, dataframe, feature_columns, label_column):
@@ -44,14 +47,14 @@ def load_model(model_type, model_path):
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
-            categories=categories,
-            num_continuous=12,
-            dim=32,
-            dim_out=1,
-            depth=6,
-            heads=8,
-            attn_dropout=0.1,
-            ff_dropout=0.1
+            categories = categories,
+            num_continuous = 12,
+            dim = 192,
+            dim_out = 1,
+            depth = 3,
+            heads = 8,
+            attn_dropout = 0.2,
+            ff_dropout = 0.1
         )
     else:
         raise ValueError("Invalid model type. Choose 'TabTransformer' or 'FTTransformer'.")
@@ -66,6 +69,7 @@ def evaluate_model(model, test_loader):
 
     with torch.no_grad():  # No gradients to track
         for data, labels in test_loader:
+            data, labels = data.to(device), labels.to(device)
             outputs = model(data)
             # Get the output scores (probabilities) instead of binary predictions
             scores = torch.sigmoid(outputs).squeeze().cpu().numpy()
@@ -89,15 +93,14 @@ def evaluate_model(model, test_loader):
 
     return accuracy, precision, recall, f1, auc_score
 
-
 def main(args):
     # Load the test dataset
     test_dataset = torch.load('filtered_test_tensor.pt')
 
     with open('column_names.json', 'r') as file:
-    column_names = json.load(file)
+        column_names = json.load(file)
 
-        # Excluded column names
+    # Excluded column names
     excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
 
     # Find indices of the columns to be excluded
@@ -121,6 +124,9 @@ def main(args):
 
     # Load the model
     model = load_model(args.model_type, args.model_path)
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
     # Evaluate the model
     evaluate_model(model, test_loader)

@@ -38,7 +38,7 @@ GPU: GeForce RTX 2080
 	- Trains transformer model, supporting Tab Transformer and FT Transformer.
 
 - `attention.py`
-	- Extracts and plots attention maps from the last layer of the trained and validated transformer model.
+	- Load a model, either a TabTransformer or an FTTransformer, and visualize its attention maps using a validation dataset.
 
 - `test.py`
 	- Loads the validated model from `train.py` and evaluates it on a test dataset.
@@ -93,10 +93,13 @@ $ python3 src/data_splitter.py
 $ python3 src/data_preprocessor.py
 ```
 
-4. Train and evaluate neural network ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--patience`:
+4. Train and evaluate neural network ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience`:
 
 ```bash
-$ python3 train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --patience 15
+# You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
+$ export CUDA_VISIBLE_DEVICES="0"
+
+$ python3 train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 15
 ```
 
 5. Extract attention weights from the last layer of the network and plot attention maps. Arguments: `--model_type` `--model_path`:

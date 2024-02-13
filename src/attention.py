@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
@@ -6,6 +7,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import argparse
 import json
+import os
+import logging
+
+logging.basicConfig(filename='test.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 def load_model(model_type, model_path, categories, num_continuous):
 
@@ -24,14 +29,14 @@ def load_model(model_type, model_path, categories, num_continuous):
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
-            categories=categories,
-            num_continuous=12,
-            dim=32,
-            dim_out=1,
-            depth=6,
-            heads=8,
-            attn_dropout=0.1,
-            ff_dropout=0.1
+            categories = categories,
+            num_continuous = 12,
+            dim = 192,
+            dim_out = 1,
+            depth = 3,
+            heads = 8,
+            attn_dropout = 0.2,
+            ff_dropout = 0.1
         )
     else:
         raise ValueError("Invalid model type. Choose 'TabTransformer' or 'FTTransformer'.")
@@ -70,18 +75,25 @@ def main():
     args = parser.parse_args()
 
     # Load dataset and create DataLoader here as `data_loader`
+    validation_features = torch.load('validation_features.pt')
+    validation_labels = torch.load('validation_labels.pt')
+
+    # Create a TensorDataset for the validation set
+    validation_dataset = TensorDataset(validation_features, validation_labels)
+
+    # Create the DataLoader for the validation dataset
+    data_loader = DataLoader(validation_dataset, batch_size=64, shuffle=False)  # Adjust batch_size as needed
 
     # Load encoded feature names
     with open('encoded_feature_names.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
-    categories = [2 for _ in range(10)]  # replace with actual number of categories per feature
     num_continuous = 12  # replace with actual number of continuous features
     categories=[2 for _ in range(len(encoded_feature_names))]
     
     model = load_model(args.model_type, args.model_path, categories, num_continuous)
     attention_maps = get_attention_maps(model, data_loader)
-    plot_attention_maps(attention_maps)
+    plot_attention_maps(attention_maps, args.model_type, args.model_path)
 
 if __name__ == '__main__':
     main()

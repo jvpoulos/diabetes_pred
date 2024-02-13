@@ -10,7 +10,44 @@ import re
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
 from pandas.api.types import is_categorical_dtype, is_sparse
+import logging
 
+logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+def df_to_tensor_in_chunks(df, chunk_size=10000):
+    """
+    Processes a DataFrame in chunks and converts each chunk into a PyTorch tensor.
+
+    Parameters:
+    - df: pandas.DataFrame, the DataFrame to process.
+    - chunk_size: int, the size of each chunk to process.
+
+    Returns:
+    - A PyTorch tensor containing all data from the DataFrame.
+    """
+    # Placeholder list for tensors
+    tensor_list = []
+
+    # Calculate the number of chunks
+    num_chunks = len(df) // chunk_size + (1 if len(df) % chunk_size != 0 else 0)
+
+    for chunk_start in range(0, len(df), chunk_size):
+        # Determine the end of the chunk
+        chunk_end = min(chunk_start + chunk_size, len(df))
+        
+        # Convert the chunk to a numpy array of type float32
+        chunk_array = df.iloc[chunk_start:chunk_end].to_numpy(dtype=np.float32)
+        
+        # Convert the numpy array to a PyTorch tensor
+        chunk_tensor = torch.tensor(chunk_array, dtype=torch.float32)
+        
+        # Append the tensor to the list
+        tensor_list.append(chunk_tensor)
+    
+    # Concatenate all tensors in the list along the first dimension
+    combined_tensor = torch.cat(tensor_list, dim=0)
+    
+    return combined_tensor
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -74,26 +111,38 @@ def encode_batch(batch, encoder):
 
 def optimize_column(df, col):
     try:
+        # Convert categorical column 'DiagnosisBeforeOrOnIndexDate' to numeric if not already
+        if is_categorical_dtype(df['DiagnosisBeforeOrOnIndexDate']):
+            df['DiagnosisBeforeOrOnIndexDate'] = df['DiagnosisBeforeOrOnIndexDate'].cat.codes.astype('int8', copy=False)
+
         if is_categorical_dtype(df[col]):
             df[col] = df[col].cat.codes.astype('int8', copy=False)
-
-        # Multiply directly for both sparse and non-sparse to keep the operation efficient
-        multiplied_result = df[col].multiply(df['DiagnosisBeforeOrOnIndexDate'], axis=0, fill_value=0)
         
-        # Determine if the result should be kept sparse
-        if isinstance(multiplied_result, pd.Series):
+        # Ensure both columns are numeric before multiplication
+        if df[col].dtype.kind in 'biufc' and df['DiagnosisBeforeOrOnIndexDate'].dtype.kind in 'biufc':
+            multiplied_result = df[col].multiply(df['DiagnosisBeforeOrOnIndexDate'], axis=0, fill_value=0)
+            
+            # Apply sparsity condition
             sparsity_ratio = (multiplied_result == 0).mean()
             if sparsity_ratio > 0.95:  # Adjust this threshold based on your dataset
                 df[col] = pd.arrays.SparseArray(multiplied_result, fill_value=0, dtype='float32')
             else:
                 df[col] = multiplied_result
         else:
-            df[col] = multiplied_result
+            print(f"Column {col} or 'DiagnosisBeforeOrOnIndexDate' is not numeric, skipped multiplication.")
 
     except Exception as e:
         print(f"Error processing column {col}: {e}")
 
     gc.collect()
+
+def safe_max(series):
+    if isinstance(series.array, pd.arrays.SparseArray):
+        # Convert to dense, compute max, revert to sparse if needed
+        max_val = series.array.to_dense().max()
+    else:
+        max_val = series.max()
+    return max_val
 
 # Define the column types for each file type
 
@@ -202,7 +251,7 @@ for col in categorical_columns:
     assert df_dia[col].nunique() > 0, f"Column {col} has no unique values."
 
 # Initialize OneHotEncoder with limited categories and sparse output
-one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='error')
+one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
 one_hot_encoder.fit(df_dia[categorical_columns].dropna().astype(str))
 
 print("Processing one-hot encoded features in batches.")
@@ -277,53 +326,48 @@ encoded_columns = [col for col in df_dia.columns if 'Date' in col]
 if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
     df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
 
-# Before processing, ensure df_dia is optimized for memory usage
-df_dia = optimize_dataframe(df_dia)  # This function needs to ensure optimal memory usage
-
 print("Preprocess encoded columns.")
 # Process each encoded column, skipping 'DiagnosisBeforeOrOnIndexDate'
 for col in encoded_columns:
     if col != 'DiagnosisBeforeOrOnIndexDate':
         optimize_column(df_dia, col)
 
-# Identify columns with missing values in df_dia for the specified encoded_feature_names
-# Initialize an empty list to hold the names of columns with missing values
-columns_with_missing_values = []
+print("Aggregate one-hot encoded features by EMPI.")
 
-# Iterate over each column in encoded_feature_names to check for missing values
-for col in encoded_feature_names:
-    # If the column has any missing values, append it to the list
-    if df_dia[col].isnull().any():
-        columns_with_missing_values.append(col)
+# Create an aggregation dictionary where each encoded column is aggregated with max function
+# Group by 'EMPI', aggregate using agg_dict, and reset index to flatten the DataFrame
+agg_dict = {col: safe_max for col in encoded_columns}
+df_dia = df_dia.groupby('EMPI').agg(agg_dict).reset_index()
 
-# Print columns with missing values before filling them
-print("Columns with missing values before filling:", columns_with_missing_values)
-
-# Fill missing values with 0
-df_dia[columns_with_missing_values] = df_dia[columns_with_missing_values].fillna(0)
-
-# Deduplicate diagnoses considering patient ID, diagnosis code, and diagnosis date
-df_dia.drop_duplicates(subset=['EMPI', 'CodeWithType', 'Date'], inplace=True)
-
+print("Dropping the original categorical columns ", categorical_columns)
 # Drop the original categorical columns
 df_dia.drop(categorical_columns, axis=1, inplace=True)
 
-#assert not df_dia.isnull().any().any(), "NaN values found in the diagnoses DataFrame"
+print("Merge diagnoses and outcomes datasets")
 
 # Merge dataFrames on 'EMPI'
+# Set EMPI as index
+df_outcomes.set_index('EMPI', inplace=True)
+df_dia.set_index('EMPI', inplace=True)
 
-merged_df = df_outcomes.merge(df_dia, on='EMPI', how='outer')
+# Efficient merge
+merged_df = df_outcomes.join(df_dia, how='outer')
+
+if merged_df.isnull().any().any():
+    logging.warning('Merged DataFrame contains null values.')
+
+# Cleanup
+merged_df.reset_index(inplace=True)  # If you want to move 'EMPI' back to a column
+
 del df_outcomes, df_dia
 gc.collect()
 
 # Drop unnecessary columns
 merged_df.drop(['EMPI', 'DiagnosisBeforeOrOnIndexDate'], axis=1, inplace=True)
 
-# Fill missing values with a specified value
-merged_df.fillna(0, inplace=True)
-
-# Filter columns with all zeros
+# Identify columns with all zeros
 columns_with_all_zeros = [col for col in encoded_feature_names if (merged_df[col] == 0).all()]
+print(f"Columns with all zeros: {columns_with_all_zeros}")
 
 merged_df.drop(columns=columns_with_all_zeros, inplace=True)
 
@@ -331,8 +375,6 @@ encoded_feature_names = [col for col in encoded_feature_names if col not in colu
 
 with open('columns_with_all_zeros.json', 'w') as file:
     json.dump(columns_with_all_zeros, file)
-
-#assert not merged_df.isnull().any().any(), "NaN values found in the merged DataFrame"
 
 print("Total patients (preprocessed):", merged_df.shape[0])
 print("Total features (preprocessed):", merged_df.shape[1])
@@ -344,5 +386,5 @@ with open('column_names.json', 'w') as file:
     json.dump(merged_df.columns.tolist(), file)
 
 # Convert to PyTorch tensor and save
-pytorch_tensor = torch.tensor(merged_df.values, dtype=torch.float32)
+pytorch_tensor = df_to_tensor_in_chunks(merged_df, chunk_size=10000)
 torch.save(pytorch_tensor, 'preprocessed_tensor.pt')

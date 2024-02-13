@@ -31,12 +31,15 @@ def get_icd_description(icd_column_name, icd9_df, icd10_df):
     code_type = parts[1] if len(parts) > 1 else None
 
     # Check the code type and select the appropriate DataFrame
-    if code_type == 'ICD9':
-        description = icd9_df.get(icd_code, 'Description not found')
-    elif code_type == 'ICD10':
-        description = icd10_df.get(icd_code, 'Description not found')
-    else:
-        description = 'Invalid code type'
+    try:
+        if code_type == 'ICD9':
+            description = icd9_df.loc[icd_code, 'Description'] if icd_code in icd9_df.index else 'Description not found'
+        elif code_type == 'ICD10':
+            description = icd10_df.loc[icd_code, 'Description'] if icd_code in icd10_df.index else 'Description not found'
+        else:
+            description = 'Invalid code type'
+    except KeyError:
+        description = 'Description not found'
 
     return description
 
