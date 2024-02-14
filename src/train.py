@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from tab_transformer_pytorch import TabTransformer, FTTransformer
+from tab_transformer import TabTransformer, FTTransformer
 import os
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score

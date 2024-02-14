@@ -40,6 +40,9 @@ GPU: GeForce RTX 2080
 - `attention.py`
 	- Load a model, either a TabTransformer or an FTTransformer, and visualize its attention maps using a validation dataset.
 
+- `embeddings.py`
+	- Loads a trained model, extracts embeddings for the validation dataset, and then applies the t-SNE algorithm to these embeddings.
+
 - `test.py`
 	- Loads the validated model from `train.py` and evaluates it on a test dataset.
 
@@ -73,6 +76,11 @@ $ pip3 install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stab
 $ pip3 install -r requirements.txt
 ```
 
+5. Install git repo [TabTransformer](https://github.com/jvpoulos/TabTransformer), forked from [tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch):
+```bash
+$ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
+```
+
 ## Run the code
 
 1. Load and merge data from .txt files. Preprocess the data and convert the merge dataset to PyTorch Tensor:
@@ -93,7 +101,7 @@ $ python3 src/data_splitter.py
 $ python3 src/data_preprocessor.py
 ```
 
-4. Train and evaluate neural network ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience`:
+4. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience`:
 
 ```bash
 # You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
@@ -102,13 +110,19 @@ $ export CUDA_VISIBLE_DEVICES="0"
 $ python3 train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 15
 ```
 
-5. Extract attention weights from the last layer of the network and plot attention maps. Arguments: `--model_type` `--model_path`:
+5. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 attention.py --model_type TabTransformer --model_path trained_model.pth
+$ python3 attention.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
 ```
 
-6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
+6. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
+
+```bash
+$ python3 embeddings.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
+```
+
+7. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
 $ python3 test.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32

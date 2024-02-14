@@ -136,12 +136,13 @@ def optimize_column(df, col):
 
     gc.collect()
 
-def safe_max(series):
-    if isinstance(series.array, pd.arrays.SparseArray):
-        # Convert to dense, compute max, revert to sparse if needed
-        max_val = series.array.to_dense().max()
+def safe_max(group):
+    # Assuming the input is a groupby object for a single column.
+    # Convert sparse series to a dense one, compute max, and return a scalar.
+    if isinstance(group.array, pd.arrays.SparseArray):
+        max_val = group.array.to_dense().max()
     else:
-        max_val = series.max()
+        max_val = group.max()
     return max_val
 
 # Define the column types for each file type
@@ -334,9 +335,10 @@ for col in encoded_columns:
 
 print("Aggregate one-hot encoded features by EMPI.")
 
-# Create an aggregation dictionary where each encoded column is aggregated with max function
-# Group by 'EMPI', aggregate using agg_dict, and reset index to flatten the DataFrame
-agg_dict = {col: safe_max for col in encoded_columns}
+# Apply the safe_max function to each column individually
+agg_dict = {col: ('max' if not is_sparse(df_dia[col]) else safe_max) for col in encoded_columns}
+
+# Aggregate and reset the index
 df_dia = df_dia.groupby('EMPI').agg(agg_dict).reset_index()
 
 print("Dropping the original categorical columns ", categorical_columns)

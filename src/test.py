@@ -2,7 +2,7 @@ import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from tab_transformer_pytorch import TabTransformer, FTTransformer
+from tab_transformer import TabTransformer, FTTransformer
 import json
 import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score

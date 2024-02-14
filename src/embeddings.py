@@ -1,16 +1,17 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from tab_transformer import TabTransformer, FTTransformer
+from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
 import seaborn as sns
+import pandas as pd
+from tab_transformer import TabTransformer, FTTransformer
+import logging
+import os
 import argparse
 import json
-import os
-import logging
 
-logging.basicConfig(filename='attention.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+logging.basicConfig(filename='embeddings.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 def load_model(model_type, model_path, categories, num_continuous):
 
@@ -45,29 +46,33 @@ def load_model(model_type, model_path, categories, num_continuous):
     model.eval()
     return model
 
-def get_attention_maps(model, loader):
-    attention_maps = []
-    for batch in loader:
-        x_categ, x_cont = batch
-        x_categ, x_cont = x_categ.to(model.device), x_cont.to(model.device)
-        _, attns = model(x_categ, x_cont, return_attn=True)
-        attention_maps.append(attns)
-    return attention_maps
+def extract_embeddings(model, loader):
+    embeddings = []
+    with torch.no_grad():
+        for batch in loader:
+            x_categ, x_cont = [t.to(model.device) for t in batch]
+            emb = model.get_embeddings(x_categ, x_cont)
+            embeddings.append(emb.cpu())
+    return torch.cat(embeddings).numpy()
 
-def plot_attention_maps(attention_maps, model_type, model_path):
-    # Assuming you are only interested in the attention from the last layer
-    attention_map = attention_maps[-1].mean(dim=1)  # Taking the mean attention across heads
-    avg_attention_map = attention_map.mean(dim=0)  # Further averaging across all batches
-    
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(avg_attention_map.cpu().detach().numpy(), cmap='viridis')
-    plt.title(f'Attention Map - {model_type}')
-    
+def plot_embeddings(tsne_df, model_type, model_path):
+
+    # Create the Seaborn plot
+    plt.figure(figsize=(16,10))
+    sns.scatterplot(
+        x='TSNE1', y='TSNE2',
+        palette=sns.color_palette("hsv", 10),
+        data=tsne_df,
+        legend="full",
+        alpha=0.3
+    )
+    plt.title(f'Learned embeddings - {model_type}')
+
     # Construct filename based on model_type and model_path
-    filename = f"attention_map_{model_type}_{os.path.basename(model_path).replace('.pth', '')}.png"
+    filename = f"tSNE_embeddings_plot_{model_type}_{os.path.basename(model_path).replace('.pth', '')}.png"
     plt.savefig(filename)
     plt.close()
-    print(f"Attention map saved to {filename}")
+    print(f"Embeddings plot saved to {filename}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -84,7 +89,7 @@ def main():
     validation_dataset = TensorDataset(validation_features, validation_labels)
 
     # Create the DataLoader for the validation dataset
-    data_loader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)  # Adjust batch_size as needed
+    data_loader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
 
     # Load encoded feature names
     with open('encoded_feature_names.json', 'r') as file:
@@ -96,8 +101,17 @@ def main():
     model = load_model(args.model_type, args.model_path, categories, num_continuous)
     model = model.to(torch.device("cuda:0" if torch.cuda.is_available() else "cpu"))
 
-    attention_maps = get_attention_maps(model, data_loader)
-    plot_attention_maps(attention_maps, args.model_type, args.model_path)
+    # Get embeddings from the validation set
+    validation_embeddings = extract_embeddings(model, data_loader)
+
+    # Apply t-SNE to the embeddings
+    tsne = TSNE(n_components=2, random_state=42)
+    tsne_results = tsne.fit_transform(validation_embeddings)
+
+    # Convert to DataFrame for Seaborn plotting
+    tsne_df = pd.DataFrame(tsne_results, columns=['TSNE1', 'TSNE2'])
+
+    plot_embeddings(tsne_df, args.model_type, args.model_path)
 
 if __name__ == '__main__':
     main()
