@@ -193,10 +193,12 @@ sparsity_rate = 1 - df_train[encoded_feature_names].mean()
 # Identify features with sparsity rate >= 99%
 rare_features = sparsity_rate[sparsity_rate >= 0.99].index
 
-# Filter out these rare features from the datasets
-df_train_filtered = df_train.drop(columns=rare_features)
-df_validation_filtered = df_validation.drop(columns=rare_features)
-df_test_filtered = df_test.drop(columns=rare_features)
+# Filter out these rare features and all-zero columns from the datasets
+columns_to_drop = rare_features + all_zero_columns
+
+df_train_filtered = df_train.drop(columns=columns_to_drop)
+df_validation_filtered = df_validation.drop(columns=columns_to_drop)
+df_test_filtered = df_test.drop(columns=columns_to_drop)
 
 print("Number of features after filtering:", df_train_filtered.shape[1])
 

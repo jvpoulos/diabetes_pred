@@ -11,6 +11,17 @@ import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
 from pandas.api.types import is_categorical_dtype, is_sparse
 import logging
+from joblib import Parallel, delayed
+import multiprocessing
+
+# Determine the total number of available cores
+total_cores = multiprocessing.cpu_count()
+print("total_cores:", total_cores)
+
+# Don't use all available cores
+n_jobs = total_cores // 2
+
+print("n_jobs:", n_jobs)
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -93,6 +104,13 @@ def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_s
 
     return data
 
+def process_batch(start, end, df, categorical_columns, one_hot_encoder):
+    batch = df.loc[start:end-1, categorical_columns]
+    encoded_batch = one_hot_encoder.transform(batch.astype(str))
+    assert encoded_batch.ndim == 2, f"Batch at rows {start} to {end} is not a 2-D array"
+    assert encoded_batch.getnnz() > 0, f"All-zero batch at rows {start} to {end}"
+    return encoded_batch
+
 def encode_batch(batch, encoder):
     """
     Encodes a batch of data using one-hot encoding.
@@ -109,41 +127,34 @@ def encode_batch(batch, encoder):
     encoded = encoder.transform(batch_str)
     return pd.DataFrame(encoded, index=batch.index)
 
-def optimize_column(df, col):
+def optimize_column(df, col, start_idx, end_idx):
     try:
-        # Convert categorical column 'DiagnosisBeforeOrOnIndexDate' to numeric if not already
-        if is_categorical_dtype(df['DiagnosisBeforeOrOnIndexDate']):
-            df['DiagnosisBeforeOrOnIndexDate'] = df['DiagnosisBeforeOrOnIndexDate'].cat.codes.astype('int8', copy=False)
-
-        if is_categorical_dtype(df[col]):
-            df[col] = df[col].cat.codes.astype('int8', copy=False)
+        # Convert categorical columns to numerical codes
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            df.loc[start_idx:end_idx, col] = df[col].astype('category').cat.codes
         
-        # Ensure both columns are numeric before multiplication
-        if df[col].dtype.kind in 'biufc' and df['DiagnosisBeforeOrOnIndexDate'].dtype.kind in 'biufc':
-            multiplied_result = df[col].multiply(df['DiagnosisBeforeOrOnIndexDate'], axis=0, fill_value=0)
-            
-            # Apply sparsity condition
-            sparsity_ratio = (multiplied_result == 0).mean()
-            if sparsity_ratio > 0.95:  # Adjust this threshold based on your dataset
-                df[col] = pd.arrays.SparseArray(multiplied_result, fill_value=0, dtype='float32')
-            else:
-                df[col] = multiplied_result
-        else:
-            print(f"Column {col} or 'DiagnosisBeforeOrOnIndexDate' is not numeric, skipped multiplication.")
+        # Perform the multiplication
+        multiplied_result = df.loc[start_idx:end_idx, col] * df.loc[start_idx:end_idx, 'DiagnosisBeforeOrOnIndexDate']
+        
+        # Calculate sparsity ratio
+        sparsity_ratio = (multiplied_result == 0).mean()
 
+        # If the column is mostly zeros, convert to a sparse type to save memory
+        if sparsity_ratio > 0.95:
+            # Create a SparseArray and replace the existing column with it
+            df[col] = pd.arrays.SparseArray(df[col], fill_value=0, dtype=df[col].dtype)
+        else:
+            # Directly assign the result to the DataFrame in the specified slice
+            df.loc[start_idx:end_idx, col] = multiplied_result
     except Exception as e:
         print(f"Error processing column {col}: {e}")
 
-    gc.collect()
-
-def safe_max(group):
-    # Assuming the input is a groupby object for a single column.
-    # Convert sparse series to a dense one, compute max, and return a scalar.
-    if isinstance(group.array, pd.arrays.SparseArray):
-        max_val = group.array.to_dense().max()
-    else:
-        max_val = group.max()
-    return max_val
+def process_column(df, col, chunk_size=10000):
+    print(f"Optimizing column: {col}")
+    for chunk_start in range(0, len(df), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(df))
+        optimize_column(df, col, chunk_start, chunk_end)
+    print(f"Finished optimizing column: {col}")
 
 # Define the column types for each file type
 
@@ -256,22 +267,15 @@ one_hot_encoder = OneHotEncoder(sparse=True, handle_unknown='ignore')
 one_hot_encoder.fit(df_dia[categorical_columns].dropna().astype(str))
 
 print("Processing one-hot encoded features in batches.")
-# Process in batches
+
 batch_size = 1000
 encoded_batches = []
 
-for start in range(0, len(df_dia), batch_size):
-    end = min(start + batch_size, len(df_dia))
-    batch = df_dia.loc[start:end-1, categorical_columns]
-    encoded_batch = one_hot_encoder.transform(batch.astype(str))
-    
-    # Ensure that the encoded batch is a 2-D array
-    assert encoded_batch.ndim == 2, f"Batch at rows {start} to {end} is not a 2-D array"
-    
-    # Check if the encoded batch is not all zeros
-    assert encoded_batch.getnnz() > 0, f"All-zero batch at rows {start} to {end}"
-    
-    encoded_batches.append(encoded_batch)
+# Execute the processing in parallel
+encoded_batches = Parallel(n_jobs=n_jobs)(
+    delayed(process_batch)(start, min(start + batch_size, len(df_dia)), df_dia, categorical_columns, one_hot_encoder)
+    for start in range(0, len(df_dia), batch_size)
+)
 
 # Check if the encoded_batches list is not empty
 assert len(encoded_batches) > 0, "No batches have been encoded. The encoded_batches list is empty."
@@ -282,6 +286,10 @@ encoded_data = vstack(encoded_batches)
 
 # Get feature names from the encoder
 encoded_feature_names = one_hot_encoder.get_feature_names(categorical_columns)
+
+print("Dropping the original categorical columns ", categorical_columns)
+# Drop the original categorical columns
+df_dia.drop(categorical_columns, axis=1, inplace=True)
 
 # Process the feature names to remove the prefix
 encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in encoded_feature_names]
@@ -328,22 +336,25 @@ if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
     df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
 
 print("Preprocess encoded columns.")
-# Process each encoded column, skipping 'DiagnosisBeforeOrOnIndexDate'
-for col in encoded_columns:
-    if col != 'DiagnosisBeforeOrOnIndexDate':
-        optimize_column(df_dia, col)
+# Filter out the column 'DiagnosisBeforeOrOnIndexDate' before invoking Parallel
+filtered_columns = [col for col in encoded_columns if col != 'DiagnosisBeforeOrOnIndexDate']
+
+tasks = [delayed(process_column)(df_dia, col) for col in filtered_columns]
+if tasks:  # Ensure there are tasks to process
+    Parallel(n_jobs=n_jobs)(tasks)
+else:
+    print("No columns meet the criteria for processing.")
 
 print("Aggregate one-hot encoded features by EMPI.")
 
-# Apply the safe_max function to each column individually
-agg_dict = {col: ('max' if not is_sparse(df_dia[col]) else safe_max) for col in encoded_columns}
+# Setup the aggregation dictionary
+agg_dict = {col: 'max' for col in encoded_columns}
+print("Aggregation dictionary set up.")
 
-# Aggregate and reset the index
+# Perform the aggregation
+print("Starting aggregation by EMPI.")
 df_dia = df_dia.groupby('EMPI').agg(agg_dict).reset_index()
-
-print("Dropping the original categorical columns ", categorical_columns)
-# Drop the original categorical columns
-df_dia.drop(categorical_columns, axis=1, inplace=True)
+print("Aggregation completed.")
 
 print("Merge diagnoses and outcomes datasets")
 
