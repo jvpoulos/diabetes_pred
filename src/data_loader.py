@@ -13,19 +13,24 @@ from pandas.api.types import is_categorical_dtype, is_sparse
 import logging
 from joblib import Parallel, delayed
 import multiprocessing
+import concurrent.futures
+import dask.dataframe as dd
+from dask.cache import Cache
+cache = Cache(1e9)  # 1e9 bytes == 1 GB
+cache.register()  # Register cache globally
 
 # Determine the total number of available cores
 total_cores = multiprocessing.cpu_count()
 print("total_cores:", total_cores)
 
 # Don't use all available cores
-n_jobs = total_cores // 2
+n_jobs = total_cores - 12
 
 print("n_jobs:", n_jobs)
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
-def df_to_tensor_in_chunks(df, chunk_size=10000):
+def df_to_tensor_in_chunks(df, chunk_size=50000):
     """
     Processes a DataFrame in chunks and converts each chunk into a PyTorch tensor.
 
@@ -71,7 +76,7 @@ def optimize_dataframe(df):
                 df[col] = df[col].astype('category')
     return df
 
-def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=10000):
+def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """
     Reads a CSV file with a progress bar, selecting specific columns.
 
@@ -149,12 +154,19 @@ def optimize_column(df, col, start_idx, end_idx):
     except Exception as e:
         print(f"Error processing column {col}: {e}")
 
-def process_column(df, col, chunk_size=10000):
-    print(f"Optimizing column: {col}")
+def process_column(df, col, chunk_size=500000):
     for chunk_start in range(0, len(df), chunk_size):
         chunk_end = min(chunk_start + chunk_size, len(df))
         optimize_column(df, col, chunk_start, chunk_end)
-    print(f"Finished optimizing column: {col}")
+
+def process_chunk(start, df_dia, encoded_columns, agg_dict, chunk_size=500000):
+    end = start + chunk_size
+    chunk = df_dia.iloc[start:end].copy()
+    for col in encoded_columns:
+        if pd.api.types.is_sparse(chunk[col].dtype):
+            chunk[col] = chunk[col].sparse.to_dense()
+    agg_chunk = chunk.groupby('EMPI').agg(agg_dict).reset_index()
+    return agg_chunk
 
 # Define the column types for each file type
 
@@ -268,7 +280,7 @@ one_hot_encoder.fit(df_dia[categorical_columns].dropna().astype(str))
 
 print("Processing one-hot encoded features in batches.")
 
-batch_size = 1000
+batch_size = 5000
 encoded_batches = []
 
 # Execute the processing in parallel
@@ -335,42 +347,39 @@ encoded_columns = [col for col in df_dia.columns if 'Date' in col]
 if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
     df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
 
+# Preprocess encoded columns
 print("Preprocess encoded columns.")
-# Filter out the column 'DiagnosisBeforeOrOnIndexDate' before invoking Parallel
 filtered_columns = [col for col in encoded_columns if col != 'DiagnosisBeforeOrOnIndexDate']
-
 tasks = [delayed(process_column)(df_dia, col) for col in filtered_columns]
-if tasks:  # Ensure there are tasks to process
-    Parallel(n_jobs=n_jobs)(tasks)
+
+if tasks:
+    with tqdm(total=len(tasks), desc="Processing Columns") as progress_bar:
+        results = Parallel(n_jobs=n_jobs)(tasks)
+        for _ in results:
+            progress_bar.update()
 else:
     print("No columns meet the criteria for processing.")
 
 print("Aggregate one-hot encoded features by EMPI.")
-
 # Setup the aggregation dictionary
 agg_dict = {col: 'max' for col in encoded_columns}
 print("Aggregation dictionary set up.")
-
-# Perform the aggregation
 print("Starting aggregation by EMPI.")
-df_dia = df_dia.groupby('EMPI').agg(agg_dict).reset_index()
-print("Aggregation completed.")
+df_dia = dd.from_pandas(df_dia, npartitions=n_jobs)
+delayed_aggs = [dask.delayed(lambda x: x.groupby('EMPI').agg(agg_dict))(df_dia.get_partition(n)) for n in range(df_dia.npartitions)]
+agg_results = dask.compute(*delayed_aggs, scheduler='processes')[0]
+df_dia = dd.concat(agg_results).groupby('EMPI').agg(agg_dict).compute()
 
 print("Merge diagnoses and outcomes datasets")
-
-# Merge dataFrames on 'EMPI'
-# Set EMPI as index
-df_outcomes.set_index('EMPI', inplace=True)
-df_dia.set_index('EMPI', inplace=True)
-
-# Efficient merge
-merged_df = df_outcomes.join(df_dia, how='outer')
+df_outcomes = dd.from_pandas(df_outcomes, npartitions=n_jobs)
+df_outcomes = df_outcomes.set_index('EMPI', sorted=True)
+merged_df = df_outcomes.join(df_dia, how='outer').compute()
 
 if merged_df.isnull().any().any():
     logging.warning('Merged DataFrame contains null values.')
 
-# Cleanup
-merged_df.reset_index(inplace=True)  # If you want to move 'EMPI' back to a column
+# Reset index if EMPI is needed as a column
+merged_df.reset_index(inplace=True)
 
 del df_outcomes, df_dia
 gc.collect()
@@ -399,5 +408,5 @@ with open('column_names.json', 'w') as file:
     json.dump(merged_df.columns.tolist(), file)
 
 # Convert to PyTorch tensor and save
-pytorch_tensor = df_to_tensor_in_chunks(merged_df, chunk_size=10000)
+pytorch_tensor = df_to_tensor_in_chunks(merged_df, chunk_size=50000)
 torch.save(pytorch_tensor, 'preprocessed_tensor.pt')

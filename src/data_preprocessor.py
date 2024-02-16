@@ -77,6 +77,9 @@ columns_to_normalize = ['InitialA1c', 'A1cAfter12Months', 'DaysFromIndexToInitia
                         'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 
                         'NumberEncounters', 'SDI_score']
 
+with open('numeric_columns', 'w') as file:
+    json.dump(columns_to_normalize.tolist(), file)
+
 scaler = MinMaxScaler()
 
 # Fit on training data
@@ -263,6 +266,12 @@ with open('df_train_filtered_summary_statistics.html', 'w') as f:
 
 # save training set as text file
 np.savetxt('df_train_filtered_values.txt', df_train_filtered.values)
+
+with open('column_names_filtered.json', 'w') as file:
+    json.dump(df_train_filtered.columns.tolist(), file)
+
+with open('encoded_feature_names_filtered.json', 'w') as file:
+    json.dump(encoded_feature_names_filtered.tolist(), file)    
 
 # Convert to PyTorch tensors and save
 filtered_train_tensor = torch.tensor(df_train_filtered.values, dtype=torch.float32)

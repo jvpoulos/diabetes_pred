@@ -3,14 +3,34 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from tab_transformer import TabTransformer, FTTransformer
+from tab_transformer_pytorch import TabTransformer, FTTransformer
 import os
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
 import copy
 import logging
+import json
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+def augment_numeric_data(numeric_data, noise_level=0.01):
+    """
+    Applies random noise to numeric data to augment it.
+    noise_level: The standard deviation of the Gaussian noise to be added.
+    """
+    noise = torch.randn_like(numeric_data) * noise_level
+    return numeric_data + noise
+
+def augment_encoded_data(encoded_data, flip_prob=0.05):
+    """
+    Randomly flips bits in one-hot encoded data to augment it.
+    flip_prob: Probability of flipping each bit.
+    """
+    # Create a mask of the same shape as encoded_data with random bits flipped
+    flip_mask = torch.rand_like(encoded_data.float()) < flip_prob
+    # XOR with the flip mask to flip bits
+    augmented_data = encoded_data ^ flip_mask.to(torch.uint8)
+    return augmented_data
 
 class CustomDataset(Dataset):
     def __init__(self, features, labels):
@@ -41,20 +61,32 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.savefig(filepath)
     plt.close()
 
-def train_model(model, train_loader, criterion, optimizer):
+def train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, noise_level, flip_prob, device):
     model.train()  # Set the model to training mode
     total_loss = 0
-
-    for data, labels in train_loader:
-        data, labels = data.to(device), labels.to(device)
+    
+    for batch_idx, (data, labels) in enumerate(train_loader):
+        # Assuming data is a single tensor with both numeric and encoded features
+        numeric_data = data[:, numeric_indices]
+        encoded_data = data[:, encoded_indices]
+        
+        # Apply augmentation to numeric and encoded data
+        augmented_numeric = augment_numeric_data(numeric_data, noise_level=noise_level)
+        augmented_encoded = augment_encoded_data(encoded_data, flip_prob=flip_prob)
+        
+        # Combine the augmented data back together
+        augmented_data = torch.cat((augmented_numeric, augmented_encoded), dim=1)
+        
+        augmented_data, labels = augmented_data.to(device), labels.to(device)
+        
         optimizer.zero_grad()  # Clear gradients for the next train
-        outputs = model(data)  # Forward pass: compute the output class given a image
+        outputs = model(augmented_data)  # Forward pass: compute the output class given the augmented data
         loss = criterion(outputs.squeeze(), labels.float())  # Calculate the loss
         loss.backward()  # Backward pass: compute gradient of the loss with respect to model parameters
         optimizer.step()  # Perform a single optimization step (parameter update)
         
         total_loss += loss.item()  # Accumulate the loss
-
+        
     average_loss = total_loss / len(train_loader)
     print(f'Training loss: {average_loss:.4f}')
     return average_loss
@@ -93,14 +125,24 @@ def main(args):
     train_dataset = torch.load('filtered_training_tensor.pt')
     validation_dataset = torch.load('filtered_validation_tensor.pt')
 
-    with open('column_names.json', 'r') as file:
+    with open('column_names_filtered.json', 'r') as file:
         column_names = json.load(file)
+
+    with open('numeric_columns.json', 'r') as file:
+        numeric_columns = json.load(file)
+
+    with open('encoded_feature_names_filtered.json', 'r') as file:
+        encoded_feature_names = json.load(file)
 
     # Excluded column names
     excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
 
     # Find indices of the columns to be excluded
     excluded_indices = [column_names.index(col) for col in excluded_columns]
+
+    # Find indices for numeric and encoded features excluding the excluded columns
+    numeric_indices = [column_names.index(col) for col in numeric_columns if col not in excluded_columns]
+    encoded_indices = [column_names.index(col) for col in encoded_feature_names if col not in excluded_columns]
 
     # Find indices of all columns
     #  conversion from column names to indices is necessary because PyTorch tensors do not support direct column selection by name
@@ -127,9 +169,6 @@ def main(args):
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
 
-    with open('encoded_feature_names.json', 'r') as file:
-        encoded_feature_names = json.load(file)
-
     categories=[2 for _ in range(len(encoded_feature_names))]
 
     # Initialize model, criterion, optimizer here with the current set of hyperparameters
@@ -154,6 +193,14 @@ def main(args):
         attn_dropout = 0.2,                 # post-attention dropout
         ff_dropout = 0.1                    # feed forward dropout
     )
+    
+    if args.saved_model:
+        # Ensure the file exists before attempting to load
+        if os.path.isfile(args.saved_model):
+            model.load_state_dict(torch.load(args.saved_model))
+            print(f"Loaded saved model from {args.saved_model}")
+        else:
+            print(f"Saved model file {args.saved_model} not found. Training from scratch.")
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -172,7 +219,7 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer)
+        train_loss = train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, noise_level, flip_prob, device)
         val_loss, _ = validate_model(model, validation_loader, criterion)
 
         # Save losses for plotting
@@ -197,10 +244,11 @@ def main(args):
     model.load_state_dict(best_model_wts)
 
     # After training, plot the losses
-    plot_losses(train_losses, val_losses, {'lr': args.learning_rate, 'batch_size': args.batch_size})
+    plot_losses(train_losses, val_losses, {'model_type': args.model_type, 'batch_size': args.batch_size,'lr': args.learning_rate, 'ep': args.epochs, 'noise_level':args.noise_level, 'flip_prob':args.flip_prob})
 
     # Save the best model to a file
-    torch.save(model.state_dict(), 'trained_model.pth')
+    model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{args.epochs}_nl{args.noise_level}_fp{args.flip_prob}.pth"
+    torch.save(model.state_dict(), model_filename)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
@@ -211,5 +259,9 @@ if __name__ == "__main__":
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
     parser.add_argument('--early_stopping_patience', type=int, default=15, help='Early stopping patience')
+    parser.add_argument('--noise_level', type=float, default=0.01, help='Standard deviation of the Gaussian noise to be added for numeric augmentation.')
+    parser.add_argument('--flip_prob', type=float, default=0.05, help='Probability of flipping each bit for encoded data augmentation.')
+    parser.add_argument('--model_path', type=str, default=None,
+                    help='Optional path to the saved model file to load before training')
     args = parser.parse_args()
     main(args)

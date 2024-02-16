@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import seaborn as sns
 import pandas as pd
-from tab_transformer import TabTransformer, FTTransformer
+from tab_transformer_pytorch import TabTransformer, FTTransformer
 import logging
 import os
 import argparse
@@ -92,7 +92,7 @@ def main():
     data_loader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
 
     # Load encoded feature names
-    with open('encoded_feature_names.json', 'r') as file:
+    with open('encoded_feature_names_filtered.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
     num_continuous = 12  # replace with actual number of continuous features
