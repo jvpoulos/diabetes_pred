@@ -1,6 +1,5 @@
 import torch
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
@@ -43,11 +42,13 @@ def get_icd_description(icd_column_name, icd9_df, icd10_df):
 
     return description
 
-# Assuming icd9_df and icd10_df are dictionaries or DataFrames with ICD codes as keys or indices and descriptions as values
-# Here's how you would call the function for a column name like "001.1_ICD9"
-column_name = "001.1_ICD9"
-description = get_icd_description(column_name, icd9_df, icd10_df)
-print(description)  # Prints the description for the ICD code "001.1" in ICD-9
+def extract_icd_info(col_name):
+    # Split the column name based on underscores
+    parts = col_name.split('_')
+    # Extract the ICD code and type from the parts
+    icd_code = parts[1]  # This gets the '001.1' from '001.1_ICD9'
+    code_type = parts[2]  # This gets the 'ICD9' or 'ICD10' from '001.1_ICD9'
+    return icd_code, code_type
 
 # Load column names from files
 with open('column_names.json', 'r') as file:
@@ -55,6 +56,36 @@ with open('column_names.json', 'r') as file:
 
 with open('encoded_feature_names.json', 'r') as file:
     encoded_feature_names = json.load(file)
+
+with open('infrequent_categories.json', 'r') as file:
+    infrequent_categories = json.load(file)
+
+# Before loading data, get descriptions of exluded ICD codes
+infrequent_categories_df = []
+
+for col_name in infrequent_categories:
+    # Use the extract_icd_info function to get ICD code and code type
+    icd_code, code_type = extract_icd_info(col_name)
+
+    # Call the function with the extracted code, code type, and the respective DataFrame
+    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+    
+    # Append the results to the data list
+    infrequent_categories_df.append({
+        "ICD Code Type": code_type,
+        "ICD Code": icd_code,
+        "Description": description
+    })
+
+# Create a DataFrame from the data list
+infrequent_categories_icd_info = pd.DataFrame(infrequent_categories_df)
+
+# Convert the DataFrame to an HTML table
+infrequent_categories_html_table = infrequent_categories_icd_info.to_html(index=False)
+
+# Save the HTML table to a file
+with open("excluded_codes_descriptions.html", "w") as file:
+    file.write(infrequent_categories_html_table)
 
 # Load the preprocessed tensor
 loaded_train_dataset = torch.load('train_dataset.pt')
@@ -67,29 +98,6 @@ df_validation = pd.DataFrame(loaded_validation_dataset.tensors[0].numpy(), colum
 df_test = pd.DataFrame(loaded_test_dataset.tensors[0].numpy(), columns=column_names)
 
 print(df_train.describe())
-
-# Normalize specified numeric columns in df_outcomes using the Min-Max scaling approach. 
-# This method is chosen because it handles negative and zero values well, scaling the data to a [0, 1] range.
-
-columns_to_normalize = ['InitialA1c', 'A1cAfter12Months', 'DaysFromIndexToInitialA1cDate', 
-                        'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 
-                        'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 
-                        'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 
-                        'NumberEncounters', 'SDI_score']
-
-with open('numeric_columns', 'w') as file:
-    json.dump(columns_to_normalize.tolist(), file)
-
-scaler = MinMaxScaler()
-
-# Fit on training data
-df_train[columns_to_normalize] = scaler.fit_transform(df_train[columns_to_normalize])
-
-print(df_train[columns_to_normalize].describe())
-
-# Transform validation and test data
-df_validation[columns_to_normalize] = scaler.transform(df_validation[columns_to_normalize])
-df_test[columns_to_normalize] = scaler.transform(df_test[columns_to_normalize])
 
 # Calculate sparsity rate for one-hot encoded columns
 
@@ -107,35 +115,6 @@ with open('training_set_all_zero_columns.json', 'w') as file:
 share_of_all_zero_columns = len(all_zero_columns) / len(encoded_feature_names)
 
 print(f"Share of columns with all-zero values: {share_of_all_zero_columns:.2%}")
-
-# Initialize a list to store data for the new DataFrame
-data_for_df = []
-
-for col_name in all_zero_columns:
-    # Assuming the column name is structured as 'code_type_code'
-    parts = col_name.split('_')
-    icd_code = parts[1]  # This gets the '001.1' from '001.1_ICD9'
-    code_type = parts[2]  # This gets the 'ICD9' from '001.1_ICD9'
-
-    # Call the function with the extracted code, code type, and the respective DataFrame
-    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-    
-    # Append the results to the data list
-    data_for_df.append({
-        "ICD Code Type": code_type,
-        "ICD Code": icd_code,
-        "Description": description
-    })
-
-# Create a DataFrame from the data list
-df_icd_info = pd.DataFrame(data_for_df)
-
-# Convert the DataFrame to an HTML table
-html_table = df_icd_info.to_html(index=False)
-
-# Save the HTML table to a file
-with open("icd_codes_descriptions.html", "w") as file:
-    file.write(html_table)
 
 # Limit the number of features or samples due to visual and performance constraints
 sampled_df = df_train[encoded_feature_names].sample(n=min(100, len(df_train)), axis=1, random_state=42) # limits to 100 features
@@ -166,6 +145,17 @@ df_train_summary_filtered = df_train_summary[['count', 'sum', 'mean', 'std']]
 
 # Sort the features by 'sum'
 df_train_summary_sorted = df_train_summary_filtered.sort_values(by='sum', ascending=False)
+
+# Fetch ICD code descriptions for encoded_feature_names
+icd_descriptions = []
+for feature in encoded_feature_names:
+    # Extract ICD code and type 
+    icd_code, code_type = extract_icd_info(feature)
+    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+    icd_descriptions.append(description)
+
+# Create a column in df_train_summary_sorted for these descriptions
+df_train_summary_sorted['ICD Description'] = icd_descriptions
 
 # Convert the sorted summary statistics table to HTML format
 df_train_summary_html = df_train_summary_sorted.to_html()
@@ -203,7 +193,9 @@ df_train_filtered = df_train.drop(columns=columns_to_drop)
 df_validation_filtered = df_validation.drop(columns=columns_to_drop)
 df_test_filtered = df_test.drop(columns=columns_to_drop)
 
-print("Number of features after filtering:", df_train_filtered.shape[1])
+print("Number of features after filtering (training set):", df_train_filtered.shape[1])
+print("Number of features after filtering (validation set):", df_validation_filtered.shape[1])
+print("Number of features after filtering:(test set)", df_test_filtered.shape[1])
 
 # Update the encoded_feature_names list to include only those present in df_train_filtered
 encoded_feature_names_filtered = [col for col in encoded_feature_names if col in df_train_filtered.columns]
@@ -257,15 +249,23 @@ df_train_filtered_summary_filtered = df_train_filtered_summary[['count', 'sum', 
 # Sort the features by mean
 df_train_filtered_summary_sorted = df_train_filtered_summary_filtered.sort_values(by='sum', ascending=False)
 
+# Fetch ICD code descriptions for encoded_feature_names
+icd_descriptions = []
+for feature in encoded_feature_names:
+    # Extract ICD code and type 
+    icd_code, code_type = extract_icd_info(feature)
+    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+    icd_descriptions.append(description)
+
+# Create a column in df_train_summary_sorted for these descriptions
+df_train_summary_sorted['ICD Description'] = icd_descriptions
+
 # Convert summary statistics table to HTML format
 df_train_filtered_summary_html = df_train_filtered_summary_sorted.to_html()
 
 # Save summary statistics table as HTML file
 with open('df_train_filtered_summary_statistics.html', 'w') as f:
     f.write(df_train_filtered_summary_html)
-
-# save training set as text file
-np.savetxt('df_train_filtered_values.txt', df_train_filtered.values)
 
 with open('column_names_filtered.json', 'w') as file:
     json.dump(df_train_filtered.columns.tolist(), file)

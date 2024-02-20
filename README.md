@@ -13,7 +13,7 @@ Both models have shown to outperform traditional deep learning and machine learn
 
 ## Requirements
 
-This code has been tested on Python 3.6.9 on Ubuntu 18.04.1.
+This code has been tested on Python 3.6.9 and Python 3.8.0 on Ubuntu 18.04.1.
 
 Requires PyTorch 1.8.1 compiled for CUDA 11.2.
 
@@ -26,10 +26,7 @@ GPU: GeForce RTX 2080
 ## Code Files in `src/`
 
 - `data_loader.py`
-	- Loads and merges data from .txt files. Preprocesses merged data. Converts the processed data into a PyTorch Tensor, and saves it to file.
-
-- `data_splitter.py`
-	- Randomly splits the processed dataset into training (70%), validation (20%), and test (10%) sets. Saves the split datasets to disk.
+	- Loads and merges data from .txt files. Randomly splits the data into training (70%), validation (20%), and test (10%) sets. Preprocesses datasets, converts datasets into PyTorch Tensors, and saves them to file.
 
 - `data_preprocessor.py`
 	- Further preprocesses the datasets by applying feature selection techniques and visualizes the extent of sparsity in the training set.
@@ -88,25 +85,19 @@ $ python3 -m pip install "dask[dataframe]" --upgrade
 ```
 ## Run the code
 
-1. Load and merge data from .txt files. Preprocess the data and convert the merge dataset to PyTorch Tensor:
+1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors. 
 
 ```bash
-$ python3 src/data_loader.py
+$ python3.8 src/data_loader.py # need Python 3.8 to run 
 ```
 
-2. Split the dataset into training, validation, and test sets in a 70-20-10 ratio:
-
-```bash
-$ python3 src/data_splitter.py
-```
-
-3. Further preprocess the datasets by applying feature selection techniques and visualize the extent of sparsity:
+2. Further preprocess the datasets by applying feature selection techniques and visualizes the extent of sparsity:
 
 ```bash
 $ python3 src/data_preprocessor.py
 ```
 
-4. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--noise_level` `--flip_prob` `--model_path` (optional):
+3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--noise_level` `--flip_prob` `--model_path` (optional):
 
 ```bash
 # You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
@@ -115,19 +106,19 @@ $ export CUDA_VISIBLE_DEVICES="0"
 $ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --noise_level 0.01 --flip_prob 0.05--early_stopping_patience 15
 ```
 
-5. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
+4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
 $ python3 src/attention.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
 ```
 
-6. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
+5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
 
 ```bash
 $ python3 src/embeddings.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
 ```
 
-7. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
+6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
 $ python3 src/test.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
