@@ -249,16 +249,16 @@ df_train_filtered_summary_filtered = df_train_filtered_summary[['count', 'sum', 
 # Sort the features by mean
 df_train_filtered_summary_sorted = df_train_filtered_summary_filtered.sort_values(by='sum', ascending=False)
 
-# Fetch ICD code descriptions for encoded_feature_names
-icd_descriptions = []
-for feature in encoded_feature_names:
+# Fetch ICD code descriptions for encoded_feature_names_filtered
+icd_descriptions_filtered = []
+for feature in encoded_feature_names_filtered:
     # Extract ICD code and type 
     icd_code, code_type = extract_icd_info(feature)
     description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-    icd_descriptions.append(description)
+    icd_descriptions_filtered.append(description)
 
-# Create a column in df_train_summary_sorted for these descriptions
-df_train_summary_sorted['ICD Description'] = icd_descriptions
+# Create a column in for these descriptions
+df_train_filtered_summary_sorted ['ICD Description'] = icd_descriptions_filtered
 
 # Convert summary statistics table to HTML format
 df_train_filtered_summary_html = df_train_filtered_summary_sorted.to_html()

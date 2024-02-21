@@ -20,6 +20,8 @@ import multiprocessing
 import concurrent.futures
 import dask
 import dask.dataframe as dd
+import dask.array as da
+from dask.diagnostics import ProgressBar
 
 # Determine the total number of available cores
 total_cores = multiprocessing.cpu_count()
@@ -73,7 +75,7 @@ def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_s
 
     return data
 
-def optimize_column(df, col, start_idx, end_idx):
+def optimize_date_column(df, col, start_idx, end_idx):
     try:
         # Convert categorical columns to numerical codes
         if not pd.api.types.is_numeric_dtype(df[col]):
@@ -95,38 +97,15 @@ def optimize_column(df, col, start_idx, end_idx):
     except Exception as e:
         print(f"Error processing column {col}: {e}")
 
-def process_column(df, col, chunk_size=50000):
+def process_date_column(df, col, chunk_size=50000):
     for chunk_start in range(0, len(df), chunk_size):
         chunk_end = min(chunk_start + chunk_size, len(df))
-        optimize_column(df, col, chunk_start, chunk_end)
-
-def process_chunk(start, df_dia, encoded_columns, agg_dict, chunk_size=50000):
-    end = start + chunk_size
-    chunk = df_dia.iloc[start:end].copy()
-    for col in encoded_columns:
-        if pd.api.types.is_sparse(chunk[col].dtype):
-            chunk[col] = chunk[col].sparse.to_dense()
-    agg_chunk = chunk.groupby('EMPI').agg(agg_dict).reset_index()
-    return agg_chunk
+        optimize_date_column(df, col, chunk_start, chunk_end)
 
 def preprocess_and_save_info(df, encoded_feature_names, dataset_name):
 
     # Drop unnecessary columns
     df.drop(['EMPI', 'DiagnosisBeforeOrOnIndexDate'], axis=1, inplace=True)
-
-    # Identify columns with all zeros
-    columns_with_all_zeros = [col for col in encoded_feature_names if (df[col] == 0).all()]
-    print(f"Columns with all zeros in {dataset_name}: {columns_with_all_zeros}")
-
-    # Drop columns with all zeros
-    df.drop(columns=columns_with_all_zeros, inplace=True)
-
-    # Update encoded_feature_names
-    updated_feature_names = [col for col in encoded_feature_names if col not in columns_with_all_zeros]
-
-    # Save columns with all zeros to a JSON file
-    with open(f'{dataset_name}_columns_with_all_zeros.json', 'w') as file:
-        json.dump(columns_with_all_zeros, file)
 
     # Print dataset info
     print(f"Total patients (preprocessed) in {dataset_name}:", df.shape[0])
@@ -140,6 +119,15 @@ def preprocess_and_save_info(df, encoded_feature_names, dataset_name):
         json.dump(df.columns.tolist(), file)
 
     return df, updated_feature_names
+
+def dask_df_to_tensor(dask_df):
+    # Convert the Dask DataFrame to a Dask Array
+    dask_array = dask_df.to_dask_array(lengths=True)
+    # Convert the Dask Array to a NumPy Array (this step triggers computation)
+    numpy_array = dask_array.compute()
+    # Finally, convert the NumPy Array to a PyTorch Tensor
+    tensor = torch.tensor(numpy_array, dtype=torch.float32)
+    return tensor
 
 # Define the column types for each file type
 
@@ -241,7 +229,7 @@ def main():
     test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
-    # This method is chosen because it handles negative and zero values well, scaling the data to a [0, 1] range.
+    # Handles negative and zero values well, scaling the data to a [0, 1] range.
     # NaNs are treated as missing values: disregarded in fit, and maintained in transform.
 
     columns_to_normalize = ['InitialA1c', 'A1cAfter12Months', 'DaysFromIndexToInitialA1cDate', 
@@ -361,16 +349,16 @@ def main():
     print("Binarizing one-hot encoded variables based on 'DiagnosisBeforeOrOnIndexDate'.")
 
     # Identify all one-hot encoded columns for 'Date'
-    encoded_columns = [col for col in df_dia.columns if 'Date' in col]
+    encoded_date_columns = [col for col in df_dia.columns if 'Date' in col]
 
     # Convert 'DiagnosisBeforeOrOnIndexDate' to a numeric type if it's categorical
     if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
         df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
 
-    # Preprocess encoded columns
-    print("Preprocess encoded columns.")
-    filtered_columns = [col for col in encoded_columns if col != 'DiagnosisBeforeOrOnIndexDate']
-    tasks = [delayed(process_column)(df_dia, col) for col in filtered_columns]
+    # Preprocess encoded date columns
+    print("Preprocess encoded date columns.")
+    filtered_columns = [col for col in encoded_date_columns if col != 'DiagnosisBeforeOrOnIndexDate']
+    tasks = [delayed(process_date_column)(df_dia, col) for col in filtered_columns]
 
     if tasks:
         with tqdm(total=len(tasks), desc="Processing Columns") as progress_bar:
@@ -380,36 +368,31 @@ def main():
     else:
         print("No columns meet the criteria for processing.")
 
-    print("Aggregate one-hot encoded features by EMPI.")
-    # Setup the aggregation dictionary
-    agg_dict = {col: 'max' for col in encoded_columns}
+    print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
+
+    # Check if df_dia is not a Dask DataFrame and convert it if necessary
+    if not isinstance(df_dia, dd.DataFrame):
+        df_dia = dd.from_pandas(df_dia, npartitions='auto')
+
+    agg_dict = {col: 'max' for col in encoded_feature_names}
     print("Aggregation dictionary set up.")
-    print("Starting aggregation by EMPI.")
-    df_dia = dd.from_pandas(df_dia, npartitions=n_jobs)
 
-    # Corrected delayed aggregation operations
-    delayed_aggs = [delayed(lambda partition: partition.groupby('EMPI').agg(agg_dict))(df_dia.get_partition(n)) for n in range(df_dia.npartitions)]
+    print("Perform the groupby and aggregation in parallel.")
+    df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    # Execute the delayed tasks and populate agg_results_list directly with the results
-    agg_results_list = dask.compute(*delayed_aggs, scheduler='processes')[0]  # The [0] is necessary to access the results tuple
+    print("Use persist to keep the intermediate result in memory.")
+    df_dia_agg = df_dia_agg.persist()
 
-    # Now concatenate, ensuring agg_results_list is populated with DataFrames before attempting to concatenate
-    if agg_results_list:
-        for item in agg_results_list:
-            if not isinstance(item, (pd.DataFrame, dd.DataFrame)):
-                print(f"Item is not a DataFrame: {type(item)}")
-        df_dia = dd.concat(list(agg_results_list)).groupby('EMPI').agg(agg_dict).compute()
-    else:
-        print("agg_results_list is empty. Skipping concatenation.")
-        
+    with ProgressBar():
+        df_dia_agg = df_dia_agg.compute() # Convert Dask DataFrame to pandas DataFrame
+
     print("Merge diagnoses and outcomes datasets")
-    df_dia = df_dia.compute()  # Convert Dask DataFrame to pandas DataFrame
 
-    merged_train_df = pd.merge(train_df, df_dia, on='EMPI', how='inner')
-    merged_validation_df = pd.merge(validation_df, df_dia, on='EMPI', how='inner')
-    merged_test_df = pd.merge(test_df, df_dia, on='EMPI', how='inner')
+    merged_train_df = pd.merge(train_df, df_dia_agg, on='EMPI', how='inner')
+    merged_validation_df = pd.merge(validation_df, df_dia_agg, on='EMPI', how='inner')
+    merged_test_df = pd.merge(test_df, df_dia_agg, on='EMPI', how='inner')
 
-    del df_dia
+    del df_dia, df_dia_agg
     gc.collect()
 
     # Apply the function to each merged dataset
@@ -417,22 +400,30 @@ def main():
     merged_validation_df, validation_encoded_feature_names = preprocess_and_save_info(merged_validation_df, encoded_feature_names, 'validation')
     merged_test_df, test_encoded_feature_names = preprocess_and_save_info(merged_test_df, encoded_feature_names, 'test')
 
-    # save training set as text file
+    print("Save training set as text file.")
     merged_train_df.to_csv('train_df.csv', index=False)
 
-    # Convert the DataFrames back to tensors for PyTorch processing
-    # Ensure all columns are numeric before conversion
-    numeric_columns = merged_train_df.select_dtypes(include=[np.number]).columns
-    train_dataset = TensorDataset(torch.tensor(merged_train_df[numeric_columns].values, dtype=torch.float32))
+    print("Convert the DataFrames back to tensors for PyTorch processing.")
+    dask_train_df = dd.from_pandas(merged_train_df, npartitions=4) # Adjust npartitions based on your system
+    dask_validation_df = dd.from_pandas(merged_validation_df, npartitions=4)
+    dask_test_df = dd.from_pandas(merged_test_df, npartitions=4)
 
-    # Repeat for validation and test datasets
-    numeric_columns_validation = merged_validation_df.select_dtypes(include=[np.number]).columns
-    validation_dataset = TensorDataset(torch.tensor(merged_validation_df[numeric_columns_validation].values, dtype=torch.float32))
+    # Select numeric columns using Dask (this step is immediate and doesn't trigger computation)
+    numeric_dask_train_df = dask_train_df.select_dtypes(include=[np.number])
+    numeric_dask_validation_df = dask_validation_df.select_dtypes(include=[np.number])
+    numeric_dask_test_df = dask_test_df.select_dtypes(include=[np.number])
 
-    numeric_columns_test = merged_test_df.select_dtypes(include=[np.number]).columns
-    test_dataset = TensorDataset(torch.tensor(merged_test_df[numeric_columns_test].values, dtype=torch.float32))
+    # Parallel conversion of Dask DataFrames to PyTorch tensors
+    train_tensor = dask_df_to_tensor(numeric_dask_train_df)
+    validation_tensor = dask_df_to_tensor(numeric_dask_validation_df)
+    test_tensor = dask_df_to_tensor(numeric_dask_test_df)
 
-    # Save the datasets to files
+    # Wrap tensors in TensorDataset
+    train_dataset = TensorDataset(train_tensor)
+    validation_dataset = TensorDataset(validation_tensor)
+    test_dataset = TensorDataset(test_tensor)
+
+    print("Save datasets as torch.")
     torch.save(train_dataset, 'train_dataset.pt')
     torch.save(validation_dataset, 'validation_dataset.pt')
     torch.save(test_dataset, 'test_dataset.pt')
