@@ -26,7 +26,7 @@ class CustomDataset(Dataset):
 
 def load_model(model_type, model_path):
     # Load encoded feature names
-    with open('encoded_feature_names_filtered.json', 'r') as file:
+    with open('encoded_feature_names.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
     categories=[2 for _ in range(len(encoded_feature_names))]
@@ -95,9 +95,9 @@ def evaluate_model(model, test_loader):
 
 def main(args):
     # Load the test dataset
-    test_dataset = torch.load('filtered_test_tensor.pt')
+    test_dataset = torch.load('test_dataset.pt')
 
-    with open('column_names_filtered.json', 'r') as file:
+    with open('column_names.json', 'r') as file:
         column_names = json.load(file)
 
     # Excluded column names

@@ -27,7 +27,9 @@ from dask.diagnostics import ProgressBar
 total_cores = multiprocessing.cpu_count()
 
 # Don't use all available cores
-n_jobs = total_cores // 2
+n_jobs = total_cores - 8
+
+npartitions = int(n_jobs*2) # number of partitions for Dask
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -372,7 +374,7 @@ def main():
 
     # Check if df_dia is not a Dask DataFrame and convert it if necessary
     if not isinstance(df_dia, dd.DataFrame):
-        df_dia = dd.from_pandas(df_dia, npartitions='auto')
+        df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
 
     agg_dict = {col: 'max' for col in encoded_feature_names}
     print("Aggregation dictionary set up.")
@@ -380,11 +382,9 @@ def main():
     print("Perform the groupby and aggregation in parallel.")
     df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    print("Use persist to keep the intermediate result in memory.")
-    df_dia_agg = df_dia_agg.persist()
-
+    print("Convert Dask DataFrame to pandas DataFrame.")
     with ProgressBar():
-        df_dia_agg = df_dia_agg.compute() # Convert Dask DataFrame to pandas DataFrame
+        df_dia_agg = df_dia_agg.compute()
 
     print("Merge diagnoses and outcomes datasets")
 
@@ -404,9 +404,9 @@ def main():
     merged_train_df.to_csv('train_df.csv', index=False)
 
     print("Convert the DataFrames back to tensors for PyTorch processing.")
-    dask_train_df = dd.from_pandas(merged_train_df, npartitions=4) # Adjust npartitions based on your system
-    dask_validation_df = dd.from_pandas(merged_validation_df, npartitions=4)
-    dask_test_df = dd.from_pandas(merged_test_df, npartitions=4)
+    dask_train_df = dd.from_pandas(merged_train_df, npartitions=npartitions)
+    dask_validation_df = dd.from_pandas(merged_validation_df, npartitions=npartitions)
+    dask_test_df = dd.from_pandas(merged_test_df, npartitions=npartitions)
 
     # Select numeric columns using Dask (this step is immediate and doesn't trigger computation)
     numeric_dask_train_df = dask_train_df.select_dtypes(include=[np.number])

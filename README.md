@@ -28,8 +28,8 @@ GPU: GeForce RTX 2080
 - `data_loader.py`
 	- Loads and merges data from .txt files. Randomly splits the data into training (70%), validation (20%), and test (10%) sets. Preprocesses datasets, converts datasets into PyTorch Tensors, and saves them to file.
 
-- `data_preprocessor.py`
-	- Further preprocesses the datasets by applying feature selection techniques and visualizes the extent of sparsity in the training set.
+- `data_analysis.py`
+	- Loads ICD-9 and ICD-10 diagnostic codes, extracts code descriptions, and identifies infrequent categories. Visualizes one-hot encoded feature sparsity, and generates summary statistics for analysis.
 
 - `train.py`
 	- Trains transformer model, supporting Tab Transformer and FT Transformer.
@@ -91,10 +91,10 @@ $ python3 -m pip install "dask[dataframe]" --upgrade
 $ python3.8 src/data_loader.py # need Python 3.8 to run 
 ```
 
-2. Further preprocess the datasets by applying feature selection techniques and visualizes the extent of sparsity:
+2. (Optional) Create plots and summary statistics for the training dataset:
 
 ```bash
-$ python3 src/data_preprocessor.py
+$ python3 src/data_analysis.py
 ```
 
 3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--noise_level` `--flip_prob` `--model_path` (optional):
@@ -103,23 +103,23 @@ $ python3 src/data_preprocessor.py
 # You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
 $ export CUDA_VISIBLE_DEVICES="0"
 
-$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --noise_level 0.01 --flip_prob 0.05--early_stopping_patience 15
+$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --noise_level 0.01 --flip_prob 0.05 --early_stopping_patience 15
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/attention.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
+$ python3 src/attention.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
 ```
 
 5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
+$ python3 src/embeddings.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type TabTransformer --model_path trained_model.pth --batch_size 32
+$ python3 src/test.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
 ```
