@@ -97,7 +97,16 @@ df_train = pd.DataFrame(loaded_train_dataset.tensors[0].numpy(), columns=column_
 df_validation = pd.DataFrame(loaded_validation_dataset.tensors[0].numpy(), columns=column_names)
 df_test = pd.DataFrame(loaded_test_dataset.tensors[0].numpy(), columns=column_names)
 
-print(df_train.describe())
+# Print dimensions of datasets
+print("Training Data Dimensions:", df_train.shape)
+print("Validation Data Dimensions:", df_validation.shape)
+print("Test Data Dimensions:", df_test.shape)
+
+# Save the training data to disk
+df_train.to_csv('training_data.csv', index=False)
+
+# Print dataset descriptions
+print("Training Dataset Description:\n", df_train.describe())
 
 # Calculate sparsity rate for one-hot encoded columns
 

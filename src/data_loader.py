@@ -22,6 +22,19 @@ import dask
 import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
+from dask.distributed import Client, as_completed
+
+logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+# Get the current collection thresholds
+print("Current garbage collection thresholds:", gc.get_threshold())
+
+# Set higher thresholds to potentially reduce the frequency of garbage collection
+# The numbers represent the thresholds for the three generations respectively
+gc.set_threshold(700, 10, 5)
+
+# Verify the change
+print("New garbage collection thresholds:", gc.get_threshold())
 
 # Determine the total number of available cores
 total_cores = multiprocessing.cpu_count()
@@ -29,9 +42,7 @@ total_cores = multiprocessing.cpu_count()
 # Don't use all available cores
 n_jobs = total_cores - 8
 
-npartitions = int(n_jobs*2) # number of partitions for Dask
-
-logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+npartitions = int(n_jobs*5) # number of partitions for Dask
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -104,32 +115,26 @@ def process_date_column(df, col, chunk_size=50000):
         chunk_end = min(chunk_start + chunk_size, len(df))
         optimize_date_column(df, col, chunk_start, chunk_end)
 
-def preprocess_and_save_info(df, encoded_feature_names, dataset_name):
+def dask_df_to_tensor(dask_df, chunk_size=10000):
+    # Scatter the Dask DataFrame to workers
+    scattered_df_future = client.scatter(dask_df, broadcast=True)
 
-    # Drop unnecessary columns
-    df.drop(['EMPI', 'DiagnosisBeforeOrOnIndexDate'], axis=1, inplace=True)
-
-    # Print dataset info
-    print(f"Total patients (preprocessed) in {dataset_name}:", df.shape[0])
-    print(f"Total features (preprocessed) in {dataset_name}:", df.shape[1])
-
-    # Save updated encoded feature names and column names
-    with open(f'{dataset_name}_encoded_feature_names.json', 'w') as file:
-        json.dump(updated_feature_names, file)
-
-    with open(f'{dataset_name}_column_names.json', 'w') as file:
-        json.dump(df.columns.tolist(), file)
-
-    return df, updated_feature_names
-
-def dask_df_to_tensor(dask_df):
-    # Convert the Dask DataFrame to a Dask Array
+    futures = []
+    # Convert the scattered Dask DataFrame to a Dask Array with known lengths
     dask_array = dask_df.to_dask_array(lengths=True)
-    # Convert the Dask Array to a NumPy Array (this step triggers computation)
-    numpy_array = dask_array.compute()
-    # Finally, convert the NumPy Array to a PyTorch Tensor
-    tensor = torch.tensor(numpy_array, dtype=torch.float32)
-    return tensor
+    # Process in chunks
+    for i in range(0, dask_array.shape[0], chunk_size):
+        chunk = dask_array[i:i+chunk_size]
+        future = client.submit(lambda x: torch.tensor(x, dtype=torch.float32).compute(), chunk)
+        futures.append(future)
+
+    # Collect the results
+    tensors = client.gather(futures)
+    
+    # Combine the tensors into a single tensor
+    combined_tensor = torch.cat(tensors, dim=0)
+    
+    return combined_tensor
 
 # Define the column types for each file type
 
@@ -382,45 +387,39 @@ def main():
     print("Perform the groupby and aggregation in parallel.")
     df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    print("Convert Dask DataFrame to pandas DataFrame.")
-    with ProgressBar():
-        df_dia_agg = df_dia_agg.compute()
+    print("Convert splits to Dask DataFrame.")
+    train_df_dask = dd.from_pandas(train_df, npartitions=npartitions)
+    validation_df_dask = dd.from_pandas(validation_df, npartitions=npartitions)
+    test_df_dask = dd.from_pandas(test_df, npartitions=npartitions)
 
-    print("Merge diagnoses and outcomes datasets")
+    print("Merge using Dask.")
+    merged_train_df = train_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
+    merged_validation_df = validation_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
+    merged_test_df = test_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
 
-    merged_train_df = pd.merge(train_df, df_dia_agg, on='EMPI', how='inner')
-    merged_validation_df = pd.merge(validation_df, df_dia_agg, on='EMPI', how='inner')
-    merged_test_df = pd.merge(test_df, df_dia_agg, on='EMPI', how='inner')
-
-    del df_dia, df_dia_agg
+    print("Clean up unused dataframes.")
+    del df_dia, df_dia_agg, train_df_dask, validation_df_dask, test_df_dask
     gc.collect()
-
-    # Apply the function to each merged dataset
-    merged_train_df, train_encoded_feature_names = preprocess_and_save_info(merged_train_df, encoded_feature_names, 'train')
-    merged_validation_df, validation_encoded_feature_names = preprocess_and_save_info(merged_validation_df, encoded_feature_names, 'validation')
-    merged_test_df, test_encoded_feature_names = preprocess_and_save_info(merged_test_df, encoded_feature_names, 'test')
-
-    print("Save training set as text file.")
-    merged_train_df.to_csv('train_df.csv', index=False)
-
-    print("Convert the DataFrames back to tensors for PyTorch processing.")
-    dask_train_df = dd.from_pandas(merged_train_df, npartitions=npartitions)
-    dask_validation_df = dd.from_pandas(merged_validation_df, npartitions=npartitions)
-    dask_test_df = dd.from_pandas(merged_test_df, npartitions=npartitions)
-
-    # Select numeric columns using Dask (this step is immediate and doesn't trigger computation)
-    numeric_dask_train_df = dask_train_df.select_dtypes(include=[np.number])
-    numeric_dask_validation_df = dask_validation_df.select_dtypes(include=[np.number])
-    numeric_dask_test_df = dask_test_df.select_dtypes(include=[np.number])
+    
+     # Select numeric columns using Dask
+    print("Select numeric columns using Dask.")
+    numeric_dask_train_df = merged_train_df.select_dtypes(include=[np.number])
+    numeric_dask_validation_df = merged_validation_df.select_dtypes(include=[np.number])
+    numeric_dask_test_df = merged_test_df.select_dtypes(include=[np.number])
 
     # Parallel conversion of Dask DataFrames to PyTorch tensors
+    print("Parallel conversion of training set Dask DataFrame to PyTorch tensor.")
     train_tensor = dask_df_to_tensor(numeric_dask_train_df)
+    print("Parallel conversion of validation set Dask DataFrame to PyTorch tensor.")
     validation_tensor = dask_df_to_tensor(numeric_dask_validation_df)
+    print("Parallel conversion of test set Dask DataFrame to PyTorch tensor.")
     test_tensor = dask_df_to_tensor(numeric_dask_test_df)
 
-    # Wrap tensors in TensorDataset
+    print("Wrap training tensor in TensorDataset.")
     train_dataset = TensorDataset(train_tensor)
+    print("Wrap validation tensor in TensorDataset.")
     validation_dataset = TensorDataset(validation_tensor)
+    print("Wrap test tensor in TensorDataset.")
     test_dataset = TensorDataset(test_tensor)
 
     print("Save datasets as torch.")
@@ -429,5 +428,5 @@ def main():
     torch.save(test_dataset, 'test_dataset.pt')
 
 if __name__ == '__main__':
-    # This ensures the multiprocessing code only runs when the script is executed directly
+    client = Client(processes=True)  # Use processes instead of threads for potentially better CPU utilization
     main()

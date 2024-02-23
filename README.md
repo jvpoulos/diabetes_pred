@@ -82,6 +82,7 @@ $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 
 ```bash
 $ python3 -m pip install "dask[dataframe]" --upgrade
+$ python3.8 -m pip install "dask[distributed]" --upgrade
 ```
 ## Run the code
 
