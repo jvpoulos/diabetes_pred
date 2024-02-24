@@ -10,27 +10,37 @@ from sklearn.metrics import roc_auc_score
 import copy
 import logging
 import json
+from torchvision.transforms.v2 import CutMix
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
-def augment_numeric_data(numeric_data, noise_level=0.01):
-    """
-    Applies random noise to numeric data to augment it.
-    noise_level: The standard deviation of the Gaussian noise to be added.
-    """
-    noise = torch.randn_like(numeric_data) * noise_level
-    return numeric_data + noise
+def apply_cutmix_numerical(data, labels, beta=1.0):
+    lam = np.random.beta(beta, beta)
+    batch_size = data.size(0)
+    feature_count = data.size(1)
+    index = torch.randperm(batch_size).to(data.device)
 
-def augment_encoded_data(encoded_data, flip_prob=0.05):
-    """
-    Randomly flips bits in one-hot encoded data to augment it.
-    flip_prob: Probability of flipping each bit.
-    """
-    # Create a mask of the same shape as encoded_data with random bits flipped
-    flip_mask = torch.rand_like(encoded_data.float()) < flip_prob
-    # XOR with the flip mask to flip bits
-    augmented_data = encoded_data ^ flip_mask.to(torch.uint8)
-    return augmented_data
+    # Determine the number of features to mix
+    mix_feature_count = int(feature_count * lam)
+
+    # Randomly choose the features to mix
+    mix_features_indices = torch.randperm(feature_count)[:mix_feature_count]
+
+    # Swap the chosen features
+    data[:, mix_features_indices] = data[index, mix_features_indices]
+
+    labels_a, labels_b = labels, labels[index]
+    return data, labels_a, labels_b, lam
+
+
+def apply_mixup_numerical(data, labels, alpha=0.2):
+    lam = np.random.beta(alpha, alpha) if alpha > 0 else 1
+    batch_size = data.size(0)
+    index = torch.randperm(batch_size).to(data.device)
+
+    mixed_data = lam * data + (1 - lam) * data[index, :]
+    labels_a, labels_b = labels, labels[index]
+    return mixed_data, labels_a, labels_b, lam
 
 class CustomDataset(Dataset):
     def __init__(self, features, labels):
@@ -61,35 +71,32 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.savefig(filepath)
     plt.close()
 
-def train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, noise_level, flip_prob, device):
-    model.train()  # Set the model to training mode
+def train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha):
+    model.train()
     total_loss = 0
-    
+
     for batch_idx, (data, labels) in enumerate(train_loader):
-        # Assuming data is a single tensor with both numeric and encoded features
-        numeric_data = data[:, numeric_indices]
-        encoded_data = data[:, encoded_indices]
+        augmented_data = data.to(device)
+        labels = labels.to(device)
+
+        if use_mixup and np.random.rand() < mixup_alpha:
+            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(augmented_data, labels, mixup_alpha)
+            outputs = model(augmented_data)
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        elif use_cutmix and np.random.rand() < cutmix_prob:
+            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(augmented_data, labels, cutmix_lambda)
+            outputs = model(augmented_data)
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        else:
+            outputs = model(augmented_data)
+            loss = criterion(outputs.squeeze(), labels.float())
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
         
-        # Apply augmentation to numeric and encoded data
-        noise_level = args.noise_level
-        flip_prob = args.flip_prob
-        
-        augmented_numeric = augment_numeric_data(numeric_data, noise_level=noise_level)
-        augmented_encoded = augment_encoded_data(encoded_data, flip_prob=flip_prob)
-        
-        # Combine the augmented data back together
-        augmented_data = torch.cat((augmented_numeric, augmented_encoded), dim=1)
-        
-        augmented_data, labels = augmented_data.to(device), labels.to(device)
-        
-        optimizer.zero_grad()  # Clear gradients for the next train
-        outputs = model(augmented_data)  # Forward pass: compute the output class given the augmented data
-        loss = criterion(outputs.squeeze(), labels.float())  # Calculate the loss
-        loss.backward()  # Backward pass: compute gradient of the loss with respect to model parameters
-        optimizer.step()  # Perform a single optimization step (parameter update)
-        
-        total_loss += loss.item()  # Accumulate the loss
-        
+        total_loss += loss.item()
+
     average_loss = total_loss / len(train_loader)
     print(f'Training loss: {average_loss:.4f}')
     return average_loss
@@ -220,9 +227,17 @@ def main(args):
     patience_counter = 0
     early_stopping_patience = args.early_stopping_patience  # assuming this argument is added to the parser
 
+    # CutMix and mixup parameters
+    use_cutmix = args.use_cutmix
+    cutmix_prob=args.cutmix_prob
+    cutmix_lambda=args.cutmix_lambda
+
+    use_mixup=args.use_mixup
+    mixup_alpha=args.mixup_alpha
+
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, noise_level, flip_prob, device)
+        train_loss = train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha)
         val_loss, _ = validate_model(model, validation_loader, criterion)
 
         # Save losses for plotting
@@ -247,10 +262,24 @@ def main(args):
     model.load_state_dict(best_model_wts)
 
     # After training, plot the losses
-    plot_losses(train_losses, val_losses, {'model_type': args.model_type, 'batch_size': args.batch_size,'lr': args.learning_rate, 'ep': args.epochs, 'noise_level':args.noise_level, 'flip_prob':args.flip_prob})
+    hyperparameters = {
+    'model_type': args.model_type,
+    'batch_size': args.batch_size,
+    'lr': args.learning_rate,
+    'ep': args.epochs,
+    'esp': args.early_stopping_patience,
+    'cutmix_prob': args.cutmix_prob,
+    'cutmix_lambda': args.cutmix_lambda,
+    'use_mixup': 'true' if args.use_mixup else 'false',
+    'mixup_alpha': args.mixup_alpha,
+    'use_cutmix': 'true' if args.use_cutmix else 'false'
+    }
+
+    plot_losses(train_losses, val_losses, hyperparameters)
 
     # Save the best model to a file
-    model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{args.epochs}_nl{args.noise_level}_fp{args.flip_prob}.pth"
+    model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{args.epochs}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+
     torch.save(model.state_dict(), model_filename)
 
 if __name__ == "__main__":
@@ -261,10 +290,13 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
-    parser.add_argument('--early_stopping_patience', type=int, default=15, help='Early stopping patience')
-    parser.add_argument('--noise_level', type=float, default=0.01, help='Standard deviation of the Gaussian noise to be added for numeric augmentation.')
-    parser.add_argument('--flip_prob', type=float, default=0.05, help='Probability of flipping each bit for encoded data augmentation.')
+    parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
+    parser.add_argument('--cutmix_prob', type=float, default=0.3, help='Probability to apply CutMix')
+    parser.add_argument('--cutmix_lambda', type=float, default=10.0, help='Lambda for CutMix blending')
+    parser.add_argument('--use_mixup', action='store_true', help='Enable MixUp data augmentation')
+    parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
+    parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     args = parser.parse_args()
     main(args)

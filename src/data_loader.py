@@ -23,26 +23,22 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
+# Adjust timeout settings
+dask.config.set({'distributed.comm.timeouts.connect': '60s'})  # Increase connect timeout to 60 seconds
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
-# Get the current collection thresholds
-print("Current garbage collection thresholds:", gc.get_threshold())
-
 # Set higher thresholds to potentially reduce the frequency of garbage collection
 # The numbers represent the thresholds for the three generations respectively
-gc.set_threshold(700, 10, 5)
-
-# Verify the change
-print("New garbage collection thresholds:", gc.get_threshold())
+gc.set_threshold(700, 20, 20) # Current garbage collection thresholds: (700, 10, 10)
 
 # Determine the total number of available cores
 total_cores = multiprocessing.cpu_count()
 
 # Don't use all available cores
-n_jobs = total_cores - 8
+n_jobs = total_cores - 4
 
-npartitions = int(n_jobs*5) # number of partitions for Dask
+npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
 
 def optimize_dataframe(df):
     # Convert columns to more efficient types if possible
@@ -115,26 +111,21 @@ def process_date_column(df, col, chunk_size=50000):
         chunk_end = min(chunk_start + chunk_size, len(df))
         optimize_date_column(df, col, chunk_start, chunk_end)
 
-def dask_df_to_tensor(dask_df, chunk_size=10000):
-    # Scatter the Dask DataFrame to workers
-    scattered_df_future = client.scatter(dask_df, broadcast=True)
-
-    futures = []
-    # Convert the scattered Dask DataFrame to a Dask Array with known lengths
+def dask_df_to_tensor(dask_df, client):
+    # Convert the Dask DataFrame to a Dask Array with known lengths
     dask_array = dask_df.to_dask_array(lengths=True)
-    # Process in chunks
-    for i in range(0, dask_array.shape[0], chunk_size):
-        chunk = dask_array[i:i+chunk_size]
-        future = client.submit(lambda x: torch.tensor(x, dtype=torch.float32).compute(), chunk)
-        futures.append(future)
 
-    # Collect the results
-    tensors = client.gather(futures)
+    # Scatter the Dask array across workers to minimize data transfer
+    scattered_array = client.scatter(dask_array, broadcast=True)
+
+    # Use map_blocks to convert each block of the scattered Dask Array to a PyTorch tensor
+    tensor_futures = scattered_array.map_blocks(lambda x: torch.tensor(x, dtype=torch.float32), meta=torch.tensor([]))
+
+    # Use Dask's compute to gather the results
+    result_tensor = client.compute(tensor_futures, sync=True)
     
-    # Combine the tensors into a single tensor
-    combined_tensor = torch.cat(tensors, dim=0)
-    
-    return combined_tensor
+    return result_tensor
+
 
 # Define the column types for each file type
 
@@ -225,8 +216,8 @@ def main():
 
     print("Replacing missing values in ", columns_with_missing_values)
 
-    # Create the imputer object with strategy set to 'most_frequent' for mode imputation
-    imputer = SimpleImputer(strategy='most_frequent')
+    # Create the imputer object
+    imputer = SimpleImputer(strategy='constant', fill_value=0)
 
     # Fit the imputer on the training data and transform the training data
     train_df[columns_with_missing_values] = imputer.fit_transform(train_df[columns_with_missing_values])
@@ -409,11 +400,11 @@ def main():
 
     # Parallel conversion of Dask DataFrames to PyTorch tensors
     print("Parallel conversion of training set Dask DataFrame to PyTorch tensor.")
-    train_tensor = dask_df_to_tensor(numeric_dask_train_df)
+    train_tensor = dask_df_to_tensor(numeric_dask_train_df, client)
     print("Parallel conversion of validation set Dask DataFrame to PyTorch tensor.")
-    validation_tensor = dask_df_to_tensor(numeric_dask_validation_df)
+    validation_tensor = dask_df_to_tensor(numeric_dask_validation_df, client)
     print("Parallel conversion of test set Dask DataFrame to PyTorch tensor.")
-    test_tensor = dask_df_to_tensor(numeric_dask_test_df)
+    test_tensor = dask_df_to_tensor(numeric_dask_test_df, client)
 
     print("Wrap training tensor in TensorDataset.")
     train_dataset = TensorDataset(train_tensor)

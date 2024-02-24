@@ -11,6 +11,20 @@ The FT Transformer extends the concepts from the Tab Transformer by incorporatin
 
 Both models have shown to outperform traditional deep learning and machine learning approaches on complex tabular datasets, making them a powerful tool for tasks such as classification and regression in structured data.
 
+## Pretraining
+
+### CutMix and MixUp Augmentation Techniques
+
+#### CutMix
+CutMix blends portions of two different inputs and their labels, essentially "cutting" and "pasting" parts of images, but it can be adapted for numerical data by mixing features. It's designed to enhance model robustness and performance, particularly in vision tasks, but its principles can be applied to numerical data for similar benefits. The original academic paper can be found [here](https://arxiv.org/abs/1905.04899).
+<!-- For details on implementing CutMix in PyTorch, see [PyTorch's documentation](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.CutMix.html) and its [use cases](https://pytorch.org/vision/main/auto_examples/transforms/plot_cutmix_mixup.html#sphx-glr-auto-examples-transforms-plot-cutmix-mixup-py).  -->
+
+#### MixUp
+MixUp operates by taking convex combinations of pairs of inputs and their labels. This method has shown to improve model generalization by encouraging the model to behave linearly in-between training examples, reducing memorization of training data. The foundational paper for MixUp is available [here](https://arxiv.org/abs/1710.09412).
+<!-- For PyTorch implementation details, refer to [PyTorch's MixUp documentation](https://pytorch.org/vision/main/generated/torchvision.transforms.v2.MixUp.html).  -->
+
+Both methods have been utilized in various models, including [SAINT](https://arxiv.org/abs/2106.01342), a model specifically designed for tabular data, which demonstrates their adaptability and effectiveness beyond conventional image data applications to numerical inputs. 
+
 ## Requirements
 
 This code has been tested on Python 3.6.9 and Python 3.8.0 on Ubuntu 18.04.1.
@@ -32,7 +46,7 @@ GPU: GeForce RTX 2080
 	- Loads ICD-9 and ICD-10 diagnostic codes, extracts code descriptions, and identifies infrequent categories. Visualizes one-hot encoded feature sparsity, and generates summary statistics for analysis.
 
 - `train.py`
-	- Trains transformer model, supporting Tab Transformer and FT Transformer.
+	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
 
 - `attention.py`
 	- Load a model, either a TabTransformer or an FTTransformer, and visualize its attention maps using a validation dataset.
@@ -98,13 +112,13 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 $ python3 src/data_analysis.py
 ```
 
-3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--noise_level` `--flip_prob` `--model_path` (optional):
+3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--use_mixup` (optional) `--model_path` (optional):
 
 ```bash
 # You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
 $ export CUDA_VISIBLE_DEVICES="0"
 
-$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --noise_level 0.01 --flip_prob 0.05 --early_stopping_patience 15
+$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
