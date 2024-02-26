@@ -13,7 +13,7 @@ import json
 import re
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
-from pandas.api.types import is_categorical_dtype, is_sparse
+from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_sparse
 import logging
 from joblib import Parallel, delayed
 import multiprocessing
@@ -37,7 +37,7 @@ gc.set_threshold(700, 20, 20) # Current garbage collection thresholds: (700, 10,
 total_cores = multiprocessing.cpu_count()
 
 # Don't use all available cores
-n_jobs = total_cores - 4
+n_jobs = total_cores // 2
 
 npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
 
@@ -84,6 +84,7 @@ def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_s
             pbar.update(1)
 
     return data
+
 
 def optimize_date_column(df, col, start_idx, end_idx):
     try:
@@ -186,7 +187,7 @@ def main(use_dask=False):
 
     # Select columns to read in each dataset
 
-    outcomes_columns_select = ['EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'DaysFromIndexToInitialA1cDate', 'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 'NumberEncounters', 'SDI_score', 'Veteran']
+    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'DaysFromIndexToInitialA1cDate', 'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 'NumberEncounters', 'SDI_score', 'Veteran']
 
     dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
 
@@ -302,12 +303,17 @@ def main(use_dask=False):
 
     print("Initializing one-hot encoder for diagnoses data.")
 
-    # ID rows in diagnoses data by split
-    train_rows = df_dia[df_dia['EMPI'].isin(train_empi)]
-    validation_rows = df_dia[df_dia['EMPI'].isin(validation_empi)]
-    test_rows = df_dia[df_dia['EMPI'].isin(test_empi)]
+    # Splitting the DataFrame while preserving the order
+    train_rows = df_dia[df_dia['EMPI'].isin(train_empi)].copy()
+    validation_rows = df_dia[df_dia['EMPI'].isin(validation_empi)].copy()
+    test_rows = df_dia[df_dia['EMPI'].isin(test_empi)].copy()
 
-     # Initialize OneHotEncoder with limited categories and sparse output
+    # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
+    train_rows['order'] = train_rows.index
+    validation_rows['order'] = validation_rows.index
+    test_rows['order'] = test_rows.index
+
+    # Initialize OneHotEncoder with limited categories and sparse output
     one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=390)
 
     # Fit the encoder on the training subset
@@ -318,7 +324,8 @@ def main(use_dask=False):
     validation_encoded = one_hot_encoder.transform(validation_rows[categorical_columns].astype(str))
     test_encoded = one_hot_encoder.transform(test_rows[categorical_columns].astype(str))
 
-    # Extracting infrequent categories
+    print("Extracting infrequent categories.")
+
     infrequent_categories = one_hot_encoder.infrequent_categories_
 
     # Prepare a dictionary to hold the infrequent categories for each feature
@@ -333,11 +340,6 @@ def main(use_dask=False):
 
     print("Infrequent categories saved to infrequent_categories.json.")
 
-    print("Combining encoded splits into a single sparse matrix.")
-
-    # Combine the encoded train, validation, and test data into a single sparse matrix
-    encoded_data = vstack([train_encoded, validation_encoded, test_encoded])
-
     # Get feature names from the encoder
     encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
 
@@ -347,7 +349,24 @@ def main(use_dask=False):
     # Ensure encoded_feature_names is a list
     encoded_feature_names = list(encoded_feature_names)
 
+    print("Combining encoded splits into a single sparse matrix.")
+
+    # Combine the encoded train, validation, and test data into a single sparse matrix
+    encoded_data = vstack([train_encoded, validation_encoded, test_encoded])
+
     encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_data, columns=encoded_feature_names)
+
+    # Concatenate the 'order' column to encoded_df to preserve original row order
+    # Note: The order of concatenation must match the order in which you're stacking the encoded arrays
+    orders = pd.concat([train_rows['order'], validation_rows['order'], test_rows['order']])
+    encoded_df['order'] = orders.values
+
+    # Sort encoded_df by 'order' to match the original df_dia row order and reset the index
+    encoded_df.sort_values(by='order', inplace=True)
+    encoded_df.reset_index(drop=True, inplace=True)
+
+    # Drop the 'order' column if it's no longer needed
+    encoded_df.drop(columns=['order'], inplace=True)
 
     # Drop the infrequent columns from encoded_df
     infrequent_sklearn_columns = ['Date_infrequent_sklearn',"infrequent_sklearn", "Date_None"]
@@ -358,19 +377,18 @@ def main(use_dask=False):
     with open('encoded_feature_names.json', 'w') as file:
         json.dump(encoded_feature_names, file)
 
-    print("Dropping the original categorical columns ", categorical_columns)
-    # Drop the original categorical columns
-    df_dia.drop(categorical_columns, axis=1, inplace=True)
-
     print("Combining the original DataFrame with the encoded DataFrame.")
 
-    # Concatenate using a method that preserves the sparse structure
     df_dia = pd.concat([df_dia, encoded_df], axis=1, sort=False)
+
+    print("Dropping the original categorical columns ", categorical_columns)
+    df_dia.drop(categorical_columns, axis=1, inplace=True)
 
     print("Binarizing one-hot encoded variables based on 'DiagnosisBeforeOrOnIndexDate'.")
 
     # Identify all one-hot encoded columns for 'Date'
     encoded_date_columns = [col for col in df_dia.columns if 'Date' in col]
+    encoded_date_columns = [col for col in encoded_date_columns if col != 'DiagnosisBeforeOrOnIndexDate']
 
     # Convert 'DiagnosisBeforeOrOnIndexDate' to a numeric type if it's categorical
     if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
@@ -378,8 +396,8 @@ def main(use_dask=False):
 
     # Preprocess encoded date columns
     print("Preprocess encoded date columns.")
-    filtered_columns = [col for col in encoded_date_columns if col != 'DiagnosisBeforeOrOnIndexDate']
-    tasks = [delayed(process_date_column)(df_dia, col) for col in filtered_columns]
+    
+    tasks = [delayed(process_date_column)(df_dia, col) for col in encoded_date_columns]
 
     if tasks:
         with tqdm(total=len(tasks), desc="Processing Columns") as progress_bar:
@@ -413,7 +431,12 @@ def main(use_dask=False):
     merged_validation_df = validation_df.merge(df_dia_agg, on='EMPI', how='inner')
     merged_test_df = test_df.merge(df_dia_agg, on='EMPI', how='inner')
 
-    column_names = merged_train_df.columns.tolist()
+    print("Select numeric columns and drop EMPI using Pandas.")
+    numeric_train_df = merged_train_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
+    numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
+    numeric_test_df = merged_test_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
+
+    column_names = numeric_train_df.columns.tolist()
 
     # Save column names to a JSON file
     with open('column_names.json', 'w') as file:
@@ -424,24 +447,14 @@ def main(use_dask=False):
     gc.collect()
     
     if use_dask:
-        print("Select numeric columns using Dask.")
-        numeric_dask_train_df = merged_train_df.select_dtypes(include=[np.number])
-        numeric_dask_validation_df = merged_validation_df.select_dtypes(include=[np.number])
-        numeric_dask_test_df = merged_test_df.select_dtypes(include=[np.number])
-
         print("Parallel conversion of training set Dask DataFrame to PyTorch tensor.")
-        train_tensor = dask_df_to_tensor(numeric_dask_train_df)
+        train_tensor = dask_df_to_tensor(numeric_train_df)
         print("Parallel conversion of validation set Dask DataFrame to PyTorch tensor.")
-        validation_tensor = dask_df_to_tensor(numeric_dask_validation_df)
+        validation_tensor = dask_df_to_tensor(numeric_validation_df)
         print("Parallel conversion of test set Dask DataFrame to PyTorch tensor.")
-        test_tensor = dask_df_to_tensor(numeric_dask_test_df)
+        test_tensor = dask_df_to_tensor(numeric_test_df)
         client.close()
     else:
-        print("Select numeric columns using Pandas.")
-        numeric_train_df = merged_train_df.select_dtypes(include=[np.number])
-        numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number])
-        numeric_test_df = merged_test_df.select_dtypes(include=[np.number])
-
         print("Convert to PyTorch tensors using Pandas.")
         train_tensor = torch.tensor(numeric_train_df.values, dtype=torch.float32)
         validation_tensor = torch.tensor(numeric_validation_df.values, dtype=torch.float32)

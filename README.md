@@ -103,7 +103,7 @@ $ python3.8 -m pip install "dask[distributed]" --upgrade
 1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors. Arguments: `--use_dask` (optional):
 
 ```bash
-$ python3.8 src/data_loader.py # need Python 3.8 to run 
+$ python3.8 src/data_loader.py # need Python 3.8 to run
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset:
@@ -115,9 +115,13 @@ $ python3 src/data_analysis.py
 3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--use_mixup` (optional) `--model_path` (optional):
 
 ```bash
-# You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
-$ export CUDA_VISIBLE_DEVICES="0"
+# Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
+$ export CUDA_VISIBLE_DEVICES="0,1" 
 $ python3 src/train.py --model_type TabTransformer --batch_size 8 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
+```
+OR
+```bash
+$ python3 src/train.py --model_type FTTransformer --batch_size 4 --learning_rate 0.001 --epochs 10 --early_stopping_patience 5 --use_cutmix
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:

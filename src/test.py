@@ -35,7 +35,7 @@ def load_model(model_type, model_path):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
-            num_continuous=12,
+            num_continuous=11,
             dim=32,
             dim_out=1,
             depth=6,
@@ -48,7 +48,7 @@ def load_model(model_type, model_path):
     elif model_type == 'FTTransformer':
         model = FTTransformer(
             categories = categories,
-            num_continuous = 12,
+            num_continuous = 11,
             dim = 192,
             dim_out = 1,
             depth = 3,
@@ -101,7 +101,7 @@ def main(args):
         column_names = json.load(file)
 
     # Excluded column names
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months",  "DiagnosisBeforeOrOnIndexDate", "EMPI"]
+    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months",  "DiagnosisBeforeOrOnIndexDate", "studyID"]
 
     # Find indices of the columns to be excluded
     excluded_indices = [column_names.index(col) for col in excluded_columns]

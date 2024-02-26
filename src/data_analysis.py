@@ -86,17 +86,9 @@ icd10_df.set_index('CODE', inplace=True)
 print("ICD-9 DataFrame structure:", icd9_df.head())
 print("ICD-10 DataFrame structure:", icd10_df.head())
 
-# Print to check if the test ICD codes are in the DataFrames
-print("ICD9 DataFrame contains '104.0':", '104.0' in icd9_df.index)
-print("ICD10 DataFrame contains 'S87.0':", 'S87.0' in icd10_df.index)
-
 # Print to check the column names in the DataFrames
 print("ICD9 DataFrame columns:", icd9_df.columns)
 print("ICD10 DataFrame columns:", icd10_df.columns)
-
-# Print to check the formatting of the ICD codes in the DataFrames
-print("Sample ICD9 codes:", icd9_df.index[:5])
-print("Sample ICD10 codes:", icd10_df.index[:5])
 
 # Print to confirm the index name of the DataFrames
 print("Index name of ICD9 DataFrame:", icd9_df.index.name)
@@ -105,19 +97,6 @@ print("Index name of ICD10 DataFrame:", icd10_df.index.name)
 # Ensure the CODE column is set as index
 if icd9_df.index.name != 'CODE' or icd10_df.index.name != 'CODE':
     print("ERROR: CODE column is not set as index in the ICD DataFrames.")
-
-# Example ICD codes and types for testing
-test_codes = [
-    ("104.0", "ICD9"),
-    ("745", "ICD9"),
-    ("R93.4", "ICD10"),
-    ("F29", "ICD10")
-]
-
-# Perform the test
-for icd_code, code_type in test_codes:
-    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-    print(f"Code: {icd_code}, Type: {code_type}, Description: {description}")
 
 with open('infrequent_categories.json', 'r') as file:
     infrequent_categories = json.load(file)

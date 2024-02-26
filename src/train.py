@@ -12,6 +12,13 @@ import logging
 import json
 import torchvision
 import torchvision.transforms
+import random
+import numpy as np
+from tqdm import tqdm
+
+
+# Set the max_split_size_mb parameter
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -72,25 +79,40 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.savefig(filepath)
     plt.close()
 
-def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha):
+def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
     model.train()
     total_loss = 0
 
-    for batch_idx, (data, labels) in enumerate(train_loader):
-        augmented_data = data.to(device)
-        labels = labels.to(device)
+    for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
+        # Extracting categorical and numerical features based on their indices
+        categorical_features = features[:, binary_feature_indices].to(device)
+        # Convert categorical_features to long type before passing to the model
+        categorical_features = categorical_features.long()  # Ensure this is done after moving to the device
 
-        if use_mixup and np.random.rand() < mixup_alpha:
-            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(augmented_data, labels, mixup_alpha)
-            outputs = model(augmented_data)
-            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-        elif use_cutmix and np.random.rand() < cutmix_prob:
-            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(augmented_data, labels, cutmix_lambda)
-            outputs = model(augmented_data)
-            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-        else:
-            outputs = model(augmented_data)
-            loss = criterion(outputs.squeeze(), labels.float())
+        numerical_features = features[:, numerical_feature_indices].to(device)
+        labels = labels.to(device)
+        num_categorical_features = len(binary_feature_indices)  # Adjust this based on your dataset
+
+    if use_mixup and np.random.rand() < mixup_alpha:
+        combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+        augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
+        # Assuming you know how to split augmented_data back
+        augmented_cat = augmented_data[:, :num_categorical_features]
+        augmented_num = augmented_data[:, num_categorical_features:]
+        outputs = model(augmented_cat, augmented_num)
+        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+    elif use_cutmix and np.random.rand() < cutmix_prob:
+        augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
+        # Splitting augmented_data back into augmented_cat and augmented_num
+        augmented_cat = augmented_data[:, :num_categorical_features]
+        augmented_num = augmented_data[:, num_categorical_features:]
+        outputs = model(augmented_cat, augmented_num)
+        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+    else:
+        combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+        # Directly using combined_features as your model might require adjustments to accept this
+        outputs = model(categorical_features, numerical_features)  # Original call before error
+        loss = criterion(outputs.squeeze(), labels.float())
 
         optimizer.zero_grad()
         loss.backward()
@@ -102,7 +124,7 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     print(f'Training loss: {average_loss:.4f}')
     return average_loss
 
-def validate_model(model, validation_loader, criterion):
+def validate_model(model, validation_loader, criterion, device):
     model.eval()  # Set the model to evaluation mode
     total_loss = 0
     total, correct = 0, 0
@@ -110,7 +132,7 @@ def validate_model(model, validation_loader, criterion):
     all_predictions = []  # List to store all predictions
 
     with torch.no_grad():  # No gradients to track
-        for data, labels in validation_loader:
+        for data, labels in tqdm(validation_loader, desc="Validation"):
             data, labels = data.to(device), labels.to(device)
             outputs = model(data)
             loss = criterion(outputs.squeeze(), labels.float())  # Compute loss
@@ -142,23 +164,17 @@ def main(args):
     with open('encoded_feature_names.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
+    with open('columns_to_normalize.json', 'r') as file:
+        columns_to_normalize = json.load(file)
+
     # Excluded column names
     excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "EMPI"]
 
-    # Find indices of the columns to be excluded
-    excluded_indices = [column_names.index(col) for col in excluded_columns]
+    # Find indices of the one-hot encoded features
+    binary_feature_indices = [column_names.index(col) for col in encoded_feature_names]
 
-    # Find indices of all columns
-    #  conversion from column names to indices is necessary because PyTorch tensors do not support direct column selection by name
-    all_indices = list(range(len(column_names)))
-
-    # Determine indices for features by excluding the indices of excluded columns
-    feature_indices = [index for index in all_indices if index not in excluded_indices]
-
-    print(f"Total columns in dataset: {len(column_names)}")
-    print(f"Excluded columns: {excluded_columns}")
-    print(f"Indices of excluded columns: {excluded_indices}")
-    print(f"Total feature indices: {len(feature_indices)}")
+    # Find indices of the continuous features
+    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize]
 
     # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
     dataset_tensor = train_dataset.tensors[0]  # This gets the tensor from the dataset
@@ -167,6 +183,7 @@ def main(args):
 
     # Extracting indices for features and label
     feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns]
+
     label_index = column_names.index("A1cGreaterThan7")
 
     # Selecting features and labels
@@ -182,10 +199,18 @@ def main(args):
     torch.save(validation_features, 'validation_features.pt')
     torch.save(validation_labels, 'validation_labels.pt')
 
+    print(f"Total columns in dataset: {len(column_names)}")
+    print(f"Excluded columns: {excluded_columns}")
+    print(f"Total feature indices: {len(feature_indices)}")
+
     print(f"Train features shape: {train_features.shape}")
     print(f"Train labels shape: {train_labels.shape}")
     print(f"Validation features shape: {validation_features.shape}")
     print(f"Validation labels shape: {validation_labels.shape}")
+
+    # Set device to GPU or CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     # Create custom datasets
     train_data = CustomDataset(train_features, train_labels)
@@ -194,16 +219,17 @@ def main(args):
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
 
-    categories=[2 for _ in range(len(encoded_feature_names))]
+    categories = [2] * len(binary_feature_indices)
+    print("Categories length:", len(categories))
+    print("Features length:", len(feature_indices))
 
-    # Set the device to GPU if available, else CPU
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Move model to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize model, criterion, optimizer here with the current set of hyperparameters
     model = TabTransformer(
         categories=categories,  # tuple containing the number of unique values within each category
-        num_continuous=12,                                          # number of continuous values
+        num_continuous=len(numerical_feature_indices),              # number of continuous values
         dim=32,                                                     # dimension, paper set at 32
         dim_out=1,                                                  # binary prediction, but could be anything
         depth=6,                                                    # depth, paper recommended 6
@@ -212,16 +238,16 @@ def main(args):
         ff_dropout=0.1,                                             # feed forward dropout
         mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
         mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-    ) if args.model_type == 'TabTransformer' else FTTransformer(
+    ).to(device) if args.model_type == 'TabTransformer' else FTTransformer(
         categories = categories,      # tuple containing the number of unique values within each category
-        num_continuous = 12,                # number of continuous values
+        num_continuous = len(numerical_feature_indices),  # number of continuous values
         dim = 192,                           # dimension, paper set at 192
         dim_out = 1,                        # binary prediction, but could be anything
         depth = 3,                          # depth, paper recommended 3
         heads = 8,                          # heads, paper recommends 8
         attn_dropout = 0.2,                 # post-attention dropout
         ff_dropout = 0.1                    # feed forward dropout
-    )
+    ).to(device)
     
     if args.model_path:
         # Ensure the file exists before attempting to load
@@ -231,7 +257,10 @@ def main(args):
         else:
             print(f"Saved model file {args.model_path} not found. Training from scratch.")
 
-    model.to(device)
+    # Using multiple GPUs if available
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = torch.nn.DataParallel(model)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -255,8 +284,8 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha)
-        val_loss, _ = validate_model(model, validation_loader, criterion)
+        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
+        val_loss, _ = validate_model(model, validation_loader, criterion, device)
 
         # Save losses for plotting
         train_losses.append(train_loss)
