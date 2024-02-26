@@ -6,56 +6,118 @@ import json
 import numpy as np
 import plotly.express as px
 
+# Function to format ICD codes (remove dots and leading zeros)
+def format_icd_code(icd_code):
+    # Ensure icd_code is a string before applying string methods
+    icd_code_str = str(icd_code)
+    return icd_code_str.replace('.', '').lstrip('0')
+
+# Get ICD description
+def get_icd_description(icd_code, code_type, icd9_df, icd10_df):
+    formatted_icd_code = format_icd_code(icd_code)
+    if code_type == 'ICD9':
+        # Use the updated column name for ICD-9 descriptions
+        description_column = 'LONG_DESCRIPTION_ICD9'
+        if formatted_icd_code in icd9_df.index:
+            return icd9_df.loc[formatted_icd_code, description_column]
+    elif code_type == 'ICD10':
+        # Use the actual column name for ICD-10 descriptions
+        description_column = 'LONG DESCRIPTION (VALID ICD-10 FY2024)'
+        if formatted_icd_code in icd10_df.index:
+            return icd10_df.loc[formatted_icd_code, description_column]
+    return 'Description not found'
+
+# Extract ICD code and type
+def extract_icd_info(col_name):
+    parts = col_name.split('_')
+    if len(parts) != 2:
+        return None, None
+    return parts[0], parts[1]
+
 # Load the ICD-9 and ICD-10 codes dataframes
 icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl')
 icd10_df = pd.read_excel('data/Section111ValidICD10-Jan2024.xlsx', engine='openpyxl')
 
-# Adjust column names based on the structure of the files
-icd9_df.columns = ['CODE', 'LONG_DESCRIPTION_ICD9', 'NF_EXCL_ICD9']
-icd10_df.columns = ['CODE', 'SHORT_DESCRIPTION_ICD10', 'LONG_DESCRIPTION_ICD10', 'NF_EXCL_ICD10']
+# Assuming icd9_df is loaded from a file
+print("Original column names:", icd9_df.columns)
 
-# Set the CODE column as the index for faster lookup
+# Set column names explicitly if needed
+expected_columns = ['CODE', 'LONG_DESCRIPTION_ICD9', 'NF_EXCL_ICD9']
+if len(icd9_df.columns) == len(expected_columns):
+    icd9_df.columns = expected_columns
+    print("Column names set successfully.")
+else:
+    print("Column names mismatch. Expected:", len(expected_columns), "Got:", len(icd9_df.columns))
+
+# Check again after setting
+print("Updated column names:", icd9_df.columns)
+
+# Before accessing 'LONG_DESCRIPTION_ICD9', confirm it exists
+if 'LONG_DESCRIPTION_ICD9' in icd9_df.columns:
+    # Safe to access the column
+    print(icd9_df['LONG_DESCRIPTION_ICD9'].head())
+else:
+    print("'LONG_DESCRIPTION_ICD9' column not found.")
+
+# Apply formatting function to the DataFrame indices
+icd9_df.index = icd9_df.index.map(format_icd_code)
+icd10_df.index = icd10_df.index.map(format_icd_code)
+
+# Adjust column names based on the actual structure of the DataFrame
+icd9_df_column_names = ['CODE', 'LONG_DESCRIPTION_ICD9']
+icd10_df_column_names = ['CODE', 'SHORT_DESCRIPTION_ICD10', 'LONG_DESCRIPTION_ICD10']
+
+# Ensure you're setting the correct number of column names
+if len(icd9_df.columns) == len(icd9_df_column_names):
+    icd9_df.columns = icd9_df_column_names
+else:
+    print(f"Warning: icd9_df has {len(icd9_df.columns)} columns, but {len(icd9_df_column_names)} names were provided.")
+
+if len(icd10_df.columns) == len(icd10_df_column_names):
+    icd10_df.columns = icd10_df_column_names
+else:
+    print(f"Warning: icd10_df has {len(icd10_df.columns)} columns, but {len(icd10_df_column_names)} names were provided.")
+
+# Continue with setting the index and other operations
 icd9_df.set_index('CODE', inplace=True)
 icd10_df.set_index('CODE', inplace=True)
 
-def get_icd_description(icd_column_name, icd9_df, icd10_df):
-    # Split the column name by the underscore
-    parts = icd_column_name.split('_')
-    # Ignore columns with 'Date' in the name
-    if "Date" in parts:
-        return None
-    
-    # Extract the ICD code and code type from the column name
-    icd_code = parts[0]
-    code_type = parts[1] if len(parts) > 1 else None
+# Print structure of icd9_df and icd10_df to ensure they have the expected structure
+print("ICD-9 DataFrame structure:", icd9_df.head())
+print("ICD-10 DataFrame structure:", icd10_df.head())
 
-    # Check the code type and select the appropriate DataFrame
-    try:
-        if code_type == 'ICD9':
-            description = icd9_df.loc[icd_code, 'Description'] if icd_code in icd9_df.index else 'Description not found'
-        elif code_type == 'ICD10':
-            description = icd10_df.loc[icd_code, 'Description'] if icd_code in icd10_df.index else 'Description not found'
-        else:
-            description = 'Invalid code type'
-    except KeyError:
-        description = 'Description not found'
+# Print to check if the test ICD codes are in the DataFrames
+print("ICD9 DataFrame contains '104.0':", '104.0' in icd9_df.index)
+print("ICD10 DataFrame contains 'S87.0':", 'S87.0' in icd10_df.index)
 
-    return description
+# Print to check the column names in the DataFrames
+print("ICD9 DataFrame columns:", icd9_df.columns)
+print("ICD10 DataFrame columns:", icd10_df.columns)
 
-def extract_icd_info(col_name):
-    # Split the column name based on underscores
-    parts = col_name.split('_')
-    # Extract the ICD code and type from the parts
-    icd_code = parts[1]  # This gets the '001.1' from '001.1_ICD9'
-    code_type = parts[2]  # This gets the 'ICD9' or 'ICD10' from '001.1_ICD9'
-    return icd_code, code_type
+# Print to check the formatting of the ICD codes in the DataFrames
+print("Sample ICD9 codes:", icd9_df.index[:5])
+print("Sample ICD10 codes:", icd10_df.index[:5])
 
-# Load column names from files
-with open('column_names.json', 'r') as file:
-    column_names = json.load(file)
+# Print to confirm the index name of the DataFrames
+print("Index name of ICD9 DataFrame:", icd9_df.index.name)
+print("Index name of ICD10 DataFrame:", icd10_df.index.name)
 
-with open('encoded_feature_names.json', 'r') as file:
-    encoded_feature_names = json.load(file)
+# Ensure the CODE column is set as index
+if icd9_df.index.name != 'CODE' or icd10_df.index.name != 'CODE':
+    print("ERROR: CODE column is not set as index in the ICD DataFrames.")
+
+# Example ICD codes and types for testing
+test_codes = [
+    ("104.0", "ICD9"),
+    ("745", "ICD9"),
+    ("R93.4", "ICD10"),
+    ("F29", "ICD10")
+]
+
+# Perform the test
+for icd_code, code_type in test_codes:
+    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+    print(f"Code: {icd_code}, Type: {code_type}, Description: {description}")
 
 with open('infrequent_categories.json', 'r') as file:
     infrequent_categories = json.load(file)
@@ -63,22 +125,29 @@ with open('infrequent_categories.json', 'r') as file:
 # Before loading data, get descriptions of exluded ICD codes
 infrequent_categories_df = []
 
-for col_name in infrequent_categories:
-    # Use the extract_icd_info function to get ICD code and code type
-    icd_code, code_type = extract_icd_info(col_name)
+# Apply the formatting function to the ICD codes in infrequent_categories
+formatted_infrequent_categories = [format_icd_code(icd) for icd in infrequent_categories]
 
-    # Call the function with the extracted code, code type, and the respective DataFrame
-    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-    
-    # Append the results to the data list
-    infrequent_categories_df.append({
-        "ICD Code Type": code_type,
-        "ICD Code": icd_code,
-        "Description": description
-    })
+# Append data to list
+infrequent_categories_df = []
+for col_name in formatted_infrequent_categories:
+    icd_code, code_type = extract_icd_info(col_name)
+    if icd_code and code_type:
+        description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
+        infrequent_categories_df.append({
+            "ICD Code Type": code_type,
+            "ICD Code": icd_code,
+            "Description": description
+        })
+
+# Confirm contents
+print("Contents of infrequent_categories_df:", infrequent_categories_df)
 
 # Create a DataFrame from the data list
 infrequent_categories_icd_info = pd.DataFrame(infrequent_categories_df)
+
+# Optionally, print the created DataFrame to confirm its correctness
+print("Infrequent Categories ICD Info DataFrame:\n", infrequent_categories_icd_info)
 
 # Convert the DataFrame to an HTML table
 infrequent_categories_html_table = infrequent_categories_icd_info.to_html(index=False)
@@ -91,6 +160,10 @@ with open("excluded_codes_descriptions.html", "w") as file:
 loaded_train_dataset = torch.load('train_dataset.pt')
 loaded_validation_dataset = torch.load('validation_dataset.pt')
 loaded_test_dataset = torch.load('test_dataset.pt')
+
+# Load column names
+with open('column_names.json', 'r') as file:
+    column_names = json.load(file)
 
 # Convert to DataFrames for analysis
 df_train = pd.DataFrame(loaded_train_dataset.tensors[0].numpy(), columns=column_names)
@@ -109,6 +182,9 @@ df_train.to_csv('training_data.csv', index=False)
 print("Training Dataset Description:\n", df_train.describe())
 
 # Calculate sparsity rate for one-hot encoded columns
+
+with open('encoded_feature_names.json', 'r') as file:
+    encoded_feature_names = json.load(file)
 
 one_hot_sparsity_rate = 1-df_train[encoded_feature_names].mean()
 print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate)

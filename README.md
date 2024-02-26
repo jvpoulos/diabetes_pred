@@ -92,7 +92,7 @@ $ pip3 install -r requirements.txt
 $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
 
-6. Install Dask for processing and aggregating results more efficiently:
+6. Install Dask for data_loader.py (optional):
 
 ```bash
 $ python3 -m pip install "dask[dataframe]" --upgrade
@@ -100,7 +100,7 @@ $ python3.8 -m pip install "dask[distributed]" --upgrade
 ```
 ## Run the code
 
-1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors. 
+1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors. Arguments: `--use_dask` (optional):
 
 ```bash
 $ python3.8 src/data_loader.py # need Python 3.8 to run 
@@ -117,8 +117,7 @@ $ python3 src/data_analysis.py
 ```bash
 # You must explicitly set CUDA_VISIBLE_DEVICES if you want to use GPU
 $ export CUDA_VISIBLE_DEVICES="0"
-
-$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
+$ python3 src/train.py --model_type TabTransformer --batch_size 8 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:

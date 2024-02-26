@@ -101,7 +101,7 @@ def main(args):
         column_names = json.load(file)
 
     # Excluded column names
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months",  "DiagnosisBeforeOrOnIndexDate", "studyID", "EMPI"]
+    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months",  "DiagnosisBeforeOrOnIndexDate", "EMPI"]
 
     # Find indices of the columns to be excluded
     excluded_indices = [column_names.index(col) for col in excluded_columns]

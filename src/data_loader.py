@@ -18,13 +18,14 @@ import logging
 from joblib import Parallel, delayed
 import multiprocessing
 import concurrent.futures
+import argparse
 import dask
 import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 # Adjust timeout settings
-dask.config.set({'distributed.comm.timeouts.connect': '60s'})  # Increase connect timeout to 60 seconds
+dask.config.set({'distributed.comm.timeouts.connect': '120s'})
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -111,25 +112,44 @@ def process_date_column(df, col, chunk_size=50000):
         chunk_end = min(chunk_start + chunk_size, len(df))
         optimize_date_column(df, col, chunk_start, chunk_end)
 
-def dask_df_to_tensor(dask_df, client):
-    # Convert the Dask DataFrame to a Dask Array with known lengths
+def dask_df_to_tensor(dask_df, chunk_size=1024):
+    """
+    Convert a Dask DataFrame to a PyTorch tensor in chunks.
+    
+    Args:
+    dask_df (dask.dataframe.DataFrame): The Dask DataFrame to convert.
+    chunk_size (int): The size of chunks to use when processing.
+
+    Returns:
+    torch.Tensor: The resulting PyTorch tensor.
+    """
+    # Convert the Dask DataFrame to a Dask Array
     dask_array = dask_df.to_dask_array(lengths=True)
 
-    # Scatter the Dask array across workers to minimize data transfer
-    scattered_array = client.scatter(dask_array, broadcast=True)
+    # Define a function to process a chunk of the array
+    def process_chunk(dask_chunk):
+        numpy_chunk = dask_chunk.compute()  # Compute the chunk to a NumPy array
+        tensor_chunk = torch.from_numpy(numpy_chunk)  # Convert the NumPy array to a PyTorch tensor
+        return tensor_chunk
 
-    # Use map_blocks to convert each block of the scattered Dask Array to a PyTorch tensor
-    tensor_futures = scattered_array.map_blocks(lambda x: torch.tensor(x, dtype=torch.float32), meta=torch.tensor([]))
+    # Create a list to hold tensor chunks
+    tensor_chunks = []
 
-    # Use Dask's compute to gather the results
-    result_tensor = client.compute(tensor_futures, sync=True)
-    
-    return result_tensor
+    # Iterate over chunks of the Dask array
+    for i in range(0, dask_array.shape[0], chunk_size):
+        chunk = dask_array[i:i + chunk_size]
+        # Use map_blocks to apply the processing function to each chunk
+        tensor_chunk = chunk.map_blocks(process_chunk, dtype=float)
+        tensor_chunks.append(tensor_chunk)
 
+    # Use da.concatenate to combine chunks into a single Dask array, then compute
+    combined_tensor = da.concatenate(tensor_chunks, axis=0).compute()
+
+    return combined_tensor
 
 # Define the column types for each file type
 
-def main():
+def main(use_dask=False):
     outcomes_columns = {
         'studyID': 'int32',
         'EMPI': 'int32',
@@ -166,7 +186,7 @@ def main():
 
     # Select columns to read in each dataset
 
-    outcomes_columns_select = ['studyID', 'EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'DaysFromIndexToInitialA1cDate', 'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 'NumberEncounters', 'SDI_score', 'Veteran']
+    outcomes_columns_select = ['EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'DaysFromIndexToInitialA1cDate', 'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 'NumberEncounters', 'SDI_score', 'Veteran']
 
     dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
 
@@ -288,7 +308,7 @@ def main():
     test_rows = df_dia[df_dia['EMPI'].isin(test_empi)]
 
      # Initialize OneHotEncoder with limited categories and sparse output
-    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=389)
+    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=390)
 
     # Fit the encoder on the training subset
     one_hot_encoder.fit(train_rows[categorical_columns].dropna().astype(str))
@@ -335,6 +355,9 @@ def main():
 
     encoded_feature_names = [col for col in encoded_feature_names if col not in infrequent_sklearn_columns]
 
+    with open('encoded_feature_names.json', 'w') as file:
+        json.dump(encoded_feature_names, file)
+
     print("Dropping the original categorical columns ", categorical_columns)
     # Drop the original categorical columns
     df_dia.drop(categorical_columns, axis=1, inplace=True)
@@ -366,58 +389,78 @@ def main():
     else:
         print("No columns meet the criteria for processing.")
 
-    print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
+    print("Starting aggregation by EMPI.")
+    agg_dict = {col: 'max' for col in encoded_feature_names}
 
-    # Check if df_dia is not a Dask DataFrame and convert it if necessary
-    if not isinstance(df_dia, dd.DataFrame):
+    if use_dask:
+        print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
+        print("Converting diagnoses to Dask DataFrame.")
         df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
 
-    agg_dict = {col: 'max' for col in encoded_feature_names}
-    print("Aggregation dictionary set up.")
+        print("Perform the groupby and aggregation in parallel.")
+        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    print("Perform the groupby and aggregation in parallel.")
-    df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
+        print("Convert splits to Dask DataFrame.")
+        train_df = dd.from_pandas(train_df, npartitions=npartitions)
+        validation_df = dd.from_pandas(validation_df, npartitions=npartitions)
+        test_df = dd.from_pandas(test_df, npartitions=npartitions)
+    else:
+        print("Perform groupby and aggregation using pandas.")
+        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    print("Convert splits to Dask DataFrame.")
-    train_df_dask = dd.from_pandas(train_df, npartitions=npartitions)
-    validation_df_dask = dd.from_pandas(validation_df, npartitions=npartitions)
-    test_df_dask = dd.from_pandas(test_df, npartitions=npartitions)
+    print("Merge outcomes splits with diagnoses.")
+    merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner')
+    merged_validation_df = validation_df.merge(df_dia_agg, on='EMPI', how='inner')
+    merged_test_df = test_df.merge(df_dia_agg, on='EMPI', how='inner')
 
-    print("Merge using Dask.")
-    merged_train_df = train_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
-    merged_validation_df = validation_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
-    merged_test_df = test_df_dask.merge(df_dia_agg, on='EMPI', how='inner')
+    column_names = merged_train_df.columns.tolist()
+
+    # Save column names to a JSON file
+    with open('column_names.json', 'w') as file:
+        json.dump(column_names, file)
 
     print("Clean up unused dataframes.")
-    del df_dia, df_dia_agg, train_df_dask, validation_df_dask, test_df_dask
+    del df_dia, df_dia_agg
     gc.collect()
     
-     # Select numeric columns using Dask
-    print("Select numeric columns using Dask.")
-    numeric_dask_train_df = merged_train_df.select_dtypes(include=[np.number])
-    numeric_dask_validation_df = merged_validation_df.select_dtypes(include=[np.number])
-    numeric_dask_test_df = merged_test_df.select_dtypes(include=[np.number])
+    if use_dask:
+        print("Select numeric columns using Dask.")
+        numeric_dask_train_df = merged_train_df.select_dtypes(include=[np.number])
+        numeric_dask_validation_df = merged_validation_df.select_dtypes(include=[np.number])
+        numeric_dask_test_df = merged_test_df.select_dtypes(include=[np.number])
 
-    # Parallel conversion of Dask DataFrames to PyTorch tensors
-    print("Parallel conversion of training set Dask DataFrame to PyTorch tensor.")
-    train_tensor = dask_df_to_tensor(numeric_dask_train_df, client)
-    print("Parallel conversion of validation set Dask DataFrame to PyTorch tensor.")
-    validation_tensor = dask_df_to_tensor(numeric_dask_validation_df, client)
-    print("Parallel conversion of test set Dask DataFrame to PyTorch tensor.")
-    test_tensor = dask_df_to_tensor(numeric_dask_test_df, client)
+        print("Parallel conversion of training set Dask DataFrame to PyTorch tensor.")
+        train_tensor = dask_df_to_tensor(numeric_dask_train_df)
+        print("Parallel conversion of validation set Dask DataFrame to PyTorch tensor.")
+        validation_tensor = dask_df_to_tensor(numeric_dask_validation_df)
+        print("Parallel conversion of test set Dask DataFrame to PyTorch tensor.")
+        test_tensor = dask_df_to_tensor(numeric_dask_test_df)
+        client.close()
+    else:
+        print("Select numeric columns using Pandas.")
+        numeric_train_df = merged_train_df.select_dtypes(include=[np.number])
+        numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number])
+        numeric_test_df = merged_test_df.select_dtypes(include=[np.number])
 
-    print("Wrap training tensor in TensorDataset.")
+        print("Convert to PyTorch tensors using Pandas.")
+        train_tensor = torch.tensor(numeric_train_df.values, dtype=torch.float32)
+        validation_tensor = torch.tensor(numeric_validation_df.values, dtype=torch.float32)
+        test_tensor = torch.tensor(numeric_test_df.values, dtype=torch.float32)
+
+    print("Wrap tensors in TensorDataset.")
     train_dataset = TensorDataset(train_tensor)
-    print("Wrap validation tensor in TensorDataset.")
     validation_dataset = TensorDataset(validation_tensor)
-    print("Wrap test tensor in TensorDataset.")
     test_dataset = TensorDataset(test_tensor)
 
-    print("Save datasets as torch.")
+    print("Save datasets to file.")
     torch.save(train_dataset, 'train_dataset.pt')
     torch.save(validation_dataset, 'validation_dataset.pt')
     torch.save(test_dataset, 'test_dataset.pt')
 
 if __name__ == '__main__':
-    client = Client(processes=True)  # Use processes instead of threads for potentially better CPU utilization
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--use_dask', action='store_true', help='Use Dask for processing')
+    args = parser.parse_args()
+    if args.use_dask:
+        client = Client(processes=True)  # Use processes instead of threads for potentially better CPU utilization
+    main(use_dask=args.use_dask)

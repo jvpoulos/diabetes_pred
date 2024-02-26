@@ -92,7 +92,7 @@ def main():
     data_loader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False)
 
     # Load encoded feature names
-    with open('encoded_feature_names_filtered.json', 'r') as file:
+    with open('encoded_feature_names.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
     num_continuous = 12  # replace with actual number of continuous features

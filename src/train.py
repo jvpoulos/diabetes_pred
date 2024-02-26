@@ -10,7 +10,8 @@ from sklearn.metrics import roc_auc_score
 import copy
 import logging
 import json
-from torchvision.transforms.v2 import CutMix
+import torchvision
+import torchvision.transforms
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -71,7 +72,7 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.savefig(filepath)
     plt.close()
 
-def train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha):
+def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha):
     model.train()
     total_loss = 0
 
@@ -138,21 +139,14 @@ def main(args):
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
 
-    with open('numeric_columns.json', 'r') as file:
-        numeric_columns = json.load(file)
-
     with open('encoded_feature_names.json', 'r') as file:
         encoded_feature_names = json.load(file)
 
     # Excluded column names
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "DiagnosisBeforeOrOnIndexDate", "studyID", "EMPI"]
+    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "EMPI"]
 
     # Find indices of the columns to be excluded
     excluded_indices = [column_names.index(col) for col in excluded_columns]
-
-    # Find indices for numeric and encoded features excluding the excluded columns
-    numeric_indices = [column_names.index(col) for col in numeric_columns if col not in excluded_columns]
-    encoded_indices = [column_names.index(col) for col in encoded_feature_names if col not in excluded_columns]
 
     # Find indices of all columns
     #  conversion from column names to indices is necessary because PyTorch tensors do not support direct column selection by name
@@ -161,16 +155,37 @@ def main(args):
     # Determine indices for features by excluding the indices of excluded columns
     feature_indices = [index for index in all_indices if index not in excluded_indices]
 
-    # Assuming train_dataset and validation_dataset are tensors, use torch.index_select
-    train_features = torch.index_select(train_dataset, 1, torch.tensor(feature_indices))
-    train_labels = train_dataset[:, column_names.index("A1cGreaterThan7")]
+    print(f"Total columns in dataset: {len(column_names)}")
+    print(f"Excluded columns: {excluded_columns}")
+    print(f"Indices of excluded columns: {excluded_indices}")
+    print(f"Total feature indices: {len(feature_indices)}")
 
-    validation_features = torch.index_select(validation_dataset, 1, torch.tensor(feature_indices))
-    validation_labels = validation_dataset[:, column_names.index("A1cGreaterThan7")]
+    # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
+    dataset_tensor = train_dataset.tensors[0]  # This gets the tensor from the dataset
+
+    print(f"Original dataset tensor shape: {dataset_tensor.shape}")
+
+    # Extracting indices for features and label
+    feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns]
+    label_index = column_names.index("A1cGreaterThan7")
+
+    # Selecting features and labels
+    train_features = dataset_tensor[:, feature_indices]
+    train_labels = dataset_tensor[:, label_index]
+
+    # Repeat for validation dataset if necessary
+    validation_dataset_tensor = validation_dataset.tensors[0]
+    validation_features = validation_dataset_tensor[:, feature_indices]
+    validation_labels = validation_dataset_tensor[:, label_index]
 
     # Save to file (for attention.py)
     torch.save(validation_features, 'validation_features.pt')
     torch.save(validation_labels, 'validation_labels.pt')
+
+    print(f"Train features shape: {train_features.shape}")
+    print(f"Train labels shape: {train_labels.shape}")
+    print(f"Validation features shape: {validation_features.shape}")
+    print(f"Validation labels shape: {validation_labels.shape}")
 
     # Create custom datasets
     train_data = CustomDataset(train_features, train_labels)
@@ -180,6 +195,10 @@ def main(args):
     validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
 
     categories=[2 for _ in range(len(encoded_feature_names))]
+
+    # Set the device to GPU if available, else CPU
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     # Initialize model, criterion, optimizer here with the current set of hyperparameters
     model = TabTransformer(
@@ -212,7 +231,6 @@ def main(args):
         else:
             print(f"Saved model file {args.model_path} not found. Training from scratch.")
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
@@ -237,7 +255,7 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer, numeric_indices, encoded_indices device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha)
+        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha)
         val_loss, _ = validate_model(model, validation_loader, criterion)
 
         # Save losses for plotting
