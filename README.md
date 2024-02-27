@@ -121,7 +121,7 @@ $ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_ra
 ```
 OR
 ```bash
-$ python3 src/train.py --model_type FTTransformer --batch_size 8 --learning_rate 0.001 --epochs 100 --early_stopping_patience 5  --use_cutmix --model_path 'FTTransformer_bs8_lr0.001_ep10_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue.pth'
+$ python3 src/train.py --model_type FTTransformer --batch_size 8 --learning_rate 0.001 --epochs 25 --early_stopping_patience 5 --use_cutmix --model_path 'FTTransformer_bs8_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_ucfalse_best.pth'
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:

@@ -16,10 +16,6 @@ import numpy as np
 from tqdm import tqdm
 import re
 
-
-# Set the max_split_size_mb parameter
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
-
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 def extract_epoch(filename):
@@ -95,65 +91,51 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 
         # Extracting categorical and numerical features based on their indices
         categorical_features = features[:, binary_feature_indices].to(device)
-
-        # Convert categorical_features to long type before passing to the model
-        categorical_features = categorical_features.long()  # Ensure this is done after moving to the device
-
+        categorical_features = categorical_features.long()  # Convert categorical_features to long type
         numerical_features = features[:, numerical_feature_indices].to(device)
         labels = labels.to(device)
-        num_categorical_features = len(binary_feature_indices)  # Adjust this based on your dataset
 
-    # Initialize augmented_cat and augmented_num before the if-else blocks
-    augmented_cat, augmented_num = None, None
+        # Ensure variables are initialized
+        lam = 1.0  # Default value for lam
+        labels_a = labels.clone()  # Default values for labels_a and labels_b
+        labels_b = labels.clone()
 
-    if use_mixup and np.random.rand() < mixup_alpha:
-        combined_features = torch.cat((categorical_features, numerical_features), dim=1)
-        augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
-        augmented_cat = augmented_data[:, :num_categorical_features].long()  # Convert to long
-        augmented_num = augmented_data[:, num_categorical_features:]
-        # Forward pass
-        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
-        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        # Initialize augmented_cat and augmented_num before the if-else blocks
+        augmented_cat, augmented_num = None, None
+
+        # Apply mixup or cutmix augmentation if enabled
+        if use_mixup and np.random.rand() < mixup_alpha:
+            combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        elif use_cutmix and np.random.rand() < cutmix_prob:
+            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        else:
+            augmented_cat = categorical_features
+            augmented_num = numerical_features
+
+        # Forward pass through the model
+        outputs = model(augmented_cat, augmented_num).squeeze()
+
+        # Calculate loss
+        if use_mixup or use_cutmix:
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        else:
+            loss = criterion(outputs, labels)
+
+        # Backward pass and optimization step
         loss.backward()
         optimizer.step()
-        # Accumulate the loss
-        total_loss += loss.item()
 
-        # Print statements for debugging (optional)
-        if batch_idx % 100 == 0:  # Print every 100 batches
-            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
-    elif use_cutmix and np.random.rand() < cutmix_prob:
-        augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
-        augmented_cat = augmented_data[:, :num_categorical_features].long()  # Convert to long
-        augmented_num = augmented_data[:, num_categorical_features:]
-        # Forward pass
-        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
-        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-        loss.backward()
-        optimizer.step()
-        # Accumulate the loss
-        total_loss += loss.item()
+        # Accumulate loss
+        total_loss += loss.item() * features.size(0)
+        torch.cuda.empty_cache()
 
-        # Print statements for debugging (optional)
-        if batch_idx % 100 == 0:  # Print every 100 batches
-            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
-    else:
-        # For the case without augmentation, use categorical_features and numerical_features directly
-        augmented_cat = categorical_features.long()  # Ensure this conversion
-        augmented_num = numerical_features
-        # Forward pass
-        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
-        loss = criterion(outputs, labels.float())
-        loss.backward()
-        optimizer.step()
-        # Accumulate the loss
-        total_loss += loss.item()
-        
-        # Print statements for debugging (optional)
-        if batch_idx % 100 == 0:  # Print every 100 batches
-            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
-
-    average_loss = total_loss / len(train_loader)
+    # Calculate average loss
+    average_loss = total_loss / len(train_loader.dataset)
     print(f'Average Training Loss: {average_loss:.4f}')
     return average_loss
 
