@@ -6,7 +6,6 @@ from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 import os
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score
 import copy
 import logging
 import json
@@ -33,6 +32,11 @@ def apply_cutmix_numerical(data, labels, beta=1.0):
 
     # Randomly choose the features to mix
     mix_features_indices = torch.randperm(feature_count)[:mix_feature_count]
+
+    print("data shape:", data.shape)
+    print("index:", index)
+    print("mix_features_indices shape:", mix_features_indices.shape)
+    print("Attempting to assign data at index", index, "with mix_features_indices:", mix_features_indices)
 
     # Swap the chosen features
     data[:, mix_features_indices] = data[index, mix_features_indices]
@@ -95,8 +99,10 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 
     if use_mixup and np.random.rand() < mixup_alpha:
         combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+        print(f"Before apply_cutmix_numerical: features shape {features.shape}, labels shape {labels.shape}")
         augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
-        # Assuming you know how to split augmented_data back
+        print(f"After apply_cutmix_numerical: augmented_data shape {augmented_data.shape}, labels_a shape {labels_a.shape}, labels_b shape {labels_b.shape}")
+ 
         augmented_cat = augmented_data[:, :num_categorical_features]
         augmented_num = augmented_data[:, num_categorical_features:]
         outputs = model(augmented_cat, augmented_num)
@@ -124,34 +130,24 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     print(f'Training loss: {average_loss:.4f}')
     return average_loss
 
-def validate_model(model, validation_loader, criterion, device):
-    model.eval()  # Set the model to evaluation mode
+def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
+    model.eval()
     total_loss = 0
-    total, correct = 0, 0
-    all_labels = []  # List to store all true labels
-    all_predictions = []  # List to store all predictions
-
-    with torch.no_grad():  # No gradients to track
-        for data, labels in tqdm(validation_loader, desc="Validation"):
-            data, labels = data.to(device), labels.to(device)
-            outputs = model(data)
-            loss = criterion(outputs.squeeze(), labels.float())  # Compute loss
+    with torch.no_grad():
+        for batch_idx, (features, labels) in enumerate(validation_loader):
+            categorical_features = features[:, binary_feature_indices].to(device)
+            categorical_features = categorical_features.long()
+            numerical_features = features[:, numerical_feature_indices].to(device)
+            labels = labels.squeeze()  # Adjust labels shape if necessary
+            labels = labels.to(device)  # Move labels to the device
+            outputs = model(categorical_features, numerical_features)
+            outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
+            loss = criterion(outputs, labels)  # Now both tensors have compatible shapes
             total_loss += loss.item()
-
-            # Instead of converting predictions to binary, keep the sigmoid outputs for AUC computation
-            probabilities = torch.sigmoid(outputs).squeeze().cpu().numpy()
-            all_predictions.extend(probabilities)
-            all_labels.extend(labels.cpu().numpy())
-
-            predicted = torch.round(torch.sigmoid(outputs))  # Convert to binary predictions for accuracy calculation
-            total += labels.size(0)
-            correct += (predicted.squeeze() == labels).sum().item()
-
     average_loss = total_loss / len(validation_loader)
-    accuracy = correct / total
-    auc_score = roc_auc_score(all_labels, all_predictions)  # Compute AUC score
-    print(f'Validation Loss: {average_loss:.4f}, Accuracy: {accuracy * 100:.2f}%, AUC: {auc_score:.4f}')
-    return average_loss, accuracy, auc_score
+    return average_loss
+
+
 
 def main(args):
     # Load datasets
@@ -168,7 +164,7 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Excluded column names
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "EMPI"]
+    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
 
     # Find indices of the one-hot encoded features
     binary_feature_indices = [column_names.index(col) for col in encoded_feature_names]
@@ -285,7 +281,7 @@ def main(args):
     # Training loop
     for epoch in range(args.epochs):
         train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
-        val_loss, _ = validate_model(model, validation_loader, criterion, device)
+        val_loss, _ = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
