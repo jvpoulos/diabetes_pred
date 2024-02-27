@@ -91,6 +91,8 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     total_loss = 0
 
     for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
+        optimizer.zero_grad()
+
         # Extracting categorical and numerical features based on their indices
         categorical_features = features[:, binary_feature_indices].to(device)
 
@@ -106,49 +108,53 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 
     if use_mixup and np.random.rand() < mixup_alpha:
         combined_features = torch.cat((categorical_features, numerical_features), dim=1)
-        print(f"Before apply_cutmix_numerical: features shape {features.shape}, labels shape {labels.shape}")
         augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
-        print(f"After apply_cutmix_numerical: augmented_data shape {augmented_data.shape}, labels_a shape {labels_a.shape}, labels_b shape {labels_b.shape}")
- 
-        augmented_cat = augmented_data[:, :num_categorical_features]
+        augmented_cat = augmented_data[:, :num_categorical_features].long()  # Convert to long
         augmented_num = augmented_data[:, num_categorical_features:]
-        outputs = model(augmented_cat, augmented_num)
+        # Forward pass
+        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
         loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-    elif use_cutmix and np.random.rand() < cutmix_prob:
-        augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
-        # Splitting augmented_data back into augmented_cat and augmented_num
-        augmented_cat = augmented_data[:, :num_categorical_features]
-        augmented_num = augmented_data[:, num_categorical_features:]
-        outputs = model(augmented_cat, augmented_num)
-        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-    else:
-        # Handle the case without augmentation
-        augmented_cat = categorical_features
-        augmented_num = numerical_features
-        combined_features = torch.cat((categorical_features, numerical_features), dim=1)
-        # Directly using combined_features as your model might require adjustments to accept this
-        outputs = model(categorical_features, numerical_features)  # Original call before error
-        loss = criterion(outputs.squeeze(), labels.float())
-
-    # After applying MixUp or CutMix, ensure categorical features are of type Long
-    if use_mixup and np.random.rand() < mixup_alpha:
-        # your existing MixUp logic
-        augmented_cat = augmented_cat.long()  # Convert to long if not already
-    elif use_cutmix and np.random.rand() < cutmix_prob:
-        # your existing CutMix logic
-        augmented_cat = augmented_cat.long()  # Convert to long if not already
-    else:
-        # Direct model invocation without augmentation
-        categorical_features = categorical_features.long()  # Ensure this conversion
-
-        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        
+        # Accumulate the loss
         total_loss += loss.item()
 
+        # Print statements for debugging (optional)
+        if batch_idx % 100 == 0:  # Print every 100 batches
+            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
+    elif use_cutmix and np.random.rand() < cutmix_prob:
+        augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
+        augmented_cat = augmented_data[:, :num_categorical_features].long()  # Convert to long
+        augmented_num = augmented_data[:, num_categorical_features:]
+        # Forward pass
+        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
+        loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        loss.backward()
+        optimizer.step()
+        # Accumulate the loss
+        total_loss += loss.item()
+
+        # Print statements for debugging (optional)
+        if batch_idx % 100 == 0:  # Print every 100 batches
+            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
+    else:
+        # For the case without augmentation, use categorical_features and numerical_features directly
+        augmented_cat = categorical_features.long()  # Ensure this conversion
+        augmented_num = numerical_features
+        # Forward pass
+        outputs = model(augmented_cat, augmented_num).squeeze()  # Squeeze the extra dimension
+        loss = criterion(outputs, labels.float())
+        loss.backward()
+        optimizer.step()
+        # Accumulate the loss
+        total_loss += loss.item()
+        
+        # Print statements for debugging (optional)
+        if batch_idx % 100 == 0:  # Print every 100 batches
+            print(f"Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item()}")
+
     average_loss = total_loss / len(train_loader)
-    print(f'Training loss: {average_loss:.4f}')
+    print(f'Average Training Loss: {average_loss:.4f}')
     return average_loss
 
 def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
@@ -274,10 +280,15 @@ def main(args):
         dim_out = 1,                        # binary prediction, but could be anything
         depth = 3,                          # depth, paper recommended 3
         heads = 8,                          # heads, paper recommends 8
-        attn_dropout = 0.2,                 # post-attention dropout
-        ff_dropout = 0.1                    # feed forward dropout
+        attn_dropout = 0.2,                 # post-attention dropout, paper recommends 0.2
+        ff_dropout = 0.1                    # feed forward dropout, paper recommends 0.1
     ).to(device)
-    
+
+    # Using multiple GPUs if available
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = torch.nn.DataParallel(model)
+
     epoch_counter = 0
     # Check if model_path is specified and exists
     if args.model_path and os.path.isfile(args.model_path):
@@ -286,11 +297,6 @@ def main(args):
         print(f"Loaded model from {args.model_path} starting from epoch {epoch_counter}")
     else:
         print("Starting training from scratch.")
-
-    # Using multiple GPUs if available
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        model = torch.nn.DataParallel(model)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -335,8 +341,18 @@ def main(args):
                 print(f"Stopping early at epoch {epoch+1}")
                 break
 
-    # Load the best model weights
-    model.load_state_dict(best_model_wts)
+    # Checkpoint saving logic
+    if patience_counter < early_stopping_patience:
+        # Save checkpoints only if early stopping didn't trigger
+        for checkpoint_epoch in range(10, args.epochs + 1, 10):
+            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{checkpoint_epoch}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            torch.save(model.state_dict(), model_filename)
+            print(f"Model checkpoint saved as {model_filename}")
+    else:
+        # If early stopping was triggered, save the best model weights
+        best_model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        torch.save(best_model_wts, best_model_filename)
+        print(f"Best model saved as {best_model_filename}")
 
     # After training, plot the losses
     hyperparameters = {
@@ -353,18 +369,6 @@ def main(args):
     }
 
     plot_losses(train_losses, val_losses, hyperparameters)
-
-    for epoch in range(epoch_counter, args.epochs):
-        epoch_counter += 1  # Increment the epoch counter
-
-        # Save the model checkpoint every 10 epochs
-        if epoch_counter % 10 == 0:
-            # Construct the filename with the updated epoch counter
-            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
-
-            # Save the model checkpoint
-            torch.save(model.state_dict(), model_filename)
-            print(f"Model saved as {model_filename}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
