@@ -14,12 +14,20 @@ import torchvision.transforms
 import random
 import numpy as np
 from tqdm import tqdm
+import re
 
 
 # Set the max_split_size_mb parameter
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:256"
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+def extract_epoch(filename):
+    # Extracts epoch number from filename using a regular expression
+    match = re.search(r'epoch(\d+)', filename)
+    if match:
+        return int(match.group(1))
+    return 0  # Default to 0 if not found
 
 def apply_cutmix_numerical(data, labels, beta=1.0):
     lam = np.random.beta(beta, beta)
@@ -33,17 +41,12 @@ def apply_cutmix_numerical(data, labels, beta=1.0):
     # Randomly choose the features to mix
     mix_features_indices = torch.randperm(feature_count)[:mix_feature_count]
 
-    print("data shape:", data.shape)
-    print("index:", index)
-    print("mix_features_indices shape:", mix_features_indices.shape)
-    print("Attempting to assign data at index", index, "with mix_features_indices:", mix_features_indices)
-
-    # Swap the chosen features
-    data[:, mix_features_indices] = data[index, mix_features_indices]
+    # Swap the chosen features for all examples in the batch
+    for i in range(batch_size):
+        data[i, mix_features_indices] = data[index[i], mix_features_indices]
 
     labels_a, labels_b = labels, labels[index]
     return data, labels_a, labels_b, lam
-
 
 def apply_mixup_numerical(data, labels, alpha=0.2):
     lam = np.random.beta(alpha, alpha) if alpha > 0 else 1
@@ -90,12 +93,16 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
         # Extracting categorical and numerical features based on their indices
         categorical_features = features[:, binary_feature_indices].to(device)
+
         # Convert categorical_features to long type before passing to the model
         categorical_features = categorical_features.long()  # Ensure this is done after moving to the device
 
         numerical_features = features[:, numerical_feature_indices].to(device)
         labels = labels.to(device)
         num_categorical_features = len(binary_feature_indices)  # Adjust this based on your dataset
+
+    # Initialize augmented_cat and augmented_num before the if-else blocks
+    augmented_cat, augmented_num = None, None
 
     if use_mixup and np.random.rand() < mixup_alpha:
         combined_features = torch.cat((categorical_features, numerical_features), dim=1)
@@ -115,10 +122,24 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
         outputs = model(augmented_cat, augmented_num)
         loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
     else:
+        # Handle the case without augmentation
+        augmented_cat = categorical_features
+        augmented_num = numerical_features
         combined_features = torch.cat((categorical_features, numerical_features), dim=1)
         # Directly using combined_features as your model might require adjustments to accept this
         outputs = model(categorical_features, numerical_features)  # Original call before error
         loss = criterion(outputs.squeeze(), labels.float())
+
+    # After applying MixUp or CutMix, ensure categorical features are of type Long
+    if use_mixup and np.random.rand() < mixup_alpha:
+        # your existing MixUp logic
+        augmented_cat = augmented_cat.long()  # Convert to long if not already
+    elif use_cutmix and np.random.rand() < cutmix_prob:
+        # your existing CutMix logic
+        augmented_cat = augmented_cat.long()  # Convert to long if not already
+    else:
+        # Direct model invocation without augmentation
+        categorical_features = categorical_features.long()  # Ensure this conversion
 
         optimizer.zero_grad()
         loss.backward()
@@ -133,8 +154,9 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
     model.eval()
     total_loss = 0
+    # Wrap the validation loader with tqdm for a progress bar
     with torch.no_grad():
-        for batch_idx, (features, labels) in enumerate(validation_loader):
+        for batch_idx, (features, labels) in tqdm(enumerate(validation_loader), total=len(validation_loader), desc="Validating"):
             categorical_features = features[:, binary_feature_indices].to(device)
             categorical_features = categorical_features.long()
             numerical_features = features[:, numerical_feature_indices].to(device)
@@ -146,8 +168,6 @@ def validate_model(model, validation_loader, criterion, device, binary_feature_i
             total_loss += loss.item()
     average_loss = total_loss / len(validation_loader)
     return average_loss
-
-
 
 def main(args):
     # Load datasets
@@ -163,14 +183,25 @@ def main(args):
     with open('columns_to_normalize.json', 'r') as file:
         columns_to_normalize = json.load(file)
 
-    # Excluded column names
+    # Define excluded columns and additional binary variables
     excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
+    additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
-    # Find indices of the one-hot encoded features
-    binary_feature_indices = [column_names.index(col) for col in encoded_feature_names]
+    # Find indices of excluded columns
+    excluded_columns_indices = [column_names.index(col) for col in excluded_columns]
+
+    # Filter out excluded columns
+    column_names_filtered = [col for col in column_names if col not in excluded_columns]
+    encoded_feature_names_filtered = [name for name in encoded_feature_names if name in column_names_filtered]
+
+    # Combine and deduplicate encoded and additional binary variables
+    binary_features_combined = list(set(encoded_feature_names_filtered + additional_binary_vars))
+
+    # Calculate binary feature indices, ensuring they're within the valid range
+    binary_feature_indices = [column_names_filtered.index(col) for col in binary_features_combined if col in column_names_filtered]
 
     # Find indices of the continuous features
-    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize]
+    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
 
     # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
     dataset_tensor = train_dataset.tensors[0]  # This gets the tensor from the dataset
@@ -178,7 +209,7 @@ def main(args):
     print(f"Original dataset tensor shape: {dataset_tensor.shape}")
 
     # Extracting indices for features and label
-    feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns]
+    feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
 
     label_index = column_names.index("A1cGreaterThan7")
 
@@ -198,6 +229,8 @@ def main(args):
     print(f"Total columns in dataset: {len(column_names)}")
     print(f"Excluded columns: {excluded_columns}")
     print(f"Total feature indices: {len(feature_indices)}")
+    print(f"Total binary feature indices: {len(binary_feature_indices)}")
+    print(f"Total numerical feature indices: {len(numerical_feature_indices)}") 
 
     print(f"Train features shape: {train_features.shape}")
     print(f"Train labels shape: {train_labels.shape}")
@@ -245,13 +278,14 @@ def main(args):
         ff_dropout = 0.1                    # feed forward dropout
     ).to(device)
     
-    if args.model_path:
-        # Ensure the file exists before attempting to load
-        if os.path.isfile(args.model_path):
-            model.load_state_dict(torch.load(args.model_path))
-            print(f"Loaded saved model from {args.model_path}")
-        else:
-            print(f"Saved model file {args.model_path} not found. Training from scratch.")
+    epoch_counter = 0
+    # Check if model_path is specified and exists
+    if args.model_path and os.path.isfile(args.model_path):
+        epoch_counter = extract_epoch(args.model_path)
+        model.load_state_dict(torch.load(args.model_path))
+        print(f"Loaded model from {args.model_path} starting from epoch {epoch_counter}")
+    else:
+        print("Starting training from scratch.")
 
     # Using multiple GPUs if available
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
@@ -281,7 +315,7 @@ def main(args):
     # Training loop
     for epoch in range(args.epochs):
         train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
-        val_loss, _ = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
+        val_loss = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
@@ -320,10 +354,17 @@ def main(args):
 
     plot_losses(train_losses, val_losses, hyperparameters)
 
-    # Save the best model to a file
-    model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{args.epochs}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+    for epoch in range(epoch_counter, args.epochs):
+        epoch_counter += 1  # Increment the epoch counter
 
-    torch.save(model.state_dict(), model_filename)
+        # Save the model checkpoint every 10 epochs
+        if epoch_counter % 10 == 0:
+            # Construct the filename with the updated epoch counter
+            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+
+            # Save the model checkpoint
+            torch.save(model.state_dict(), model_filename)
+            print(f"Model saved as {model_filename}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')

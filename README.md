@@ -117,11 +117,11 @@ $ python3 src/data_analysis.py
 ```bash
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
-$ python3 src/train.py --model_type TabTransformer --batch_size 8 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
+$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
 ```
 OR
 ```bash
-$ python3 src/train.py --model_type FTTransformer --batch_size 8 --learning_rate 0.001 --epochs 10 --early_stopping_patience 5 --use_cutmix
+$ python3 src/train.py --model_type FTTransformer --batch_size 8 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_mixup
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
