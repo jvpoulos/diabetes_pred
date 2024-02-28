@@ -85,34 +85,6 @@ def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_s
 
     return data
 
-
-def optimize_date_column(df, col, start_idx, end_idx):
-    try:
-        # Convert categorical columns to numerical codes
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            df.loc[start_idx:end_idx, col] = df[col].astype('category').cat.codes
-        
-        # Perform the multiplication
-        multiplied_result = df.loc[start_idx:end_idx, col] * df.loc[start_idx:end_idx, 'DiagnosisBeforeOrOnIndexDate']
-        
-        # Calculate sparsity ratio
-        sparsity_ratio = (multiplied_result == 0).mean()
-
-        # If the column is mostly zeros, convert to a sparse type to save memory
-        if sparsity_ratio > 0.95:
-            # Create a SparseArray and replace the existing column with it
-            df[col] = pd.arrays.SparseArray(df[col], fill_value=0, dtype=df[col].dtype)
-        else:
-            # Directly assign the result to the DataFrame in the specified slice
-            df.loc[start_idx:end_idx, col] = multiplied_result
-    except Exception as e:
-        print(f"Error processing column {col}: {e}")
-
-def process_date_column(df, col, chunk_size=50000):
-    for chunk_start in range(0, len(df), chunk_size):
-        chunk_end = min(chunk_start + chunk_size, len(df))
-        optimize_date_column(df, col, chunk_start, chunk_end)
-
 def dask_df_to_tensor(dask_df, chunk_size=1024):
     """
     Convert a Dask DataFrame to a PyTorch tensor in chunks.
@@ -187,7 +159,7 @@ def main(use_dask=False):
 
     # Select columns to read in each dataset
 
-    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'DaysFromIndexToInitialA1cDate', 'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 'NumberEncounters', 'SDI_score', 'Veteran']
+    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'BirthYear', 'SDI_score', 'Veteran']
 
     dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
 
@@ -198,6 +170,18 @@ def main(use_dask=False):
     # Read each file into a DataFrame
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
+
+   # Check dimensions in diagnoses data
+    print("Number of diagnoses, unconditional on Index date:", len(df_dia))
+
+    # Keep only rows where 'DiagnosisBeforeOrOnIndexDate' equals 1
+    df_dia = df_dia[df_dia['DiagnosisBeforeOrOnIndexDate'] == 1]
+
+    # Drop the 'DiagnosisBeforeOrOnIndexDate' column
+    df_dia.drop('DiagnosisBeforeOrOnIndexDate', axis=1, inplace=True)
+
+    # Check dimensions in diagnoses data
+    print("Number of diagnoses before or on Index date:", len(df_dia))
 
     # Check dimensions in outcomes data
     print("Number of patients:", len(df_outcomes)) # 55667
@@ -249,13 +233,8 @@ def main(use_dask=False):
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
     # Handles negative and zero values well, scaling the data to a [0, 1] range.
-    # NaNs are treated as missing values: disregarded in fit, and maintained in transform.
 
-    columns_to_normalize = ['InitialA1c', 'A1cAfter12Months', 'DaysFromIndexToInitialA1cDate', 
-                            'DaysFromIndexToA1cDateAfter12Months', 'DaysFromIndexToFirstEncounterDate', 
-                            'DaysFromIndexToLastEncounterDate', 'DaysFromIndexToLatestDate', 
-                            'DaysFromIndexToPatientTurns18', 'AgeYears', 'BirthYear', 
-                            'NumberEncounters', 'SDI_score']
+    columns_to_normalize = ['InitialA1c', 'AgeYears', 'BirthYear', 'SDI_score']
 
     print("Normalizing numeric colums: ", columns_to_normalize)
 
@@ -273,14 +252,8 @@ def main(use_dask=False):
 
     print("Preprocessing diagnoses data")
 
-    # Create categorical feature for 'DiagnosisBeforeOrOnIndexDate' based on interaction with CodeWithType
-    df_dia['Date'] = df_dia.apply(
-        lambda row: row['CodeWithType'] if row['DiagnosisBeforeOrOnIndexDate'] == 1 else None,
-        axis=1
-    )
-
     # Handle categorical columns in diagnoses data
-    categorical_columns = ['CodeWithType', 'Date']
+    categorical_columns = ['CodeWithType']
 
     # Save the list of categorical columns to a JSON file
     with open('categorical_columns.json', 'w') as file:
@@ -297,9 +270,6 @@ def main(use_dask=False):
 
     # Verify the unique values in the 'CodeWithType' column
     print(f"Unique values in 'CodeWithType': {df_dia['CodeWithType'].unique()}")
-
-    # Verify the unique values in the 'DiagnosisBeforeOrOnIndexDate' column
-    print(f"Unique values in 'DiagnosisBeforeOrOnIndexDate': {df_dia['DiagnosisBeforeOrOnIndexDate'].unique()}")
 
     print("Initializing one-hot encoder for diagnoses data.")
 
@@ -369,7 +339,7 @@ def main(use_dask=False):
     encoded_df.drop(columns=['order'], inplace=True)
 
     # Drop the infrequent columns from encoded_df
-    infrequent_sklearn_columns = ['Date_infrequent_sklearn',"infrequent_sklearn", "Date_None"]
+    infrequent_sklearn_columns = ["infrequent_sklearn"]
     encoded_df = encoded_df.drop(columns=infrequent_sklearn_columns)
 
     encoded_feature_names = [col for col in encoded_feature_names if col not in infrequent_sklearn_columns]
@@ -383,29 +353,6 @@ def main(use_dask=False):
 
     print("Dropping the original categorical columns ", categorical_columns)
     df_dia.drop(categorical_columns, axis=1, inplace=True)
-
-    print("Binarizing one-hot encoded variables based on 'DiagnosisBeforeOrOnIndexDate'.")
-
-    # Identify all one-hot encoded columns for 'Date'
-    encoded_date_columns = [col for col in df_dia.columns if 'Date' in col]
-    encoded_date_columns = [col for col in encoded_date_columns if col != 'DiagnosisBeforeOrOnIndexDate']
-
-    # Convert 'DiagnosisBeforeOrOnIndexDate' to a numeric type if it's categorical
-    if is_categorical_dtype(df_dia['DiagnosisBeforeOrOnIndexDate']):
-        df_dia['DiagnosisBeforeOrOnIndexDate'] = df_dia['DiagnosisBeforeOrOnIndexDate'].astype('int8', copy=False)
-
-    # Preprocess encoded date columns
-    print("Preprocess encoded date columns.")
-    
-    tasks = [delayed(process_date_column)(df_dia, col) for col in encoded_date_columns]
-
-    if tasks:
-        with tqdm(total=len(tasks), desc="Processing Columns") as progress_bar:
-            results = Parallel(n_jobs=n_jobs)(tasks)
-            for _ in results:
-                progress_bar.update()
-    else:
-        print("No columns meet the criteria for processing.")
 
     print("Starting aggregation by EMPI.")
     agg_dict = {col: 'max' for col in encoded_feature_names}

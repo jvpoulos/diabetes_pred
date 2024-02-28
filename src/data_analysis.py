@@ -13,18 +13,13 @@ def format_icd_code(icd_code):
     return icd_code_str.replace('.', '').lstrip('0')
 
 # Get ICD description
-def get_icd_description(icd_code, code_type, icd9_df, icd10_df):
+# Adjust the get_icd_description function to use the dictionaries
+def get_icd_description(icd_code, code_type, icd9_descriptions, icd10_descriptions):
     formatted_icd_code = format_icd_code(icd_code)
-    if code_type == 'ICD9':
-        # Use the updated column name for ICD-9 descriptions
-        description_column = 'LONG_DESCRIPTION_ICD9'
-        if formatted_icd_code in icd9_df.index:
-            return icd9_df.loc[formatted_icd_code, description_column]
-    elif code_type == 'ICD10':
-        # Use the actual column name for ICD-10 descriptions
-        description_column = 'LONG DESCRIPTION (VALID ICD-10 FY2024)'
-        if formatted_icd_code in icd10_df.index:
-            return icd10_df.loc[formatted_icd_code, description_column]
+    if code_type.upper() == 'ICD9':
+        return icd9_descriptions.get(formatted_icd_code, 'Description not found')
+    elif code_type.upper() == 'ICD10':
+        return icd10_descriptions.get(formatted_icd_code, 'Description not found')
     return 'Description not found'
 
 # Extract ICD code and type
@@ -34,38 +29,42 @@ def extract_icd_info(col_name):
         return None, None
     return parts[0], parts[1]
 
-# Load the ICD-9 and ICD-10 codes dataframes
-icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl')
-icd10_df = pd.read_excel('data/Section111ValidICD10-Jan2024.xlsx', engine='openpyxl')
+# Load the ICD-9 DataFrame with the correct columns
+icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl', dtype=str)
+# Assuming 'CODE' is the first column and already in the correct format, set it as the index
+icd9_df.set_index(icd9_df.columns[0], inplace=True)
+# Replace NaN descriptions with a default message
+icd9_df.fillna('Description not available', inplace=True)
 
-# Assuming icd9_df is loaded from a file
-print("Original column names:", icd9_df.columns)
+# Load the ICD-10 DataFrame with the correct columns
+icd10_df = pd.read_excel('data/Section111ValidICD10-Jan2024.xlsx', engine='openpyxl', dtype=str)
+# Assuming 'CODE' is the first column and already in the correct format, set it as the index
+icd10_df.set_index(icd10_df.columns[0], inplace=True)
+# Replace NaN descriptions with a default message
+icd10_df.fillna('Description not available', inplace=True)
 
-# Set column names explicitly if needed
-expected_columns = ['CODE', 'LONG_DESCRIPTION_ICD9', 'NF_EXCL_ICD9']
-if len(icd9_df.columns) == len(expected_columns):
-    icd9_df.columns = expected_columns
-    print("Column names set successfully.")
-else:
-    print("Column names mismatch. Expected:", len(expected_columns), "Got:", len(icd9_df.columns))
+# Load the ICD-9 and ICD-10 descriptions into a dictionary for quick access
+icd9_descriptions = icd9_df['LONG DESCRIPTION (VALID ICD-9 FY2024)'].to_dict()
+icd10_descriptions = icd10_df['LONG DESCRIPTION (VALID ICD-10 FY2024)'].to_dict()
 
-# Check again after setting
-print("Updated column names:", icd9_df.columns)
+# Confirm that 'LONG DESCRIPTION' columns are present and have no NaN values before proceeding
+assert 'LONG DESCRIPTION (VALID ICD-9 FY2024)' in icd9_df.columns and not icd9_df['LONG DESCRIPTION (VALID ICD-9 FY2024)'].isnull().any()
+assert 'LONG DESCRIPTION (VALID ICD-10 FY2024)' in icd10_df.columns and not icd10_df['LONG DESCRIPTION (VALID ICD-10 FY2024)'].isnull().any()
 
-# Before accessing 'LONG_DESCRIPTION_ICD9', confirm it exists
-if 'LONG_DESCRIPTION_ICD9' in icd9_df.columns:
+# Before accessing 'LONG DESCRIPTION (VALID ICD-9 FY2024)', confirm it exists
+if 'LONG DESCRIPTION (VALID ICD-9 FY2024)' in icd9_df.columns:
     # Safe to access the column
-    print(icd9_df['LONG_DESCRIPTION_ICD9'].head())
+    print(icd9_df['LONG DESCRIPTION (VALID ICD-9 FY2024)'].head())
 else:
-    print("'LONG_DESCRIPTION_ICD9' column not found.")
+    print("'LONG DESCRIPTION (VALID ICD-9 FY2024)' column not found.")
 
 # Apply formatting function to the DataFrame indices
 icd9_df.index = icd9_df.index.map(format_icd_code)
 icd10_df.index = icd10_df.index.map(format_icd_code)
 
 # Adjust column names based on the actual structure of the DataFrame
-icd9_df_column_names = ['CODE', 'LONG_DESCRIPTION_ICD9']
-icd10_df_column_names = ['CODE', 'SHORT_DESCRIPTION_ICD10', 'LONG_DESCRIPTION_ICD10']
+icd9_df_column_names = ['CODE', 'LONG DESCRIPTION (VALID ICD-9 FY2024)']
+icd10_df_column_names = ['CODE', 'SHORT DESCRIPTION (VALID ICD-10 FY2024)', 'LONG DESCRIPTION (VALID ICD-10 FY2024)']
 
 # Ensure you're setting the correct number of column names
 if len(icd9_df.columns) == len(icd9_df_column_names):
@@ -93,47 +92,6 @@ print("ICD10 DataFrame columns:", icd10_df.columns)
 # Print to confirm the index name of the DataFrames
 print("Index name of ICD9 DataFrame:", icd9_df.index.name)
 print("Index name of ICD10 DataFrame:", icd10_df.index.name)
-
-# Ensure the CODE column is set as index
-if icd9_df.index.name != 'CODE' or icd10_df.index.name != 'CODE':
-    print("ERROR: CODE column is not set as index in the ICD DataFrames.")
-
-with open('infrequent_categories.json', 'r') as file:
-    infrequent_categories = json.load(file)
-
-# Before loading data, get descriptions of exluded ICD codes
-infrequent_categories_df = []
-
-# Apply the formatting function to the ICD codes in infrequent_categories
-formatted_infrequent_categories = [format_icd_code(icd) for icd in infrequent_categories]
-
-# Append data to list
-infrequent_categories_df = []
-for col_name in formatted_infrequent_categories:
-    icd_code, code_type = extract_icd_info(col_name)
-    if icd_code and code_type:
-        description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-        infrequent_categories_df.append({
-            "ICD Code Type": code_type,
-            "ICD Code": icd_code,
-            "Description": description
-        })
-
-# Confirm contents
-print("Contents of infrequent_categories_df:", infrequent_categories_df)
-
-# Create a DataFrame from the data list
-infrequent_categories_icd_info = pd.DataFrame(infrequent_categories_df)
-
-# Optionally, print the created DataFrame to confirm its correctness
-print("Infrequent Categories ICD Info DataFrame:\n", infrequent_categories_icd_info)
-
-# Convert the DataFrame to an HTML table
-infrequent_categories_html_table = infrequent_categories_icd_info.to_html(index=False)
-
-# Save the HTML table to a file
-with open("excluded_codes_descriptions.html", "w") as file:
-    file.write(infrequent_categories_html_table)
 
 # Load the preprocessed tensor
 loaded_train_dataset = torch.load('train_dataset.pt')
@@ -197,34 +155,22 @@ plt.xticks(rotation=90)  # Rotate x-axis labels for readability
 plt.tight_layout()  # Adjust layout
 plt.savefig("one_hot_sparsity_rate_sampled_plot.png")  # Save plot to file
 
-# Generate summary statistics table for df_train[encoded_feature_names]
-df_train_summary = df_train[encoded_feature_names].describe(percentiles=[]).T  # Exclude percentiles
+# Adjust the lambda function used in the map to correctly handle the ICD codes
+df_train_summary = df_train[encoded_feature_names].describe().T
+df_train_summary['Description'] = df_train_summary.index.map(
+    lambda code: get_icd_description(
+        code.split('_')[0], 
+        'ICD10' if 'ICD10' in code else 'ICD9', 
+        icd9_descriptions, 
+        icd10_descriptions
+    )
+)
 
-# Calculate the sum of each column and add it as a new row in the summary
-column_sums = df_train[encoded_feature_names].sum()
-df_train_summary['sum'] = column_sums
+# Now sorting by 'mean' and correcting the KeyError by referring to the correct column name
+df_train_summary_sorted = df_train_summary.sort_values(by='mean', ascending=False)
 
-# Retain only 'count', 'sum', 'mean', 'std', and 'max' in the summary
-df_train_summary_filtered = df_train_summary[['count', 'sum', 'mean', 'std']]
-
-# Sort the features by 'sum'
-df_train_summary_sorted = df_train_summary_filtered.sort_values(by='sum', ascending=False)
-
-# Fetch ICD code descriptions for encoded_feature_names
-icd_descriptions = []
-for feature in encoded_feature_names:
-    # Extract ICD code and type 
-    icd_code, code_type = extract_icd_info(feature)
-    description = get_icd_description(icd_code, code_type, icd9_df, icd10_df)
-    icd_descriptions.append(description)
-
-# Create a column in df_train_summary_sorted for these descriptions
-df_train_summary_sorted['ICD Description'] = icd_descriptions
-
-# Convert the sorted summary statistics table to HTML format
+# Save to HTML
 df_train_summary_html = df_train_summary_sorted.to_html()
-
-# Save the summary statistics table as an HTML file
 with open('df_train_summary_statistics.html', 'w') as f:
     f.write(df_train_summary_html)
 

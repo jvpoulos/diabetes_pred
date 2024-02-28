@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
+from sklearn.metrics import roc_auc_score
 import os
 import matplotlib.pyplot as plt
 import copy
@@ -15,6 +16,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 import re
+import pickle
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -64,6 +66,22 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
+
+def plot_auroc(val_aurocs, hyperparameters, plot_dir='auroc_plots'):
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.figure()
+    plt.plot(val_aurocs, label='Validation AUROC')
+    plt.xlabel('Epochs')
+    plt.ylabel('AUROC')
+    plt.title('Validation AUROC Over Epochs')
+    plt.legend()
+    
+    # Construct filename based on hyperparameters
+    filename = '_'.join([f"{key}-{value}" for key, value in hyperparameters.items()]) + '_auroc.png'
+    filepath = os.path.join(plot_dir, filename)
+    
+    plt.savefig(filepath)
+    plt.close()
 
 def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'):
     os.makedirs(plot_dir, exist_ok=True)
@@ -142,6 +160,10 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
     model.eval()
     total_loss = 0
+
+    true_labels = []
+    predictions = []
+
     # Wrap the validation loader with tqdm for a progress bar
     with torch.no_grad():
         for batch_idx, (features, labels) in tqdm(enumerate(validation_loader), total=len(validation_loader), desc="Validating"):
@@ -154,8 +176,15 @@ def validate_model(model, validation_loader, criterion, device, binary_feature_i
             outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
             loss = criterion(outputs, labels)  # Now both tensors have compatible shapes
             total_loss += loss.item()
+
+            true_labels.extend(labels.cpu().numpy())  # Accumulate true labels
+            predictions.extend(torch.sigmoid(outputs).cpu().numpy())  # Accumulate predictions
+
     average_loss = total_loss / len(validation_loader)
-    return average_loss
+    print(f'Average Validation Loss: {average_loss:.4f}')
+    auroc = roc_auc_score(true_labels, predictions)  # Calculate AUROC
+    print(f'Validation AUROC: {auroc:.4f}')
+    return average_loss, auroc
 
 def main(args):
     # Load datasets
@@ -172,7 +201,7 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months", "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "studyID"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     # Find indices of excluded columns
@@ -274,7 +303,7 @@ def main(args):
     epoch_counter = 0
     # Check if model_path is specified and exists
     if args.model_path and os.path.isfile(args.model_path):
-        epoch_counter = extract_epoch(args.model_path)
+        epoch_counter += extract_epoch(args.model_path)
         model.load_state_dict(torch.load(args.model_path))
         print(f"Loaded model from {args.model_path} starting from epoch {epoch_counter}")
     else:
@@ -283,9 +312,31 @@ def main(args):
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
-    # Lists to store loss values
-    train_losses = []
-    val_losses = []
+    hyperparameters = {
+    'model_type': args.model_type,
+    'batch_size': args.batch_size,
+    'lr': args.learning_rate,
+    'ep': epoch_counter,
+    'esp': args.early_stopping_patience,
+    'cutmix_prob': args.cutmix_prob,
+    'cutmix_lambda': args.cutmix_lambda,
+    'use_mixup': 'true' if args.use_mixup else 'false',
+    'mixup_alpha': args.mixup_alpha,
+    'use_cutmix': 'true' if args.use_cutmix else 'false'
+    }
+    
+    # Constructing the file name from hyperparameters
+    hyperparameters_str = '_'.join([f"{key}-{str(value).replace('.', '_')}" for key, value in hyperparameters.items()])
+    performance_file_name = f"training_performance_{hyperparameters_str}.pkl"
+
+    # Initialize losses
+    perf_file_path = performance_file_name
+    if os.path.exists(perf_file_path):
+        with open(perf_file_path, 'rb') as f:
+            loaded_data = pickle.load(f)
+        train_losses, val_losses, val_aurocs = loaded_data['train_losses'], loaded_data['val_losses'], loaded_data['val_aurocs']
+    else:
+        train_losses, val_losses, val_aurocs = [], [], []
 
     # Add early stopping parameters
     best_val_loss = float('inf')
@@ -303,12 +354,13 @@ def main(args):
     # Training loop
     for epoch in range(args.epochs):
         train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
-        val_loss = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
+        val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Validation Loss: {val_loss}')
+        val_aurocs.append(val_auroc)
+        print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Validation Loss: {val_loss}, Validation AUROC: {val_auroc}')
 
         # Check for early stopping conditions
         if val_loss < best_val_loss:
@@ -327,30 +379,29 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{checkpoint_epoch}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             torch.save(model.state_dict(), model_filename)
             print(f"Model checkpoint saved as {model_filename}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         torch.save(best_model_wts, best_model_filename)
         print(f"Best model saved as {best_model_filename}")
 
-    # After training, plot the losses
-    hyperparameters = {
-    'model_type': args.model_type,
-    'batch_size': args.batch_size,
-    'lr': args.learning_rate,
-    'ep': args.epochs,
-    'esp': args.early_stopping_patience,
-    'cutmix_prob': args.cutmix_prob,
-    'cutmix_lambda': args.cutmix_lambda,
-    'use_mixup': 'true' if args.use_mixup else 'false',
-    'mixup_alpha': args.mixup_alpha,
-    'use_cutmix': 'true' if args.use_cutmix else 'false'
-    }
-
+    # After training, plot the losses and save them to file
     plot_losses(train_losses, val_losses, hyperparameters)
+    plot_auroc(val_aurocs, hyperparameters)
+
+    losses_and_aurocs = {
+    'train_losses': train_losses,
+    'val_losses': val_losses,
+    'val_aurocs': val_aurocs
+}
+
+    # Saving to the file
+    with open(performance_file_name, 'wb') as f:
+        pickle.dump(losses_and_aurocs, f)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')

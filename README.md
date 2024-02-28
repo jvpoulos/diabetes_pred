@@ -121,23 +121,23 @@ $ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_ra
 ```
 OR
 ```bash
-$ python3 src/train.py --model_type FTTransformer --batch_size 8 --learning_rate 0.001 --epochs 25 --early_stopping_patience 5 --use_cutmix --model_path 'FTTransformer_bs8_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_ucfalse_best.pth'
+$ python3 src/train.py --model_type FTTransformer --batch_size 4 --learning_rate 0.001 --epochs 25 --early_stopping_patience 10 --use_mixup --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth'
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/attention.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
+$ python3 src/attention.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```
 
 5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
+$ python3 src/embeddings.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type TabTransformer --model_path TabTransformer_bs32_lr0.001_ep100_nl0.01_fp0.05.pth --batch_size 32
+$ python3 src/test.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```
