@@ -100,7 +100,7 @@ $ python3.8 -m pip install "dask[distributed]" --upgrade
 ```
 ## Run the code
 
-1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors. Arguments: `--use_dask` (optional):
+1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors:
 
 ```bash
 $ python3.8 src/data_loader.py # need Python 3.8 to run
@@ -112,32 +112,29 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 $ python3 src/data_analysis.py
 ```
 
-3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--use_mixup` (optional) `--model_path` (optional):
+3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--outcome` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--use_mixup` (optional) `--model_path` (optional):
 
 ```bash
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
-$ python3 src/train.py --model_type TabTransformer --batch_size 32 --learning_rate 0.001 --epochs 100 --early_stopping_patience 10 --use_cutmix
-```
-OR
-```bash
-$ python3 src/train.py --model_type FTTransformer --batch_size 4 --learning_rate 0.001 --epochs 25 --early_stopping_patience 10 --use_mixup --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth'
+$ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
+$ python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 8 --learning_rate 0.001 --epochs 15 --early_stopping_patience 10 --use_mixup --model_path 'FTTransformer_A1cGreaterThan7_bs8_lr0.001_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' # pre-trained with cutmix, stopped early at epoch 14
 ```
 
-4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--model_path` `--batch_size`:
+4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/attention.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/attention.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```
 
-5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--model_path`  `--batch_size`:
+5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--outcome`  `--model_path`  `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/embeddings.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```
 
-6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
+6. Evaluate trained model on test set. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type TabTransformer --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/test.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
 ```

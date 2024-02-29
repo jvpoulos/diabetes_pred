@@ -201,7 +201,7 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7", "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     # Find indices of excluded columns
@@ -228,7 +228,7 @@ def main(args):
     # Extracting indices for features and label
     feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
 
-    label_index = column_names.index("A1cGreaterThan7")
+    label_index = column_names.index(args.outcome)
 
     # Selecting features and labels
     train_features = dataset_tensor[:, feature_indices]
@@ -314,6 +314,7 @@ def main(args):
 
     hyperparameters = {
     'model_type': args.model_type,
+    'outcome': args.outcome,
     'batch_size': args.batch_size,
     'lr': args.learning_rate,
     'ep': epoch_counter,
@@ -379,12 +380,12 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             torch.save(model.state_dict(), model_filename)
             print(f"Model checkpoint saved as {model_filename}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         torch.save(best_model_wts, best_model_filename)
         print(f"Best model saved as {best_model_filename}")
 
@@ -402,15 +403,15 @@ def main(args):
     with open(performance_file_name, 'wb') as f:
         pickle.dump(losses_and_aurocs, f)
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
                         choices=['TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
+    parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
+    parser.add_argument('--epochs', type=int, default=15, help='Number of epochs to train the model')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')

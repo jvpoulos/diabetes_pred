@@ -17,7 +17,7 @@ def load_model(model_type, model_path, categories, num_continuous):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
-            num_continuous=11,
+            num_continuous=len(numerical_feature_indices),
             dim=32,
             dim_out=1,
             depth=6,
@@ -30,7 +30,7 @@ def load_model(model_type, model_path, categories, num_continuous):
     elif model_type == 'FTTransformer':
         model = FTTransformer(
             categories = categories,
-            num_continuous = 11,
+            num_continuous = len(numerical_feature_indices),
             dim = 192,
             dim_out = 1,
             depth = 3,
@@ -72,6 +72,7 @@ def plot_attention_maps(attention_maps, model_type, model_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('model_type', type=str, choices=['TabTransformer', 'FTTransformer'], help='Type of the model to load')
+    parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('model_path', type=str, help='Path to the trained model file')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for evaluation')
     args = parser.parse_args()

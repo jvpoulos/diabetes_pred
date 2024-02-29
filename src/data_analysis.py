@@ -8,19 +8,31 @@ import plotly.express as px
 
 # Function to format ICD codes (remove dots and leading zeros)
 def format_icd_code(icd_code):
-    # Ensure icd_code is a string before applying string methods
-    icd_code_str = str(icd_code)
-    return icd_code_str.replace('.', '').lstrip('0')
+    # Remove dots and leading zeros
+    return icd_code.replace('.', '').lstrip('0')
 
 # Get ICD description
-# Adjust the get_icd_description function to use the dictionaries
-def get_icd_description(icd_code, code_type, icd9_descriptions, icd10_descriptions):
-    formatted_icd_code = format_icd_code(icd_code)
+def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd10_txt_df):
+    formatted_icd_code = format_icd_code(icd_code)  # Ensure the ICD code is formatted correctly
+    description = 'Description not found'
+    
     if code_type.upper() == 'ICD9':
-        return icd9_descriptions.get(formatted_icd_code, 'Description not found')
+        # First attempt to find the description in the ICD-9 dataframe
+        description = icd9_df.get(formatted_icd_code, {}).get('LONG DESCRIPTION (VALID ICD-9 FY2024)', 'Description not found')
+        
+        # If not found, look up in ICD9.txt DataFrame
+        if description == 'Description not found' and formatted_icd_code in icd9_txt_df.index:
+            description = icd9_txt_df.loc[formatted_icd_code, 'Description']
+            
     elif code_type.upper() == 'ICD10':
-        return icd10_descriptions.get(formatted_icd_code, 'Description not found')
-    return 'Description not found'
+        # First attempt to find the description in the ICD-10 dataframe
+        description = icd10_df.get(formatted_icd_code, {}).get('LONG DESCRIPTION (VALID ICD-10 FY2024)', 'Description not found')
+        
+        # If not found, look up in ICD10.txt DataFrame
+        if description == 'Description not found' and formatted_icd_code in icd10_txt_df.index:
+            description = icd10_txt_df.loc[formatted_icd_code, 'Description']
+    
+    return description
 
 # Extract ICD code and type
 def extract_icd_info(col_name):
@@ -29,6 +41,7 @@ def extract_icd_info(col_name):
         return None, None
     return parts[0], parts[1]
 
+print("Loading ICD .csv files")
 # Load the ICD-9 DataFrame with the correct columns
 icd9_df = pd.read_excel('data/Section111ValidICD9-Jan2024.xlsx', engine='openpyxl', dtype=str)
 # Assuming 'CODE' is the first column and already in the correct format, set it as the index
@@ -81,17 +94,20 @@ else:
 icd9_df.set_index('CODE', inplace=True)
 icd10_df.set_index('CODE', inplace=True)
 
-# Print structure of icd9_df and icd10_df to ensure they have the expected structure
-print("ICD-9 DataFrame structure:", icd9_df.head())
-print("ICD-10 DataFrame structure:", icd10_df.head())
+print("Loading ICD .txt files.")
 
-# Print to check the column names in the DataFrames
-print("ICD9 DataFrame columns:", icd9_df.columns)
-print("ICD10 DataFrame columns:", icd10_df.columns)
+# Load the text files into DataFrames
+# Try different encodings such as 'ISO-8859-1' or 'cp1252' if 'utf-8' doesn't work
+icd9_txt_df = pd.read_csv('data/ICD9.txt', sep=',', header=None, names=['ICD9code', 'Description', 'Type', 'Source', 'Dt'], encoding='ISO-8859-1')
+icd10_txt_df = pd.read_csv('data/ICD10.txt', sep=',', header=None, names=['GUID', 'ICD10code', 'Description', 'Type', 'Source', 'Language', 'LastUpdateDTS', 'Dt'], encoding='ISO-8859-1')
 
-# Print to confirm the index name of the DataFrames
-print("Index name of ICD9 DataFrame:", icd9_df.index.name)
-print("Index name of ICD10 DataFrame:", icd10_df.index.name)
+# Convert code columns to strings to ensure proper matching
+icd9_txt_df['ICD9code'] = icd9_txt_df['ICD9code'].astype(str)
+icd10_txt_df['ICD10code'] = icd10_txt_df['ICD10code'].astype(str)
+
+# Index the DataFrames on the code columns for fast lookup
+icd9_txt_df.set_index('ICD9code', inplace=True)
+icd10_txt_df.set_index('ICD10code', inplace=True)
 
 # Load the preprocessed tensor
 loaded_train_dataset = torch.load('train_dataset.pt')
@@ -108,12 +124,12 @@ df_validation = pd.DataFrame(loaded_validation_dataset.tensors[0].numpy(), colum
 df_test = pd.DataFrame(loaded_test_dataset.tensors[0].numpy(), columns=column_names)
 
 # Print dimensions of datasets
-print("Training Data Dimensions:", df_train.shape)
-print("Validation Data Dimensions:", df_validation.shape)
-print("Test Data Dimensions:", df_test.shape)
+# print("Training Data Dimensions:", df_train.shape)
+# print("Validation Data Dimensions:", df_validation.shape)
+# print("Test Data Dimensions:", df_test.shape)
 
 # Save the training data to disk
-df_train.to_csv('training_data.csv', index=False)
+#df_train.to_csv('training_data.csv', index=False)
 
 # Print dataset descriptions
 print("Training Dataset Description:\n", df_train.describe())
@@ -125,18 +141,6 @@ with open('encoded_feature_names.json', 'r') as file:
 
 one_hot_sparsity_rate = 1-df_train[encoded_feature_names].mean()
 print("One-hot sparsity rate (training set): ", one_hot_sparsity_rate)
-
-# Identify columns that have all-zero values
-all_zero_columns_mask = (df_train[encoded_feature_names] == 0).all(axis=0)
-all_zero_columns = all_zero_columns_mask[all_zero_columns_mask].index.tolist()
-
-with open('training_set_all_zero_columns.json', 'w') as file:
-    json.dump(all_zero_columns, file)
-
-# Calculate the share of columns with all-zero values
-share_of_all_zero_columns = len(all_zero_columns) / len(encoded_feature_names)
-
-print(f"Share of columns with all-zero values: {share_of_all_zero_columns:.2%}")
 
 # Limit the number of features or samples due to visual and performance constraints
 sampled_df = df_train[encoded_feature_names].sample(n=min(100, len(df_train)), axis=1, random_state=42) # limits to 100 features
@@ -155,18 +159,21 @@ plt.xticks(rotation=90)  # Rotate x-axis labels for readability
 plt.tight_layout()  # Adjust layout
 plt.savefig("one_hot_sparsity_rate_sampled_plot.png")  # Save plot to file
 
-# Adjust the lambda function used in the map to correctly handle the ICD codes
 df_train_summary = df_train[encoded_feature_names].describe().T
+
+# Now you can add the 'Description' column
 df_train_summary['Description'] = df_train_summary.index.map(
     lambda code: get_icd_description(
         code.split('_')[0], 
         'ICD10' if 'ICD10' in code else 'ICD9', 
-        icd9_descriptions, 
-        icd10_descriptions
+        icd9_df, 
+        icd10_df,
+        icd9_txt_df,
+        icd10_txt_df
     )
 )
 
-# Now sorting by 'mean' and correcting the KeyError by referring to the correct column name
+# Then you can sort by 'mean' and proceed with the mapping for descriptions.
 df_train_summary_sorted = df_train_summary.sort_values(by='mean', ascending=False)
 
 # Save to HTML

@@ -18,7 +18,7 @@ def load_model(model_type, model_path, categories, num_continuous):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
-            num_continuous=11,
+            num_continuous=len(numerical_feature_indices),
             dim=32,
             dim_out=1,
             depth=6,
@@ -31,7 +31,7 @@ def load_model(model_type, model_path, categories, num_continuous):
     elif model_type == 'FTTransformer':
         model = FTTransformer(
             categories = categories,
-            num_continuous = 11,
+            num_continuous = len(numerical_feature_indices),
             dim = 192,
             dim_out = 1,
             depth = 3,

@@ -9,6 +9,7 @@ import io
 from tqdm import tqdm
 import numpy as np
 import gc
+from math import ceil
 import json
 import re
 import scipy.sparse as sp
@@ -24,33 +25,9 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
-# Adjust timeout settings
-dask.config.set({'distributed.comm.timeouts.connect': '120s'})
 
 logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
-# Set higher thresholds to potentially reduce the frequency of garbage collection
-# The numbers represent the thresholds for the three generations respectively
-gc.set_threshold(700, 20, 20) # Current garbage collection thresholds: (700, 10, 10)
-
-# Determine the total number of available cores
-total_cores = multiprocessing.cpu_count()
-
-# Don't use all available cores
-n_jobs = total_cores // 2
-
-npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
-
-def optimize_dataframe(df):
-    # Convert columns to more efficient types if possible
-    # For example, convert object columns to category if they have limited unique values
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            num_unique_values = len(df[col].unique())
-            num_total_values = len(df[col])
-            if num_unique_values / num_total_values < 0.5:  # Adjust this threshold as needed
-                df[col] = df[col].astype('category')
-    return df
 
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """
@@ -159,7 +136,7 @@ def main(use_dask=False):
 
     # Select columns to read in each dataset
 
-    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'BirthYear', 'SDI_score', 'Veteran']
+    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'BirthYear', 'SDI_score', 'Veteran']
 
     dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
 
@@ -172,26 +149,29 @@ def main(use_dask=False):
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
 
    # Check dimensions in diagnoses data
-    print("Number of diagnoses, unconditional on Index date:", len(df_dia))
+    print("Number of diagnoses, unconditional on Index date:", len(df_dia)) # 8768424
 
     # Keep only rows where 'DiagnosisBeforeOrOnIndexDate' equals 1
     df_dia = df_dia[df_dia['DiagnosisBeforeOrOnIndexDate'] == 1]
 
     # Drop the 'DiagnosisBeforeOrOnIndexDate' column
-    df_dia.drop('DiagnosisBeforeOrOnIndexDate', axis=1, inplace=True)
+    df_dia.drop('DiagnosisBeforeOrOnIndexDate', axis=1, inplace=True) 
 
     # Check dimensions in diagnoses data
-    print("Number of diagnoses before or on Index date:", len(df_dia))
+    print("Number of diagnoses before or on Index date:", len(df_dia)) # 2881686
 
     # Check dimensions in outcomes data
     print("Number of patients:", len(df_outcomes)) # 55667
     print("Total features (original):", df_outcomes.shape[1]) # 20
 
-    # Optimize dataFrames
-    df_outcomes = optimize_dataframe(df_outcomes)
-    df_dia = optimize_dataframe(df_dia)
-
     print("Preprocessing outcomes data")
+
+    # Create a new column 'A1cLessThan7' based on the condition
+    df_outcomes['A1cLessThan7'] = np.where(df_outcomes['A1cAfter12Months'] < 7, 1, 0)
+
+    # Drop the 'A1cAfter12Months' column
+    df_outcomes.drop('A1cAfter12Months', axis=1, inplace=True)
+
     print("Splitting outcomes data")
     # Splitting the data into train, validation, and test sets
     train_df, temp_df = train_test_split(df_outcomes, test_size=0.3, random_state=42)
@@ -233,7 +213,6 @@ def main(use_dask=False):
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
     # Handles negative and zero values well, scaling the data to a [0, 1] range.
-
     columns_to_normalize = ['InitialA1c', 'AgeYears', 'BirthYear', 'SDI_score']
 
     print("Normalizing numeric colums: ", columns_to_normalize)
@@ -268,9 +247,6 @@ def main(use_dask=False):
     # Verify no NaN values exist
     assert not df_dia[categorical_columns] .isnull().any().any(), "NaN values found in the diagnoses categorical columns"
 
-    # Verify the unique values in the 'CodeWithType' column
-    print(f"Unique values in 'CodeWithType': {df_dia['CodeWithType'].unique()}")
-
     print("Initializing one-hot encoder for diagnoses data.")
 
     # Splitting the DataFrame while preserving the order
@@ -283,8 +259,11 @@ def main(use_dask=False):
     validation_rows['order'] = validation_rows.index
     test_rows['order'] = test_rows.index
 
+    # Verify the unique values in the 'CodeWithType' column
+    print(f"Unique values in training set 'CodeWithType': {train_rows['CodeWithType'].unique()}")
+
     # Initialize OneHotEncoder with limited categories and sparse output
-    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=390)
+    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=ceil(37908*0.01))
 
     # Fit the encoder on the training subset
     one_hot_encoder.fit(train_rows[categorical_columns].dropna().astype(str))
@@ -327,7 +306,6 @@ def main(use_dask=False):
     encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_data, columns=encoded_feature_names)
 
     # Concatenate the 'order' column to encoded_df to preserve original row order
-    # Note: The order of concatenation must match the order in which you're stacking the encoded arrays
     orders = pd.concat([train_rows['order'], validation_rows['order'], test_rows['order']])
     encoded_df['order'] = orders.values
 
@@ -349,14 +327,31 @@ def main(use_dask=False):
 
     print("Combining the original DataFrame with the encoded DataFrame.")
 
+    print("Number of one-hot encoded diagnoses:", len(encoded_df)) 
+    print("Number of diagnoses prior to concatenatation:", len(df_dia)) 
+
+    # Reset the index of both DataFrames to ensure alignment
+    df_dia = df_dia.reset_index(drop=True)
+    encoded_df = encoded_df.reset_index(drop=True)
+
+    # Verify that the number of rows matches to ensure a logical one-to-one row correspondence
+    assert len(df_dia) == len(encoded_df), "Row counts do not match."
+
+    # Check if the indexes are aligned
+    assert df_dia.index.equals(encoded_df.index), "Indexes are not aligned."
+
     df_dia = pd.concat([df_dia, encoded_df], axis=1, sort=False)
 
+    print("Number of diagnoses after concatenatation:", len(df_dia))
+    # Verify row counts match expected transformations
+    assert len(df_dia) == len(encoded_df), f"Unexpected row count. Expected: {len(encoded_df)}, Found: {len(df_dia)}"
+ 
     print("Dropping the original categorical columns ", categorical_columns)
     df_dia.drop(categorical_columns, axis=1, inplace=True)
 
     print("Starting aggregation by EMPI.")
-    agg_dict = {col: 'max' for col in encoded_feature_names}
 
+    agg_dict = {col: 'max' for col in encoded_feature_names}
     if use_dask:
         print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
         print("Converting diagnoses to Dask DataFrame.")
@@ -373,7 +368,9 @@ def main(use_dask=False):
         print("Perform groupby and aggregation using pandas.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict)
 
-    print("Merge outcomes splits with diagnoses.")
+    print("Number of diagnoses before or on Index , after aggregation:", len(df_dia_agg))
+
+    print("Merge outcomes splits with aggregated diagnoses.")
     merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner')
     merged_validation_df = validation_df.merge(df_dia_agg, on='EMPI', how='inner')
     merged_test_df = test_df.merge(df_dia_agg, on='EMPI', how='inner')
@@ -382,6 +379,10 @@ def main(use_dask=False):
     numeric_train_df = merged_train_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
     numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
     numeric_test_df = merged_test_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
+
+    print("Merged training set size:", numeric_train_df.shape[0])
+    print("Merged validation set size:", numeric_validation_df.shape[0])
+    print("Merged test set size:", numeric_test_df.shape[0])
 
     column_names = numeric_train_df.columns.tolist()
 
@@ -422,5 +423,16 @@ if __name__ == '__main__':
     parser.add_argument('--use_dask', action='store_true', help='Use Dask for processing')
     args = parser.parse_args()
     if args.use_dask:
+        # Adjust timeout settings
+        dask.config.set({'distributed.comm.timeouts.connect': '120s'})
+
+        # Determine the total number of available cores
+        total_cores = multiprocessing.cpu_count()
+
+        # Don't use all available cores
+        n_jobs = total_cores // 2
+
+        npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
+
         client = Client(processes=True)  # Use processes instead of threads for potentially better CPU utilization
     main(use_dask=args.use_dask)

@@ -35,7 +35,7 @@ def load_model(model_type, model_path):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
-            num_continuous=11,
+            num_continuous=len(numerical_feature_indices),
             dim=32,
             dim_out=1,
             depth=6,
@@ -48,7 +48,7 @@ def load_model(model_type, model_path):
     elif model_type == 'FTTransformer':
         model = FTTransformer(
             categories = categories,
-            num_continuous = 11,
+            num_continuous = len(numerical_feature_indices),
             dim = 192,
             dim_out = 1,
             depth = 3,
@@ -66,6 +66,9 @@ def evaluate_model(model, test_loader):
     model.eval()  # Set the model to evaluation mode
     y_true = []  # List to store all true labels
     y_scores = []  # List to store all model output scores for AUC computation
+
+    true_labels = []
+    predictions = []
 
     with torch.no_grad():  # No gradients to track
         for data, labels in test_loader:
@@ -100,18 +103,31 @@ def main(args):
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
 
-    # Excluded column names
-    excluded_columns = ["A1cGreaterThan7", "A1cAfter12Months",  "DiagnosisBeforeOrOnIndexDate", "studyID"]
+    with open('encoded_feature_names.json', 'r') as file:
+        encoded_feature_names = json.load(file)
 
-    # Find indices of the columns to be excluded
-    excluded_indices = [column_names.index(col) for col in excluded_columns]
+    with open('columns_to_normalize.json', 'r') as file:
+        columns_to_normalize = json.load(file)
 
-    # Find indices of all columns
-    #  conversion from column names to indices is necessary because PyTorch tensors do not support direct column selection by name
-    all_indices = list(range(len(column_names)))
+    # Define excluded columns and additional binary variables
+    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
+    additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
-    # Determine indices for features by excluding the indices of excluded columns
-    feature_indices = [index for index in all_indices if index not in excluded_indices]
+    # Find indices of excluded columns
+    excluded_columns_indices = [column_names.index(col) for col in excluded_columns]
+
+    # Filter out excluded columns
+    column_names_filtered = [col for col in column_names if col not in excluded_columns]
+    encoded_feature_names_filtered = [name for name in encoded_feature_names if name in column_names_filtered]
+
+    # Combine and deduplicate encoded and additional binary variables
+    binary_features_combined = list(set(encoded_feature_names_filtered + additional_binary_vars))
+
+    # Calculate binary feature indices, ensuring they're within the valid range
+    binary_feature_indices = [column_names_filtered.index(col) for col in binary_features_combined if col in column_names_filtered]
+
+    # Find indices of the continuous features
+    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
 
     # Assuming test_dataset is a tensor, use torch.index_select
     test_features = torch.index_select(test_dataset, 1, torch.tensor(feature_indices))
