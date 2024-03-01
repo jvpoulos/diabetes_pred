@@ -8,29 +8,27 @@ import plotly.express as px
 
 # Function to format ICD codes (remove dots and leading zeros)
 def format_icd_code(icd_code):
-    # Remove dots and leading zeros
+    # Assuming the ICD codes in the DataFrame do not have dots and are not zero-padded
     return icd_code.replace('.', '').lstrip('0')
 
-# Get ICD description
 def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd10_txt_df):
-    formatted_icd_code = format_icd_code(icd_code)  # Ensure the ICD code is formatted correctly
+    formatted_icd_code = format_icd_code(icd_code)
     description = 'Description not found'
     
-    if code_type.upper() == 'ICD9':
-        # First attempt to find the description in the ICD-9 dataframe
-        description = icd9_df.get(formatted_icd_code, {}).get('LONG DESCRIPTION (VALID ICD-9 FY2024)', 'Description not found')
-        
-        # If not found, look up in ICD9.txt DataFrame
-        if description == 'Description not found' and formatted_icd_code in icd9_txt_df.index:
-            description = icd9_txt_df.loc[formatted_icd_code, 'Description']
-            
-    elif code_type.upper() == 'ICD10':
-        # First attempt to find the description in the ICD-10 dataframe
-        description = icd10_df.get(formatted_icd_code, {}).get('LONG DESCRIPTION (VALID ICD-10 FY2024)', 'Description not found')
-        
-        # If not found, look up in ICD10.txt DataFrame
-        if description == 'Description not found' and formatted_icd_code in icd10_txt_df.index:
-            description = icd10_txt_df.loc[formatted_icd_code, 'Description']
+    # Check if the formatted ICD code is in the DataFrame index
+    if formatted_icd_code in (icd9_df.index if code_type.upper() == 'ICD9' else icd10_df.index):
+        try:
+            description = (icd9_df if code_type.upper() == 'ICD9' else icd10_df).at[formatted_icd_code, 'LONG DESCRIPTION (VALID ' + code_type.upper() + ' FY2024)']
+        except KeyError as e:
+            print(f"KeyError accessing description for {formatted_icd_code} in DataFrame: {e}")
+    else:
+        # If not found, look up in corresponding .txt DataFrame
+        txt_df = icd9_txt_df if code_type.upper() == 'ICD9' else icd10_txt_df
+        if formatted_icd_code in txt_df.index:
+            try:
+                description = txt_df.at[formatted_icd_code, 'Description']
+            except KeyError as e:
+                print(f"KeyError accessing description for {formatted_icd_code} in txt DataFrame: {e}")
     
     return description
 

@@ -118,7 +118,8 @@ $ python3 src/data_analysis.py
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 8 --learning_rate 0.001 --epochs 15 --early_stopping_patience 10 --use_mixup --model_path 'FTTransformer_A1cGreaterThan7_bs8_lr0.001_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' # pre-trained with cutmix, stopped early at epoch 14
+$ python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 8 --learning_rate 0.01 --epochs 25 --early_stopping_patience 15 --use_cutmix --model_path 'FTTransformer_A1cGreaterThan7_bs8_lr0.001_ep0_esp15_cmp0.3_cml10.0_umfalse_ma0.2_uctrue.pth' 
+# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01
 ```
 
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:

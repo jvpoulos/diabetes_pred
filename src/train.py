@@ -20,9 +20,17 @@ import pickle
 
 logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
+def load_performance_history(performance_file_name):
+    if os.path.exists(performance_file_name):
+        with open(performance_file_name, 'rb') as f:
+            history = pickle.load(f)
+        return history.get('train_losses', []), history.get('val_losses', []), history.get('val_aurocs', [])
+    else:
+        return [], [], []
+
 def extract_epoch(filename):
     # Extracts epoch number from filename using a regular expression
-    match = re.search(r'epoch(\d+)', filename)
+    match = re.search(r'ep(\d+)', filename)
     if match:
         return int(match.group(1))
     return 0  # Default to 0 if not found
@@ -90,7 +98,7 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.plot(val_losses, label='Validation Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
-    plt.title('Training and Validation Loss')
+    plt.title('Training and Validation Loss Over Epochs')
     plt.legend()
     
     # Construct filename based on hyperparameters
@@ -331,13 +339,7 @@ def main(args):
     performance_file_name = f"training_performance_{hyperparameters_str}.pkl"
 
     # Initialize losses
-    perf_file_path = performance_file_name
-    if os.path.exists(perf_file_path):
-        with open(perf_file_path, 'rb') as f:
-            loaded_data = pickle.load(f)
-        train_losses, val_losses, val_aurocs = loaded_data['train_losses'], loaded_data['val_losses'], loaded_data['val_aurocs']
-    else:
-        train_losses, val_losses, val_aurocs = [], [], []
+    train_losses, val_losses, val_aurocs = load_performance_history(performance_file_name)
 
     # Add early stopping parameters
     best_val_loss = float('inf')
