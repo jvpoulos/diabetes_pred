@@ -140,7 +140,7 @@ def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'
     plt.savefig(filepath)
     plt.close()
 
-def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
+def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
     model.train()
     total_loss = 0
 
@@ -168,7 +168,7 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
             augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
             augmented_num = augmented_data[:, len(binary_feature_indices):]
         elif use_cutmix and np.random.rand() < cutmix_prob:
-            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_lambda)
+            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
             augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
             augmented_num = augmented_data[:, len(binary_feature_indices):]
         else:
@@ -300,10 +300,6 @@ def main(args):
     print(f"Validation features shape: {validation_features.shape}")
     print(f"Validation labels shape: {validation_labels.shape}")
 
-    # Set device to GPU or CPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
     # Create custom datasets
     train_data = CustomDataset(train_features, train_labels)
     validation_data = CustomDataset(validation_features, validation_labels)
@@ -317,6 +313,7 @@ def main(args):
 
     # Move model to GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     # Initialize model, criterion, optimizer here with the current set of hyperparameters
     model = TabTransformer(
@@ -369,7 +366,7 @@ def main(args):
     'ep': epoch_counter,
     'esp': args.early_stopping_patience,
     'cutmix_prob': args.cutmix_prob,
-    'cutmix_lambda': args.cutmix_lambda,
+    'cutmix_alpha': args.cutmix_alpha,
     'use_mixup': 'true' if args.use_mixup else 'false',
     'mixup_alpha': args.mixup_alpha,
     'use_cutmix': 'true' if args.use_cutmix else 'false'
@@ -390,14 +387,14 @@ def main(args):
     # CutMix and mixup parameters
     use_cutmix = args.use_cutmix
     cutmix_prob=args.cutmix_prob
-    cutmix_lambda=args.cutmix_lambda
+    cutmix_alpha=args.cutmix_alpha
 
     use_mixup=args.use_mixup
     mixup_alpha=args.mixup_alpha
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_lambda, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
+        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
         val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
@@ -428,14 +425,14 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
             torch.save(model.state_dict(), model_filepath)
             print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         torch.save(best_model_wts, best_model_filepath)
@@ -478,7 +475,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
     parser.add_argument('--cutmix_prob', type=float, default=0.3, help='Probability to apply CutMix')
-    parser.add_argument('--cutmix_lambda', type=float, default=10.0, help='Lambda for CutMix blending')
+    parser.add_argument('--cutmix_alpha', type=float, default=0.2, help='Alpha value for the CutMix beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_mixup', action='store_true', help='Enable MixUp data augmentation')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
@@ -495,5 +492,5 @@ if __name__ == "__main__":
             args.dim = 192  # Default for FTTransformer
         if args.attn_dropout is None:
             args.attn_dropout = 0.2  # Default for FTTransformer
-
+cutmix_lambda
     main(args)

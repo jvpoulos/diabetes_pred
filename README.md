@@ -112,15 +112,15 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 $ python3 src/data_analysis.py
 ```
 
-3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--cutmix_prob` (optional) `--cutmix_lambda` (optional) `--use_mixup` (optional) `--mixup_alpha` (optional) `--model_path` (optional):
+3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--cutmix_prob` (optional) `--cutmix_alpha` (optional) `--use_mixup` (optional) `--mixup_alpha` (optional) `--model_path` (optional):
 
 ```bash
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type FTTransformer --dim 256 --outcome 'A1cGreaterThan7' --batch_size 32 --learning_rate 0.01 --epochs 25 --early_stopping_patience 10 --use_cutmix --cutmix_prob 0.2 --cutmix_lambda 10 --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs32_lr0.01_ep0_esp10_cmp0.3_cml10.0_umtrue_ma0.1_ucfalse.pth' 
+$ python3 src/train.py --model_type FTTransformer --dim 256 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 16 --learning_rate 0.01 --epochs 25 --early_stopping_patience 10 --use_cutmix --cutmix_prob 0.2 --cutmix_lambda 0.2 --model_path 'model_weights/FTTransformer_dim192_adr0.1_A1cGreaterThan7_bs32_lr0.01_ep21_esp10_cmp0.2_cml10.0_umfalse_ma0.2_uctrue_best.pth' 
 #--use_cutmix --cutmix_prob 0.1 --cutmix_lambda 10 --use_mixup --mixup_alpha 0.1 
-# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01, stopped at 21; 5. cutmix, lr: 0.01 to 0.05, early stop at 19; 6. cutmix, lr:0.05 to 0.01, batch size 8 to 16; 7. mixup, batch size 16 to 32, epochs 25 to 50, early stopping 10, early stopped at 12; 8. cutmix, epochs 50 -> 25, early stop at 21; 9. cutmix, cutmix prob 0.3 -> 0.2, early stop at 22; 10. cutmix, cutmix lambda 10 -> 1, early stop at 9. 11. cutmix, lambda 1 --> 10, cutmix prob 0.2 -> 0.1, early stop at 15; 12. mixup, alpha 0.2 -> 0.1, early stop at 6; 13. cutmix, cutmix prob 0.2, cutmix lamba 10, dim 192 -> 256, 
+# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01, stopped at 21; 5. cutmix, lr: 0.01 to 0.05, early stop at 19; 6. cutmix, lr:0.05 to 0.01, batch size 8 to 16; 7. mixup, batch size 16 to 32, epochs 25 to 50, early stopping 10, early stopped at 12; 8. cutmix, epochs 50 -> 25, early stop at 21; 9. cutmix, cutmix prob 0.3 -> 0.2, early stop at 22; 10. cutmix, cutmix lambda 10 -> 1, early stop at 9. 11. cutmix, lambda 1 --> 10, cutmix prob 0.2 -> 0.1, early stop at 15; 12. mixup, alpha 0.2 -> 0.1, early stop at 6; 13. cutmix, cutmix prob 0.2, cutmix lamba 10, attn_dropout 0.2 to 0.1, early stopped at 21; 14. cutmix, cutmix prob 0.2, cutmix lamba 0.2; 15. batch size 32->16, dim 192 -> 256
 #
 #1. no augmentation, epochs 25 -> 100, early stopped at 17
 ```

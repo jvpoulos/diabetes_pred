@@ -66,16 +66,18 @@ def load_model(model_type, model_path, dim, attn_dropout, categories, num_contin
     return model
 
 def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices):
+    model.eval()  # Ensure the model is in evaluation mode
     attention_maps = []
     for batch in loader:
-        features = batch[0].to(model.device)
-        labels = batch[1].to(model.device)  # If labels are needed
-
-        # Segregate categorical and continuous features using their indices
-        x_categ = features[:, binary_feature_indices]
+        features, _ = batch
+        features = features.to(model.device)
+        # Convert categorical features to long type for embedding layers
+        x_categ = features[:, binary_feature_indices].long()
         x_cont = features[:, numerical_feature_indices]
-
-        print(f"Actual x_categ shape: {x_categ.shape}, x_cont shape: {x_cont.shape}")
+        
+        # Ensure both feature types are on the correct device
+        x_categ, x_cont = x_categ.to(model.device), x_cont.to(model.device)
+        
         _, attns = model(x_categ, x_cont, return_attn=True)
         attention_maps.append(attns)
     return attention_maps
@@ -85,15 +87,19 @@ def plot_attention_maps(attention_maps, model_type, model_path):
     attention_map = attention_maps[-1].mean(dim=1)  # Taking the mean attention across heads
     avg_attention_map = attention_map.mean(dim=0)  # Further averaging across all batches
     
+    # Identify top 100 features based on attention weights
+    top_features = avg_attention_map.topk(100, sorted=True)[1]  # Get indices of top 100 features
+    top_attention_map = avg_attention_map[top_features]  # Select top 100 features' attention weights
+    
     plt.figure(figsize=(10, 8))
-    sns.heatmap(avg_attention_map.cpu().detach().numpy(), cmap='viridis')
-    plt.title(f'Attention Map - {model_type}')
+    sns.heatmap(top_attention_map.cpu().detach().numpy().reshape(1, -1), cmap='viridis', cbar_kws={'orientation': 'horizontal'})
+    plt.title(f'Top 100 Attention Weights - {model_type}')
     
     # Construct filename based on model_type and model_path
-    filename = f"attention_map_{model_type}_{os.path.basename(model_path).replace('.pth', '')}.png"
+    filename = f"top_100_attention_{model_type}_{os.path.basename(model_path).replace('.pth', '')}.png"
     plt.savefig(filename)
     plt.close()
-    print(f"Attention map saved to {filename}")
+    print(f"Top 100 attention map saved to {filename}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -167,8 +173,13 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = load_model(args.model_type, args.model_path, args.dim, args.attn_dropout, categories, num_continuous)
-    model.to(device)  # Move the model to the appropriate device
-    model.device = device 
+
+    # Using multiple GPUs if available
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
+
+    model = model.to(device)  # Move the model to the appropriate device
 
     attention_maps = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices)
     plot_attention_maps(attention_maps, args.model_type, args.model_path)
