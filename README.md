@@ -112,30 +112,39 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 $ python3 src/data_analysis.py
 ```
 
-3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--outcome` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--use_mixup` (optional) `--model_path` (optional):
+3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix` (optional) `--cutmix_prob` (optional) `--cutmix_lambda` (optional) `--use_mixup` (optional) `--mixup_alpha` (optional) `--model_path` (optional):
 
 ```bash
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 16 --learning_rate 0.01 --epochs 25 --early_stopping_patience 15 --use_cutmix --model_path 'FTTransformer_A1cGreaterThan7_bs8_lr0.05_ep0_esp15_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' 
-# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01, stopped at 21; 5. cutmix, lr: 0.01 to 0.05, early stop at 19; 6. cutmix, lr:0.05 to 0.01, batch size 8 to 16; 7. mixup, batch size 16 to 32, epochs 25 to 100
+$ python3 src/train.py --model_type FTTransformer --dim 256 --outcome 'A1cGreaterThan7' --batch_size 32 --learning_rate 0.01 --epochs 25 --early_stopping_patience 10 --use_cutmix --cutmix_prob 0.2 --cutmix_lambda 10 --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs32_lr0.01_ep0_esp10_cmp0.3_cml10.0_umtrue_ma0.1_ucfalse.pth' 
+#--use_cutmix --cutmix_prob 0.1 --cutmix_lambda 10 --use_mixup --mixup_alpha 0.1 
+# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01, stopped at 21; 5. cutmix, lr: 0.01 to 0.05, early stop at 19; 6. cutmix, lr:0.05 to 0.01, batch size 8 to 16; 7. mixup, batch size 16 to 32, epochs 25 to 50, early stopping 10, early stopped at 12; 8. cutmix, epochs 50 -> 25, early stop at 21; 9. cutmix, cutmix prob 0.3 -> 0.2, early stop at 22; 10. cutmix, cutmix lambda 10 -> 1, early stop at 9. 11. cutmix, lambda 1 --> 10, cutmix prob 0.2 -> 0.1, early stop at 15; 12. mixup, alpha 0.2 -> 0.1, early stop at 6; 13. cutmix, cutmix prob 0.2, cutmix lamba 10, dim 192 -> 256, 
+#
+#1. no augmentation, epochs 25 -> 100, early stopped at 17
 ```
 
-4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
+4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
 
 ```bash
-$ python3 src/attention.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransformer_outcome-A1cGreaterThan7_batch_size-32_lr-0_01_ep-0_esp-10_cutmix_prob-0_3_cutmix_lambda-10_0_use_mixup-true_mixup_alpha-0_1_use_cutmix-false.pkl'
+```
+
+4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome`  `--model_path` `--batch_size`:
+
+```bash
+$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs32_lr0.01_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_ucfalse_best.pth' --batch_size 32 # model without data augmentation
 ```
 
 5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments: `--model_type` `--outcome`  `--model_path`  `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/embeddings.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs32_lr0.01_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_ucfalse_best.pth' --batch_size 32 # model without data augmentation
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type TabTransformer --outcome 'A1cGreaterThan7' --model_path 'FTTransformer_bs4_lr0.001_ep7_esp5_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 4
+$ python3 src/test.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs32_lr0.01_ep0_esp10_cmp0.3_cml10.0_umtrue_ma0.1_ucfalse.pth' --batch_size 32
 ```

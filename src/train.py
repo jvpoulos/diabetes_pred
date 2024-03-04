@@ -18,7 +18,39 @@ from tqdm import tqdm
 import re
 import pickle
 
-logging.basicConfig(filename='train.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+# Create a logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Create handlers for both file and console
+file_handler = logging.FileHandler('train.log')
+console_handler = logging.StreamHandler()
+
+# Set logging level for both handlers
+file_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.INFO)
+
+# Create a logging format
+formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+def load_model_weights(model, saved_model_path):
+    model_state_dict = model.state_dict()
+    saved_state_dict = torch.load(saved_model_path)
+    for name, param in saved_state_dict.items():
+        if name in model_state_dict:
+            if model_state_dict[name].shape == param.shape:
+                model_state_dict[name].copy_(param)
+            else:
+                print(f"Skipping {name} due to size mismatch: model({model_state_dict[name].shape}) saved({param.shape})")
+        else:
+            print(f"Skipping {name} as it is not in the current model.")
+    model.load_state_dict(model_state_dict)
 
 def load_performance_history(performance_file_name):
     if os.path.exists(performance_file_name):
@@ -247,7 +279,13 @@ def main(args):
     validation_features = validation_dataset_tensor[:, feature_indices]
     validation_labels = validation_dataset_tensor[:, label_index]
 
-    # Save to file (for attention.py)
+    print(f"Unique train labels: {torch.unique(train_labels)}")
+    print(f"Unique validation labels: {torch.unique(validation_labels)}")
+
+    # Save validation and training features to file (for attention.py)
+    torch.save(train_features, 'train_features.pt')
+    torch.save(train_labels, 'train_labels.pt')
+
     torch.save(validation_features, 'validation_features.pt')
     torch.save(validation_labels, 'validation_labels.pt')
 
@@ -284,22 +322,22 @@ def main(args):
     model = TabTransformer(
         categories=categories,  # tuple containing the number of unique values within each category
         num_continuous=len(numerical_feature_indices),              # number of continuous values
-        dim=32,                                                     # dimension, paper set at 32
+        dim=args.dim,                                               # dimension, paper set at 32
         dim_out=1,                                                  # binary prediction, but could be anything
         depth=6,                                                    # depth, paper recommended 6
         heads=8,                                                    # heads, paper recommends 8
-        attn_dropout=0.1,                                           # post-attention dropout
+        attn_dropout=args.attn_dropout,                             # post-attention dropout
         ff_dropout=0.1,                                             # feed forward dropout
         mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
         mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
     ).to(device) if args.model_type == 'TabTransformer' else FTTransformer(
         categories = categories,      # tuple containing the number of unique values within each category
         num_continuous = len(numerical_feature_indices),  # number of continuous values
-        dim = 192,                           # dimension, paper set at 192
+        dim = args.dim,                     # dimension, paper set at 192
         dim_out = 1,                        # binary prediction, but could be anything
         depth = 3,                          # depth, paper recommended 3
         heads = 8,                          # heads, paper recommends 8
-        attn_dropout = 0.2,                 # post-attention dropout, paper recommends 0.2
+        attn_dropout = args.attn_dropout,   # post-attention dropout, paper recommends 0.2
         ff_dropout = 0.1                    # feed forward dropout, paper recommends 0.1
     ).to(device)
 
@@ -311,8 +349,9 @@ def main(args):
     epoch_counter = 0
     # Check if model_path is specified and exists
     if args.model_path and os.path.isfile(args.model_path):
-        epoch_counter += extract_epoch(args.model_path)
-        model.load_state_dict(torch.load(args.model_path))
+        epoch_counter = extract_epoch(args.model_path)
+        # Use the newly defined function for loading weights
+        load_model_weights(model, args.model_path)
         print(f"Loaded model from {args.model_path} starting from epoch {epoch_counter}")
     else:
         print("Starting training from scratch.")
@@ -322,6 +361,8 @@ def main(args):
 
     hyperparameters = {
     'model_type': args.model_type,
+    'dim': args.dim,
+    'attn_dropout': args.attn_dropout,
     'outcome': args.outcome,
     'batch_size': args.batch_size,
     'lr': args.learning_rate,
@@ -378,18 +419,27 @@ def main(args):
                 print(f"Stopping early at epoch {epoch+1}")
                 break
 
+    # Define the directory where model weights will be saved
+    model_weights_dir = 'model_weights'
+    # Ensure the directory exists
+    os.makedirs(model_weights_dir, exist_ok=True)
+
     # Checkpoint saving logic
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
-            torch.save(model.state_dict(), model_filename)
-            print(f"Model checkpoint saved as {model_filename}")
+            model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            # Modify the file path to include the model_weights directory
+            model_filepath = os.path.join(model_weights_dir, model_filename)
+            torch.save(model.state_dict(), model_filepath)
+            print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch_counter}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
-        torch.save(best_model_wts, best_model_filename)
-        print(f"Best model saved as {best_model_filename}")
+        best_model_filename = f"{args.model_type}_dim{args.dim}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_lambda}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        # Modify the file path to include the model_weights directory
+        best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
+        torch.save(best_model_wts, best_model_filepath)
+        print(f"Best model saved as {best_model_filepath}")
 
     # After training, plot the losses and save them to file
     plot_losses(train_losses, val_losses, hyperparameters)
@@ -401,8 +451,16 @@ def main(args):
     'val_aurocs': val_aurocs
 }
 
-    # Saving to the file
-    with open(performance_file_name, 'wb') as f:
+    # Define the directory path
+    dir_path = 'losses'
+    # Ensure the directory exists
+    os.makedirs(dir_path, exist_ok=True)
+
+    # Modify the performance_file_name to include the directory path
+    performance_file_path = os.path.join(dir_path, performance_file_name)
+
+    # Saving to the file within the 'losses' directory
+    with open(performance_file_path, 'wb') as f:
         pickle.dump(losses_and_aurocs, f)
 
 if __name__ == "__main__":
@@ -410,10 +468,12 @@ if __name__ == "__main__":
     parser.add_argument('--model_type', type=str, required=True,
                         choices=['TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
+    parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
+    parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
-    parser.add_argument('--epochs', type=int, default=15, help='Number of epochs to train the model')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
@@ -423,4 +483,17 @@ if __name__ == "__main__":
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     args = parser.parse_args()
+
+    # Conditional defaults based on model_type
+    if args.model_type == 'TabTransformer':
+        if args.dim is None:
+            args.dim = 32  # Default for TabTransformer
+        if args.attn_dropout is None:
+            args.attn_dropout = 0.1  # Default for TabTransformer
+    elif args.model_type == 'FTTransformer':
+        if args.dim is None:
+            args.dim = 192  # Default for FTTransformer
+        if args.attn_dropout is None:
+            args.attn_dropout = 0.2  # Default for FTTransformer
+
     main(args)
