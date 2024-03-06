@@ -321,10 +321,10 @@ def main(args):
         num_continuous=len(numerical_feature_indices),              # number of continuous values
         dim=args.dim,                                               # dimension, paper set at 32
         dim_out=1,                                                  # binary prediction, but could be anything
-        depth=6,                                                    # depth, paper recommended 6
-        heads=8,                                                    # heads, paper recommends 8
+        depth=args.depth,                                           # depth, paper recommended 6
+        heads=args.heads,                                           # heads, paper recommends 8
         attn_dropout=args.attn_dropout,                             # post-attention dropout
-        ff_dropout=0.1,                                             # feed forward dropout
+        ff_dropout=args.ff_dropout ,                                # feed forward dropout
         mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
         mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
     ).to(device) if args.model_type == 'TabTransformer' else FTTransformer(
@@ -332,10 +332,10 @@ def main(args):
         num_continuous = len(numerical_feature_indices),  # number of continuous values
         dim = args.dim,                     # dimension, paper set at 192
         dim_out = 1,                        # binary prediction, but could be anything
-        depth = 3,                          # depth, paper recommended 3
-        heads = 8,                          # heads, paper recommends 8
+        depth = args.depth,                          # depth, paper recommended 3
+        heads = args.heads,                          # heads, paper recommends 8
         attn_dropout = args.attn_dropout,   # post-attention dropout, paper recommends 0.2
-        ff_dropout = 0.1                    # feed forward dropout, paper recommends 0.1
+        ff_dropout = args.ff_dropout                   # feed forward dropout, paper recommends 0.1
     ).to(device)
 
     # Using multiple GPUs if available
@@ -466,6 +466,9 @@ if __name__ == "__main__":
                         choices=['TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
+    parser.add_argument('--depth', type=int, help='Depth of the model.')
+    parser.add_argument('--heads', type=int, help='Number of attention heads.')
+    parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
@@ -475,7 +478,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
     parser.add_argument('--cutmix_prob', type=float, default=0.3, help='Probability to apply CutMix')
-    parser.add_argument('--cutmix_alpha', type=float, default=0.2, help='Alpha value for the CutMix beta distribution. Higher values result in more mixing.')
+    parser.add_argument('--cutmix_alpha', type=float, default=10, help='Alpha value for the CutMix beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_mixup', action='store_true', help='Enable MixUp data augmentation')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
@@ -487,10 +490,17 @@ if __name__ == "__main__":
             args.dim = 32  # Default for TabTransformer
         if args.attn_dropout is None:
             args.attn_dropout = 0.1  # Default for TabTransformer
+        args.depth = args.depth if args.depth is not None else 6
+        args.heads = args.heads if args.heads is not None else 8
+        args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
     elif args.model_type == 'FTTransformer':
         if args.dim is None:
             args.dim = 192  # Default for FTTransformer
         if args.attn_dropout is None:
             args.attn_dropout = 0.2  # Default for FTTransformer
-cutmix_lambda
+        args.depth = args.depth if args.depth is not None else 3
+        args.heads = args.heads if args.heads is not None else 8
+        args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
+
+
     main(args)
