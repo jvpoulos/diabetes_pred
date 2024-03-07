@@ -505,3 +505,72 @@ SELECT
     COUNT(DISTINCT EMPI) AS UniqueEMPIs,
     COUNT(DISTINCT CodeWithType) AS UniqueCodes
 FROM dbo.Diagnoses;
+
+--------------------------------------------------------------------------------------------------------
+--Preprocess procedures table (export to file)
+--------------------------------------------------------------------------------------------------------
+
+IF OBJECT_ID('dbo.Procedures', 'U') IS NOT NULL DROP TABLE dbo.Procedures;
+
+;WITH CTE_Procedures AS (
+    SELECT
+        prc.EMPI,
+        prc.Date,
+        CASE 
+            WHEN prc.Code_Type IN ('ICD9', 'ICD10') AND CHARINDEX('.', prc.Code) > 0 
+            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code)) + -- Get everything up to the decimal
+                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) -- Add only the first digit after the decimal
+            ELSE prc.Code 
+        END AS Code,
+        prc.Code_Type,
+        po.IndexDate,
+        CASE 
+            WHEN prc.Date <= po.IndexDate THEN 1 
+            ELSE 0 
+        END AS ProcedureBeforeOrOnIndexDate,
+        CASE 
+            WHEN prc.Code_Type IN ('ICD9', 'ICD10') AND CHARINDEX('.', prc.Code) > 0 
+            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code) - 1) + -- Get everything before the decimal
+                 '.' + -- Add the decimal point
+                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) -- Add only the first digit after the decimal
+            ELSE prc.Code 
+        END + 
+        '_' + prc.Code_Type AS CodeWithType
+    FROM prc_2_pcp_combined prc
+    INNER JOIN DiabetesOutcomes po ON prc.EMPI = po.EMPI
+    WHERE prc.Code_Type IN ('CPT', 'ICD9', 'ICD10') AND prc.Code IS NOT NULL AND prc.Code <> ''
+),
+AggregatedProcedures AS (
+    SELECT
+        EMPI,
+        Code,
+        Code_Type,
+        CodeWithType,
+        MAX(Date) AS MaxDate,
+        MAX(IndexDate) AS MaxIndexDate,
+        MIN(ProcedureBeforeOrOnIndexDate) AS ProcedureBeforeOrOnIndexDate
+    FROM CTE_Procedures
+    GROUP BY EMPI, Code, Code_Type, CodeWithType
+)
+
+SELECT 
+    EMPI,
+    MaxDate AS Date,
+    Code,
+    Code_Type,
+    MaxIndexDate AS IndexDate,
+    ProcedureBeforeOrOnIndexDate,
+    CodeWithType
+INTO dbo.Procedures
+FROM AggregatedProcedures; --n = 7554888
+
+SELECT TOP 100 * FROM dbo.Procedures; -- Displaying top 100 entries for review
+
+-- Count distinct values of CodeWithType and EMPI in Procedures table
+SELECT 
+    COUNT(DISTINCT EMPI) AS UniqueEMPIs,
+    COUNT(DISTINCT CodeWithType) AS UniqueCodes
+FROM dbo.Procedures;
+
+--UniqueEMPIs   UniqueCodes
+-- 55615    14872
