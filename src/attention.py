@@ -10,6 +10,7 @@ import json
 import os
 from tqdm import tqdm
 import pandas as pd
+import numpy as np
 
 def fix_state_dict(state_dict):
     new_state_dict = {}
@@ -30,31 +31,31 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, attn_dropout, categories, num_continuous):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous):
 
     if model_type == 'TabTransformer':
         model = TabTransformer(
-            categories=categories,
-            num_continuous=num_continuous,
-            dim=dim,
-            dim_out=1,
-            depth=6,
-            heads=8,
-            attn_dropout=attn_dropout,
-            ff_dropout=0.1,
-            mlp_hidden_mults=(4, 2),
-            mlp_act=nn.ReLU()
+            categories=categories,  # tuple containing the number of unique values within each category
+            num_continuous=num_continuous,                              # number of continuous values
+            dim=dim,                                               # dimension, paper set at 32
+            dim_out=1,                                                  # binary prediction, but could be anything
+            depth=depth,                                           # depth, paper recommended 6
+            heads=heads,                                           # heads, paper recommends 8
+            attn_dropout=attn_dropout,                             # post-attention dropout
+            ff_dropout=ff_dropout ,                                # feed forward dropout
+            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
+            mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
         )
     elif model_type == 'FTTransformer':
-        model = FTTransformer(
-            categories = categories,
-            num_continuous = num_continuous,
-            dim = dim,
-            dim_out = 1,
-            depth = 3,
-            heads = 8,
-            attn_dropout = attn_dropout,
-            ff_dropout = 0.1
+            model = FTTransformer(
+            categories = categories,      # tuple containing the number of unique values within each category
+            num_continuous = num_continuous,  # number of continuous values
+            dim = dim,                     # dimension, paper set at 192
+            dim_out = 1,                        # binary prediction, but could be anything
+            depth = depth,                          # depth, paper recommended 3
+            heads = heads,                          # heads, paper recommends 8
+            attn_dropout = attn_dropout,   # post-attention dropout, paper recommends 0.2
+            ff_dropout = ff_dropout                   # feed forward dropout, paper recommends 0.1
         )
     else:
         raise ValueError("Invalid model type. Choose 'TabTransformer' or 'FTTransformer'.")
@@ -65,47 +66,7 @@ def load_model(model_type, model_path, dim, attn_dropout, categories, num_contin
     model.eval()
     return model
 
-def save_attention_maps_to_html(attention_maps, feature_names, filename):
-    # Assume attention_maps is a list of attention weights
-    # And feature_names is a list of lists, where each inner list contains the top 100 feature names for each instance
-
-    attention_data = []
-
-    # Iterate over each instance's attention weights and feature names
-    for instance_attention, instance_features in zip(attention_maps, feature_names):
-        # Convert the attention weights to a list for easier processing
-        attention_values = instance_attention.mean(dim=0).cpu().tolist()  # Take the mean across attention heads
-
-        # Pair feature names with their corresponding attention weights
-        instance_data = list(zip(instance_features, attention_values))
-
-        attention_data.extend(instance_data)
-
-    # Create a DataFrame to represent the attention data
-    df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
-
-    # Keep only the first occurrence of each feature
-    df = df.drop_duplicates(subset='Feature', keep='first')
-
-    # Sort the DataFrame by the attention weights in descending order
-    df = df.sort_values(by='Attention Weight', ascending=False)
-
-    # Select the top 100 features
-    num_top_features = 100
-    df = df.head(num_top_features)
-
-    # Convert the DataFrame to an HTML table representation
-    html_table = df.to_html(index=False)
-
-    filename = f"attention_maps_{num_top_features}_attention_{model_type}_{os.path.basename(model_path).replace('.pth', '')}.html"
-
-    # Save the HTML table to a file
-    with open(filename, 'w') as file:
-        file.write(html_table)
-
-    print(f"Attention maps saved to {filename}")
-
-def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, device):
+def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, device):
     model.eval()
     model.to(device)
     
@@ -132,73 +93,163 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                 attn = attn.to('cpu')
                 
                 # Now attn should be of shape [batch_size, num_features, num_features]
-                # Flatten it to [batch_size, num_features^2] to get individual attention weights
-                attn = attn.view(attn.size(0), -1)
+                batch_size = attn.size(0)
+                num_features = attn.size(1)
                 
-                # Get the top 100 attention weights
-                top_vals, top_indices = torch.topk(attn, 100, dim=1, largest=True, sorted=True)
+                # Compute the average attention weights for each feature across the batch
+                avg_attn = attn.mean(dim=(0, 1))
                 
-                # Move top indices to CPU if they are on GPU, then convert to numpy
-                top_indices = top_indices.cpu().numpy()
-                
-                # Retrieve the feature names using numpy indexing
-                for idx in top_indices:
-                    # Make sure the indexing is within the length of column names
-                    idx = [i if i < len(column_names) else len(column_names) - 1 for i in idx]
-                    batch_feature_names.append([column_names[i] for i in idx])
-                
-                top_attention_weights.append(top_vals.cpu().numpy())
-                feature_names.extend(batch_feature_names)
+                # Append to the lists
+                top_attention_weights.append(avg_attn.cpu().numpy())
+                feature_names.append(column_names[:num_features])
             
             # Optionally clear some cache if necessary
             torch.cuda.empty_cache()
     
     print("Attention map computation completed.")
-    return top_attention_weights, feature_names
+    
+    # Check if top_attention_weights and feature_names are empty
+    if len(top_attention_weights) == 0 or len(feature_names) == 0:
+        print("Warning: No attention weights or feature names computed.")
+        return None, None
+    
+    print(f"Number of attention weight matrices: {len(top_attention_weights)}")
+    print(f"Number of feature name lists: {len(feature_names)}")
+    
+    # Aggregate the attention weights and feature names across all batches
+    aggregated_attention_weights = np.mean(top_attention_weights, axis=0)
+    
+    # Take the feature names from the first batch (assuming they are the same for all batches)
+    aggregated_feature_names = feature_names[0]
+    
+    # Select the top 100 features based on the aggregated attention weights
+    top_indices = np.argsort(aggregated_attention_weights)[::-1][:100]
+    top_attention_weights = aggregated_attention_weights[top_indices]
+    top_feature_names = [aggregated_feature_names[idx] for idx in top_indices]
+    
+    return top_attention_weights, top_feature_names
 
-def plot_attention_maps(attention_maps, feature_names, model_type, model_path, instance_idx=0):
-    # Get the attention weights and feature names for the selected instance
-    attention_weights = attention_maps[instance_idx]
-    top_feature_names = feature_names[instance_idx]
+def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names, device):
+    model.eval()
+    model.to(device)
+    
+    feature_value_attention_weights = {feature: {} for feature in top_feature_names}
+    
+    print("Starting feature value attention weight computation...")
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Processing batches"):
+            features, labels = batch
+            x_categ = features[:, binary_feature_indices].to(device, dtype=torch.long)  # dtype is specified here
+            x_cont = features[:, numerical_feature_indices].to(device)
+            
+            _, attns = model(x_categ, x_cont, return_attn=True)
+            
+            attns = attns if isinstance(attns, list) else [attns]
+            
+            for attn in attns:
+                # Reduce the size of the tensor by averaging across heads and layers if they exist
+                while attn.dim() > 3:
+                    attn = attn.mean(dim=1)
+                
+                # Move the tensor to CPU to save GPU memory
+                attn = attn.to('cpu')
+                
+                # Now attn should be of shape [batch_size, num_features, num_features]
+                batch_size = attn.size(0)
+                num_features = attn.size(1)
+                
+                for feature_name in top_feature_names[:10]:  # Consider only the top 10 features
+                    if feature_name in column_names:
+                        feature_index = column_names.index(feature_name)
+                        if feature_index < features.size(1):
+                            feature_values = features[:, feature_index].cpu().numpy()
+                            
+                            for value, label, attention in zip(feature_values, labels.cpu().numpy(), attn[:, feature_index, feature_index].cpu().numpy()):
+                                if label == 1:
+                                    feature_value_attention_weights[feature_name].setdefault('HbA1c ≥ 7.0%', {}).setdefault(value, []).append(attention)
+                                else:
+                                    feature_value_attention_weights[feature_name].setdefault('HbA1c < 7.0%', {}).setdefault(value, []).append(attention)
+            
+            # Optionally clear some cache if necessary
+            torch.cuda.empty_cache()
+    
+    print("Feature value attention weight computation completed.")
+    
+    # Compute average attention weights for each feature value and outcome
+    for feature_name in top_feature_names[:10]:
+        if feature_name in feature_value_attention_weights:
+            for outcome in ['HbA1c ≥ 7.0%', 'HbA1c < 7.0%']:
+                if outcome in feature_value_attention_weights[feature_name]:
+                    for value in feature_value_attention_weights[feature_name][outcome]:
+                        feature_value_attention_weights[feature_name][outcome][value] = np.mean(feature_value_attention_weights[feature_name][outcome][value])
+    
+    return feature_value_attention_weights
 
-    # Convert attention_weights to a PyTorch tensor if it's a list
-    if isinstance(attention_weights, list):
-        attention_weights = torch.stack(attention_weights)
+def save_attention_maps_to_html(attention_maps, feature_names, filename):
+    attention_data = list(zip(feature_names, attention_maps))
 
-    # Average the attention weights across attention heads
-    avg_attention_map = attention_weights.mean(dim=0)
+    # Create a DataFrame to represent the attention data
+    df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
 
-    # Select the top 100 features or the maximum available features
-    num_top_features = min(100, len(top_feature_names))
-    avg_attention_map = avg_attention_map[:num_top_features]
-    top_feature_names = top_feature_names[:num_top_features]
+    # Sort the DataFrame by the attention weights in descending order
+    df = df.sort_values(by='Attention Weight', ascending=False)
 
-    plt.figure(figsize=(20, 8))  # Adjust the figure size as needed
+    # Convert the DataFrame to an HTML table representation
+    html_table = df.to_html(index=False)
 
-    # Use the top feature names as y-ticks
-    sns.heatmap(avg_attention_map.cpu().detach().numpy().reshape(-1, 1), cmap='viridis', cbar_kws={'orientation': 'vertical'}, yticklabels=top_feature_names)
+    # Save the HTML table to a file
+    with open(filename, 'w') as file:
+        file.write('<h1>Average attention weights per feature across all patients, regardless of their outcome: Top 100 features</h1>')
+        file.write(html_table)
 
-    plt.title(f'Top {num_top_features} Attention Weights - {model_type}')
-    plt.xlabel('Attention Weights')
-    plt.ylabel('Top Features')
-    plt.yticks(rotation=0)  # Keep the feature names horizontal for readability
+    print(f"Attention maps saved to {filename}")
 
-    filename = f"labeled_top_{num_top_features}_attention_{model_type}_{os.path.basename(model_path).replace('.pth', '')}_instance_{instance_idx}.png"
-    plt.tight_layout()  # Adjust layout to fit feature names
-    plt.savefig(filename)
-    plt.close()
+def save_top_feature_values_to_html(top_feature_value_attention_weights, filename):
+    # Create a DataFrame for each outcome
+    df_high = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
+    df_low = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
 
-    print(f"Labeled top {num_top_features} attention map for instance {instance_idx} saved to {filename}")
+    for feature_name, outcome_values in top_feature_value_attention_weights.items():
+        if 'HbA1c ≥ 7.0%' in outcome_values:
+            for (value, weight) in outcome_values['HbA1c ≥ 7.0%'].items():
+                df_high = df_high.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
+        if 'HbA1c < 7.0%' in outcome_values:
+            for (value, weight) in outcome_values['HbA1c < 7.0%'].items():
+                df_low = df_low.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
 
+    # Sort the DataFrames by attention weights in descending order
+    df_high = df_high.sort_values(by='Attention Weight', ascending=False)
+    df_low = df_low.sort_values(by='Attention Weight', ascending=False)
+
+    # Convert the DataFrames to HTML tables
+    html_table_high = df_high.to_html(index=False)
+    html_table_low = df_low.to_html(index=False)
+
+    # Save the HTML tables to a file
+    with open(filename, 'w') as file:
+        file.write('<h1>Average attention weights for each feature value within each outcome group (HbA1c >= 7.0% and HbA1c < 7.0%): Top 10 features</h1>')
+        file.write('<h2>Patients with HbA1c >= 7.0%</h2>')
+        file.write(html_table_high)
+        file.write('<h2>Patients with HbA1c < 7.0%</h2>')
+        file.write(html_table_low)
+
+    print(f"Top feature values saved to {filename}")
+    
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Extract attention maps.')
     parser.add_argument('--dataset_type', type=str, choices=['train','validation'], required=True, help='Specify dataset type for evaluation')
-    parser.add_argument('--model_type', type=str, choices=['TabTransformer', 'FTTransformer'], help='Type of the model to load')
+    parser.add_argument('--model_type', type=str, required=True,
+                        choices=['TabTransformer', 'FTTransformer'],
+                        help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
+    parser.add_argument('--depth', type=int, help='Depth of the model.')
+    parser.add_argument('--heads', type=int, help='Number of attention heads.')
+    parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
-    parser.add_argument('--model_path', type=str, help='Path to the trained model file')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for evaluation')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
+    parser.add_argument('--model_path', type=str, default=None,
+                    help='Optional path to the saved model file to load before training')
     args = parser.parse_args()
 
     # Conditional defaults based on model_type
@@ -207,11 +258,17 @@ def main():
             args.dim = 32  # Default for TabTransformer
         if args.attn_dropout is None:
             args.attn_dropout = 0.1  # Default for TabTransformer
+        args.depth = args.depth if args.depth is not None else 6
+        args.heads = args.heads if args.heads is not None else 8
+        args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
     elif args.model_type == 'FTTransformer':
         if args.dim is None:
             args.dim = 192  # Default for FTTransformer
         if args.attn_dropout is None:
             args.attn_dropout = 0.2  # Default for FTTransformer
+        args.depth = args.depth if args.depth is not None else 3
+        args.heads = args.heads if args.heads is not None else 8
+        args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
 
     print("Loading dataset...")
     if args.dataset_type == 'train':
@@ -263,7 +320,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.attn_dropout, categories, num_continuous)
+    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
     print("Model loaded.")
 
     # # Using multiple GPUs if available
@@ -272,16 +329,20 @@ def main():
     #     model = nn.DataParallel(model)
 
     model = model.to(device)  # Move the model to the appropriate device
-
     print("Computing attention maps...")
-    attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, device)
+    attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, device)
     print("Attention maps computed.")
+    
+    if attention_maps is not None and feature_names is not None:
+        save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
 
-    save_attention_maps_to_html(attention_maps[-1], feature_names[-1])
+        print("Identifying top feature values...")
+        top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10], device)
+        save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
+        print("Top feature values identified.")
+    else:
+        print("No attention maps to process.")
 
-    print("Plotting attention maps...")
-    plot_attention_maps(attention_maps, feature_names, args.model_type, args.model_path)
-    print("Attention maps plotted.")
 
 if __name__ == '__main__':
     main()
