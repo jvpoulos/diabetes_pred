@@ -8,25 +8,27 @@ import plotly.express as px
 
 # This function formats ICD codes by removing dots and leading zeros
 def format_icd_code(icd_code):
-    # Convert the ICD code to a string, remove any dots, strip leading zeros and trailing spaces
-    return str(icd_code).replace('.', '').lstrip('0').rstrip()
+    # Convert the ICD code to a string and remove trailing spaces
+    return str(icd_code).rstrip()
+    # # Convert the ICD code to a string, remove any dots, and trailing spaces
+    # return str(icd_code).replace('.', '').lstrip('0').rstrip()
 
 def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd10_txt_df):
     formatted_icd_code = format_icd_code(icd_code)
     try:
         if code_type.upper() == 'ICD9':
-            if formatted_icd_code in icd9_df.index:
-                result = icd9_df.loc[formatted_icd_code, 'LONG DESCRIPTION (VALID ICD-9 FY2024)']
-                return result if isinstance(result, str) else result.iloc[0]
-            elif formatted_icd_code in icd9_txt_df.index:
+            if formatted_icd_code in icd9_txt_df.index:
                 result = icd9_txt_df.loc[formatted_icd_code, 'Description']
                 return result if isinstance(result, str) else result.iloc[0]
-        elif code_type.upper() == 'ICD10':
-            if formatted_icd_code in icd10_df.index:
-                result = icd10_df.loc[formatted_icd_code, 'LONG DESCRIPTION (VALID ICD-10 FY2024)']
+            elif formatted_icd_code in icd9_df.index:
+                result = icd9_df.loc[formatted_icd_code, 'LONG DESCRIPTION (VALID ICD-9 FY2024)']
                 return result if isinstance(result, str) else result.iloc[0]
-            elif formatted_icd_code in icd10_txt_df.index:
+        elif code_type.upper() == 'ICD10':
+            if formatted_icd_code in icd10_txt_df.index:
                 result = icd10_txt_df.loc[formatted_icd_code, 'Description']
+                return result if isinstance(result, str) else result.iloc[0]
+            elif formatted_icd_code in icd10_df.index:
+                result = icd10_df.loc[formatted_icd_code, 'LONG DESCRIPTION (VALID ICD-10 FY2024)']
                 return result if isinstance(result, str) else result.iloc[0]
     except KeyError:
         # Log the error or print a message if needed

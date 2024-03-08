@@ -43,7 +43,7 @@ GPU: GeForce RTX 2080
 	- Loads and merges data from .txt files. Randomly splits the data into training (70%), validation (20%), and test (10%) sets. Preprocesses datasets, converts datasets into PyTorch Tensors, and saves them to file.
 
 - `data_analysis.py`
-	- Loads ICD-9 and ICD-10 diagnostic codes, extracts code descriptions, and identifies infrequent categories. Visualizes one-hot encoded feature sparsity, and generates summary statistics for analysis.
+	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
 - `train.py`
 	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 

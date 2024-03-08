@@ -338,6 +338,7 @@ def main():
 
         print("Identifying top feature values...")
         top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10], device)
+        print("Feature value attention weights:", top_feature_value_attention_weights)
         save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
         print("Top feature values identified.")
     else:
