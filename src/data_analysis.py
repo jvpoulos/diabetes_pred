@@ -121,7 +121,7 @@ print("Validation Data Dimensions:", df_validation.shape)
 print("Test Data Dimensions:", df_test.shape)
 
 # Save the training data to disk
-#df_train.to_csv('training_data.csv', index=False)
+df_train.to_csv('training_data.csv', index=False)
 
 # Print dataset descriptions
 print("Training Dataset Description:\n", df_train.describe())
@@ -169,7 +169,7 @@ df_train_summary_sorted = df_train_summary.sort_values(by='mean', ascending=Fals
 
 # Save to HTML
 # Assuming `df_train_summary_sorted` is your final DataFrame
-title = "Summary statistics of one-hot encoded diagnoses before or on index date, in training data (n=37908)"
+title = "Summary statistics of one-hot encoded diagnoses and procedures before or on index date, in training data (n=36439)"
 
 # Add HTML for the title
 html_title = f"<h2>{title}</h2>"

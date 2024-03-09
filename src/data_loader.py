@@ -135,20 +135,13 @@ def main(use_dask=False):
     }
 
     prc_columns = {
-        'Prcp_EPIC_PMRN': 'float32', 
-        'Prcp_MRN_Type': 'object', 
-        'Prcp_MRN': 'object', 
-        'Prcp_Date': 'object', 
-        'Prcp_Procedure_Name': 'object', 
-        'Prcp_Code_Type': 'object', 
-        'Prcp_Code': 'object', 
-        'Prcp_Procedure_Flag': 'object', 
-        'Prcp_Quantity': 'float32', 
-        'Prcp_Provider': 'object', 
-        'Prcp_Clinic': 'object', 
-        'Prcp_Hospital': 'object', 
-        'Prcp_Inpatient_Outpatient': 'object', 
-        'Prcp_Encounter_number': 'object'
+        'EMPI': 'int32',
+        'Date': 'object', 
+        'Code_Type': 'object', 
+        'Code': 'object', 
+        'IndexDate': 'object', 
+        'ProcedureBeforeOrOnIndexDate': 'int32', 
+        'CodeWithType': 'object'
     }
 
     # Select columns to read in each dataset
@@ -162,7 +155,7 @@ def main(use_dask=False):
     # Define file path and selected columns
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
-    procedures_file_path = 'data/Diagnoses.txt'
+    procedures_file_path = 'data/Procedures.txt'
 
     # Read each file into a DataFrame
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
@@ -264,7 +257,7 @@ def main(use_dask=False):
 
     print("Preprocessing diagnoses data")
 
-    # Handle categorical columns in diagnoses data
+    # Handle categorical columns
     categorical_columns = ['CodeWithType']
 
     # Save the list of categorical columns to a JSON file
@@ -305,6 +298,17 @@ def main(use_dask=False):
     train_encoded_dia = one_hot_encoder.transform(train_rows_dia[categorical_columns].astype(str))
     validation_encoded_dia = one_hot_encoder.transform(validation_rows_dia[categorical_columns].astype(str))
     test_encoded_dia = one_hot_encoder.transform(test_rows_dia[categorical_columns].astype(str))
+
+    print("Extracting dia encoded feature names.")
+
+    # Get feature names from the encoder
+    dia_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+
+    # Process the feature names to remove the prefix
+    dia_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in dia_encoded_feature_names]
+
+    # Ensure encoded_feature_names is a list
+    dia_encoded_feature_names = list(dia_encoded_feature_names)
 
     print("Preprocessing procedures data")
 
@@ -356,98 +360,119 @@ def main(use_dask=False):
 
     print("Infrequent categories saved to infrequent_categories.json.")
 
-    print("Extracting encoded feature names.")
+    print("Extracting prc encoded feature names.")
 
     # Get feature names from the encoder
-    encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+    prc_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
 
     # Process the feature names to remove the prefix
-    encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in encoded_feature_names]
+    prc_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in prc_encoded_feature_names]
 
     # Ensure encoded_feature_names is a list
-    encoded_feature_names = list(encoded_feature_names)
+    prc_encoded_feature_names = list(prc_encoded_feature_names)
 
-    print("Combining encoded splits into a single sparse matrix.")
-
-    # Horizontally stack encoded training, validation, and test data for 'dia' and 'prc'
-    train_encoded = hstack([train_encoded_dia, train_encoded_prc])
-    validation_encoded = hstack([validation_encoded_dia, validation_encoded_prc])
-    test_encoded = hstack([test_encoded_dia, test_encoded_prc])
+    print("Combining diagnoses encoded splits into a single sparse matrix.")
 
     # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
-    encoded_data = vstack([train_encoded, validation_encoded, test_encoded])
+    encoded_data_dia = vstack([train_encoded_dia, validation_encoded_dia, test_encoded_dia])
 
-    encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded_data, columns=encoded_feature_names)
+    encoded_df_dia = pd.DataFrame.sparse.from_spmatrix(encoded_data_dia, columns=dia_encoded_feature_names) 
 
     # Concatenate the 'order' column to encoded_df to preserve original row order
-    order_train = pd.concat([train_rows_dia['order'], train_rows_prc['order']], ignore_index=True)
-    order_validation = pd.concat([validation_rows_dia['order'], validation_rows_prc['order']], ignore_index=True)
-    order_test = pd.concat([test_rows_dia['order'], test_rows_prc['order']], ignore_index=True)
-
-    order_combined = pd.concat([order_train, order_validation, order_test], ignore_index=True)
-
-    encoded_df['order'] = order_combined.values
+    orders_dia = pd.concat([train_rows_dia['order'], validation_rows_dia['order'], test_rows_dia['order']])
+    encoded_df_dia['order'] = orders_dia.values
 
     # Sort encoded_df by 'order' to match the original df_dia row order and reset the index
-    encoded_df.sort_values(by='order', inplace=True)
-    encoded_df.reset_index(drop=True, inplace=True)
+    encoded_df_dia.sort_values(by='order', inplace=True)
+    encoded_df_dia.reset_index(drop=True, inplace=True)
 
     # Drop the 'order' column if it's no longer needed
-    encoded_df.drop(columns=['order'], inplace=True)
+    encoded_df_dia.drop(columns=['order'], inplace=True)
 
     # Drop the infrequent columns from encoded_df
     infrequent_sklearn_columns = ["infrequent_sklearn"]
-    encoded_df = encoded_df.drop(columns=infrequent_sklearn_columns)
+    encoded_df_dia = encoded_df_dia.drop(columns=infrequent_sklearn_columns)
 
-    print("Updating encoded feature names.")
+    print("Combining procedures encoded splits into a single sparse matrix.")
 
-    encoded_feature_names = [col for col in encoded_feature_names if col not in infrequent_sklearn_columns]
+    # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
+    encoded_data_prc = vstack([train_encoded_prc, validation_encoded_prc, test_encoded_prc])
 
+    encoded_df_prc = pd.DataFrame.sparse.from_spmatrix(encoded_data_prc, columns=prc_encoded_feature_names)
+
+    # Concatenate the 'order' column to encoded_df to preserve original row order
+    orders_prc = pd.concat([train_rows_prc['order'], validation_rows_prc['order'], test_rows_prc['order']])
+    encoded_df_prc['order'] = orders_prc.values
+
+    # Sort encoded_df by 'order' to match the original df_dia row order and reset the index
+    encoded_df_prc.sort_values(by='order', inplace=True)
+    encoded_df_prc.reset_index(drop=True, inplace=True)
+
+    # Drop the 'order' column if it's no longer needed
+    encoded_df_prc.drop(columns=['order'], inplace=True)
+
+    # Drop the infrequent columns from encoded_df
+    encoded_df_prc = encoded_df_prc.drop(columns=infrequent_sklearn_columns)
+
+    print("Combining and updating encoded feature names.")
+
+    dia_encoded_feature_names = [col for col in dia_encoded_feature_names if col not in infrequent_sklearn_columns]
+    prc_encoded_feature_names = [col for col in prc_encoded_feature_names if col not in infrequent_sklearn_columns]
+
+    encoded_feature_names = dia_encoded_feature_names + prc_encoded_feature_names
     with open('encoded_feature_names.json', 'w') as file:
         json.dump(encoded_feature_names, file)
 
     print("Combining the original DataFrame with the encoded DataFrame.")
 
-    print("Number of one-hot encoded diagnoses and procedures:", len(encoded_df)) 
+    print("Number of one-hot encoded diagnoses:", len(encoded_df_dia)) 
+    print("Number of one-hot encoded procedures:", len(encoded_df_prc)) 
     print("Number of diagnoses prior to concatenatation:", len(df_dia)) 
     print("Number of procedures prior to concatenatation:", len(df_prc)) 
 
     # Reset the index of all DataFrames to ensure alignment
     df_dia = df_dia.reset_index(drop=True)
     df_prc = df_prc.reset_index(drop=True)
-    encoded_df = encoded_df.reset_index(drop=True)
+    encoded_df_dia = encoded_df_dia.reset_index(drop=True)
+    encoded_df_prc = encoded_df_prc.reset_index(drop=True)
 
     # Verify that the number of rows matches to ensure a logical one-to-one row correspondence across all DataFrames
-    assert len(df_dia) == len(encoded_df) == len(df_prc), "Row counts do not match."
-
-    # Verify that the number of rows matches to ensure a logical one-to-one row correspondence
-    assert len(df_dia) == len(encoded_df), "Diagnoses row counts do not match."
-    assert len(df_prc) == len(encoded_df), "Procedures row counts do not match."
+    assert len(df_dia) == len(encoded_df_dia), "Diagnoses row counts do not match."
+    assert len(df_prc) == len(encoded_df_prc), "Procedures row counts do not match."
 
     # Check if the indexes are aligned
-    assert df_dia.index.equals(encoded_df.index), "Diagnoses indexes are not aligned."
-    assert df_prc.index.equals(encoded_df.index), "Procedures indexes are not aligned."
+    assert df_dia.index.equals(encoded_df_dia.index), "Diagnoses indexes are not aligned."
+    assert df_prc.index.equals(encoded_df_prc.index), "Procedures indexes are not aligned."
 
     # Concatenate the DataFrames side-by-side
-    df_combined = pd.concat([df_dia, df_prc, encoded_df], axis=1, sort=False)
+    df_dia = pd.concat([df_dia, encoded_df_dia], axis=1, sort=False)
+    df_prc = pd.concat([df_prc, encoded_df_prc], axis=1, sort=False)
 
-    print("Number of diagnoses and procedures after concatenatation:", len(df_combined))
+    print("Number of diagnoses after concatenatation:", len(df_dia))
     # Verify row counts match expected transformations
-    assert len(df_combined) == len(encoded_df), f"Unexpected row count. Expected: {len(encoded_df)}, Found: {len(df_combined)}"
+    assert len(df_dia) == len(encoded_df_dia), f"Unexpected row count. Expected: {len(encoded_df_dia)}, Found: {len(df_dia)}"
+
+    print("Number of diagnoses after concatenatation:", len(df_prc))
+    # Verify row counts match expected transformations
+    assert len(df_prc) == len(encoded_df_prc), f"Unexpected row count. Expected: {len(encoded_df_prc)}, Found: {len(df_prc)}"
  
     print("Dropping the original categorical columns ", categorical_columns)
-    df_combined.drop(categorical_columns, axis=1, inplace=True)
+    df_dia.drop(categorical_columns, axis=1, inplace=True)
+    df_prc.drop(categorical_columns, axis=1, inplace=True)
 
     print("Starting aggregation by EMPI.")
 
-    agg_dict = {col: 'max' for col in encoded_feature_names}
+    agg_dict_dia = {col: 'max' for col in dia_encoded_feature_names}
+    agg_dict_prc = {col: 'max' for col in prc_encoded_feature_names}
     if use_dask:
         print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
         print("Converting diagnoses to Dask DataFrame.")
-        df_combined = dd.from_pandas(df_combined, npartitions=npartitions)
+        df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
+        df_prc = dd.from_pandas(df_prc, npartitions=npartitions)
 
         print("Perform the groupby and aggregation in parallel.")
-        df_combined_agg = df_combined.groupby('EMPI').agg(agg_dict)
+        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
+        df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
 
         print("Convert splits to Dask DataFrame.")
         train_df = dd.from_pandas(train_df, npartitions=npartitions)
@@ -455,14 +480,16 @@ def main(use_dask=False):
         test_df = dd.from_pandas(test_df, npartitions=npartitions)
     else:
         print("Perform groupby and aggregation using pandas.")
-        df_combined_agg = df_combined.groupby('EMPI').agg(agg_dict)
+        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
+        df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
 
-    print("Number of diagnoses and procedures before or on Index, after aggregation:", len(df_combined_agg))
+    print("Number of diagnoses before or on Index, after aggregation:", len(df_dia_agg))
+    print("Number of procedures before or on Index, after aggregation:", len(df_prc_agg))
 
     print("Merge outcomes splits with aggregated diagnoses.")
-    merged_train_df = train_df.merge(df_combined_agg, on='EMPI', how='inner')
-    merged_validation_df = validation_df.merge(df_combined_agg, on='EMPI', how='inner')
-    merged_test_df = test_df.merge(df_combined_agg, on='EMPI', how='inner')
+    merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
+    merged_validation_df = validation_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
+    merged_test_df = test_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
 
     print("Select numeric columns and drop EMPI using Pandas.")
     numeric_train_df = merged_train_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
@@ -480,7 +507,7 @@ def main(use_dask=False):
         json.dump(column_names, file)
 
     print("Clean up unused dataframes.")
-    del df_dia, df_prc, df_combined_agg
+    del df_dia, df_prc, df_dia_agg, df_prc_agg
     gc.collect()
     
     if use_dask:
