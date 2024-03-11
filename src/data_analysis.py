@@ -13,7 +13,7 @@ def format_icd_code(icd_code):
     # # Convert the ICD code to a string, remove any dots, and trailing spaces
     # return str(icd_code).replace('.', '').lstrip('0').rstrip()
 
-def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd10_txt_df):
+def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd10_txt_df, cpt_df, cpt_txt_df):
     formatted_icd_code = format_icd_code(icd_code)
     try:
         if code_type.upper() == 'ICD9':
@@ -30,6 +30,13 @@ def get_icd_description(icd_code, code_type, icd9_df, icd10_df, icd9_txt_df, icd
             elif formatted_icd_code in icd10_df.index:
                 result = icd10_df.loc[formatted_icd_code, 'LONG DESCRIPTION (VALID ICD-10 FY2024)']
                 return result if isinstance(result, str) else result.iloc[0]
+        elif code_type.upper() == 'CPT':
+            if formatted_icd_code in cpt_df.index:
+                result = cpt_df.loc[formatted_icd_code, 'Description']
+                return result if isinstance(result, str) else result.iloc[0]
+            elif formatted_icd_code in cpt_txt_df.index:
+                result = cpt_txt_df.loc[formatted_icd_code, 'long_description']
+                return result if isinstance(result, str) else result.iloc[0]       
     except KeyError:
         # Log the error or print a message if needed
         pass
@@ -43,6 +50,33 @@ def extract_icd_info(col_name):
     code = parts[0]
     code_type = 'ICD10' if 'ICD10' in parts[1] else 'ICD9'
     return code, code_type
+
+def load_cpt_codes(file_path, cpt_txt_file_path):
+    # Read the file with tab delimiter and specify the header
+    cpt_df = pd.read_csv(file_path, sep="\t", header=0, usecols=['Code', 'Description'])
+
+    # Convert code column to string to ensure proper matching
+    cpt_df['Code'] = cpt_df['Code'].astype(str)
+
+    # Set the 'Code' column as the index for fast lookup
+    cpt_df.set_index('Code', inplace=True)
+
+    # Apply the format_icd_code function to the index
+    cpt_df.index = cpt_df.index.map(format_icd_code)
+
+    # Load the CPT.txt file with explicit encoding
+    cpt_txt_df = pd.read_csv(cpt_txt_file_path, sep=',', header=None, usecols=[0, 3], names=['CPTcode', 'long_description'], encoding='latin1')
+
+    # Convert code column to string to ensure proper matching
+    cpt_txt_df['CPTcode'] = cpt_txt_df['CPTcode'].astype(str)
+
+    # Set the 'CPTcode' column as the index for fast lookup
+    cpt_txt_df.set_index('CPTcode', inplace=True)
+
+    # Apply the format_icd_code function to the index
+    cpt_txt_df.index = cpt_txt_df.index.map(format_icd_code)
+
+    return cpt_df, cpt_txt_df
 
 print("Loading ICD .csv files")
 # Load the ICD-9 DataFrame with the correct columns
@@ -101,6 +135,12 @@ icd10_txt_df.set_index('ICD10code', inplace=True)
 icd9_txt_df.index = icd9_txt_df.index.astype(str).map(format_icd_code)
 icd10_txt_df.index = icd10_txt_df.index.astype(str).map(format_icd_code)
 
+print("Loading CPT codes.")
+
+# Load the CPT codes into a DataFrame
+cpt_codes_df, cpt_txt_df = load_cpt_codes('data/2024_DHS_Code_List_Addendum_03_01_2024.txt', 'data/CPT.txt')
+
+print("Loading data splits")
 # Load the preprocessed tensor
 loaded_train_dataset = torch.load('train_dataset.pt')
 loaded_validation_dataset = torch.load('validation_dataset.pt')
@@ -121,7 +161,7 @@ print("Validation Data Dimensions:", df_validation.shape)
 print("Test Data Dimensions:", df_test.shape)
 
 # Save the training data to disk
-df_train.to_csv('training_data.csv', index=False)
+#df_train.to_csv('training_data.csv', index=False)
 
 # Print dataset descriptions
 print("Training Dataset Description:\n", df_train.describe())
@@ -160,25 +200,32 @@ df_train_summary['Description'] = df_train_summary.index.map(
         icd9_df,
         icd10_df,
         icd9_txt_df,
-        icd10_txt_df
+        icd10_txt_df,
+        cpt_codes_df,
+        cpt_txt_df
     )
 )
+
+# Save as csv
+df_train_summary.to_csv('df_train_summary.csv')
 
 # Then you can sort by 'mean' and proceed with the mapping for descriptions.
 df_train_summary_sorted = df_train_summary.sort_values(by='mean', ascending=False)
 
 # Save to HTML
 # Assuming `df_train_summary_sorted` is your final DataFrame
-title = "Summary statistics of one-hot encoded diagnoses and procedures before or on index date, in training data (n=36439)"
+title = "Summary statistics of one-hot encoded diagnoses and procedures in training data"
+subtitle = "(n=36439, 704 procedures + 982 diagnoses = 1686 one-hot encoded features)"
 
 # Add HTML for the title
 html_title = f"<h2>{title}</h2>"
+html_subtitle = f"<h3>{subtitle}</h3>"
 
 # Convert DataFrame to HTML
 df_train_summary_html = df_train_summary_sorted.to_html()
 
 # Combine the title HTML with the DataFrame HTML
-full_html = html_title + df_train_summary_html
+full_html = html_title + html_subtitle + df_train_summary_html
 
 # Write the combined HTML to a file
 with open('df_train_summary_statistics.html', 'w') as f:

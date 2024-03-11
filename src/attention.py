@@ -191,6 +191,12 @@ def save_attention_maps_to_html(attention_maps, feature_names, filename):
     # Create a DataFrame to represent the attention data
     df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
 
+    # Load the df_train_summary.csv file
+    df_train_summary = pd.read_csv('df_train_summary.csv')
+
+    # Merge the attention data with the descriptions from df_train_summary
+    df = pd.merge(df, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+
     # Sort the DataFrame by the attention weights in descending order
     df = df.sort_values(by='Attention Weight', ascending=False)
 
@@ -216,6 +222,13 @@ def save_top_feature_values_to_html(top_feature_value_attention_weights, filenam
         if 'HbA1c < 7.0%' in outcome_values:
             for (value, weight) in outcome_values['HbA1c < 7.0%'].items():
                 df_low = df_low.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
+
+    # Load the df_train_summary.csv file
+    df_train_summary = pd.read_csv('df_train_summary.csv')
+
+    # Merge the attention data with the descriptions from df_train_summary
+    df_high = pd.merge(df_high, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+    df_low = pd.merge(df_low, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
 
     # Sort the DataFrames by attention weights in descending order
     df_high = df_high.sort_values(by='Attention Weight', ascending=False)
