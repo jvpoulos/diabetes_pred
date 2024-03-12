@@ -12,13 +12,13 @@ import logging
 import json
 import torchvision
 import torchvision.transforms
-from torch.profiler import profile, record_function, ProfilerActivity
 import wandb
 import random
 import numpy as np
 from tqdm import tqdm
 import re
 import pickle
+from model_utils import CustomDataset
 
 # Create a logger
 logger = logging.getLogger()
@@ -97,18 +97,6 @@ def apply_mixup_numerical(data, labels, alpha=0.2):
     labels_a, labels_b = labels, labels[index]
     return mixed_data, labels_a, labels_b, lam
 
-class CustomDataset(Dataset):
-    def __init__(self, features, labels):
-        self.features = features
-        self.labels = labels
-
-    def __len__(self):
-        return len(self.features)
-
-    def __getitem__(self, idx):
-        # Since features and labels are already tensors, no conversion is needed
-        return self.features[idx], self.labels[idx]
-
 def plot_auroc(train_aurocs, val_aurocs, hyperparameters, plot_dir='auroc_plots'):
     os.makedirs(plot_dir, exist_ok=True)
     plt.figure()
@@ -150,66 +138,57 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     true_labels = []
     predictions = []
 
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-             profile_memory=True, record_shapes=True) as prof:
+    for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
+        optimizer.zero_grad()
 
-        for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
-            optimizer.zero_grad()
+        # Extracting categorical and numerical features based on their indices
+        categorical_features = features[:, binary_feature_indices].to(device)
+        categorical_features = categorical_features.long()  # Convert categorical_features to long type
+        numerical_features = features[:, numerical_feature_indices].to(device)
+        labels = labels.to(device)
 
-            # Extracting categorical and numerical features based on their indices
-            categorical_features = features[:, binary_feature_indices].to(device)
-            categorical_features = categorical_features.long()  # Convert categorical_features to long type
-            numerical_features = features[:, numerical_feature_indices].to(device)
-            labels = labels.to(device)
+        # Ensure variables are initialized
+        lam = 1.0  # Default value for lam
+        labels_a = labels.clone()  # Default values for labels_a and labels_b
+        labels_b = labels.clone()
 
-            # Ensure variables are initialized
-            lam = 1.0  # Default value for lam
-            labels_a = labels.clone()  # Default values for labels_a and labels_b
-            labels_b = labels.clone()
+        # Initialize augmented_cat and augmented_num before the if-else blocks
+        augmented_cat, augmented_num = None, None
 
-            # Initialize augmented_cat and augmented_num before the if-else blocks
-            augmented_cat, augmented_num = None, None
+        # Apply mixup or cutmix augmentation if enabled
+        if use_mixup and np.random.rand() < mixup_alpha:
+            combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        elif use_cutmix and np.random.rand() < cutmix_prob:
+            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        else:
+            augmented_cat = categorical_features
+            augmented_num = numerical_features
 
-            # Apply mixup or cutmix augmentation if enabled
-            if use_mixup and np.random.rand() < mixup_alpha:
-                combined_features = torch.cat((categorical_features, numerical_features), dim=1)
-                augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
-                augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
-                augmented_num = augmented_data[:, len(binary_feature_indices):]
-            elif use_cutmix and np.random.rand() < cutmix_prob:
-                augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
-                augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
-                augmented_num = augmented_data[:, len(binary_feature_indices):]
-            else:
-                augmented_cat = categorical_features
-                augmented_num = numerical_features
+        # Forward pass through the model
+        outputs = model(augmented_cat, augmented_num).squeeze()
 
-            # Forward pass through the model
-            outputs = model(augmented_cat, augmented_num).squeeze()
+        # Calculate loss
+        if use_mixup or use_cutmix:
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+        else:
+            loss = criterion(outputs, labels)
 
-            # Calculate loss
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-            else:
-                loss = criterion(outputs, labels)
+        # Backward pass and optimization step
+        loss.backward()
+        optimizer.step()
 
-            # Backward pass and optimization step
-            loss.backward()
-            optimizer.step()
+        # Accumulate loss
+        total_loss += loss.item() * features.size(0)
+        torch.cuda.empty_cache()
 
-            # Accumulate loss
-            total_loss += loss.item() * features.size(0)
-            torch.cuda.empty_cache()
-
-            # Accumulate true labels and predictions for AUROC calculation
-            true_labels.extend(labels.cpu().numpy())
-            predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model
-
-    print("CPU Memory Usage:")
-    print(prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=10))
-
-    print("CUDA Memory Usage:")
-    print(prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=10))
+        # Accumulate true labels and predictions for AUROC calculation
+        true_labels.extend(labels.cpu().numpy())
+        predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model
 
     # Calculate average loss
     average_loss = total_loss / len(train_loader.dataset)
@@ -337,27 +316,49 @@ def main(args):
     print(f"Using device: {device}")
 
     # Initialize model, criterion, optimizer here with the current set of hyperparameters
-    model = TabTransformer(
-        categories=categories,  # tuple containing the number of unique values within each category
-        num_continuous=len(numerical_feature_indices),              # number of continuous values
-        dim=args.dim,                                               # dimension, paper set at 32
-        dim_out=1,                                                  # binary prediction, but could be anything
-        depth=args.depth,                                           # depth, paper recommended 6
-        heads=args.heads,                                           # heads, paper recommends 8
-        attn_dropout=args.attn_dropout,                             # post-attention dropout
-        ff_dropout=args.ff_dropout ,                                # feed forward dropout
-        mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
-        mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-    ).to(device) if args.model_type == 'TabTransformer' else FTTransformer(
-        categories = categories,      # tuple containing the number of unique values within each category
-        num_continuous = len(numerical_feature_indices),  # number of continuous values
-        dim = args.dim,                     # dimension, paper set at 192
-        dim_out = 1,                        # binary prediction, but could be anything
-        depth = args.depth,                          # depth, paper recommended 3
-        heads = args.heads,                          # heads, paper recommends 8
-        attn_dropout = args.attn_dropout,   # post-attention dropout, paper recommends 0.2
-        ff_dropout = args.ff_dropout                   # feed forward dropout, paper recommends 0.1
-    ).to(device)
+    if args.model_type == 'TabTransformer':
+        model = TabTransformer(
+            categories=categories,  # tuple containing the number of unique values within each category
+            num_continuous=len(numerical_feature_indices),              # number of continuous values
+            dim=args.dim,                                               # dimension, paper set at 32
+            dim_out=1,                                                  # binary prediction, but could be anything
+            depth=args.depth,                                           # depth, paper recommended 6
+            heads=args.heads,                                           # heads, paper recommends 8
+            attn_dropout=args.attn_dropout,                             # post-attention dropout
+            ff_dropout=args.ff_dropout,                                 # feed forward dropout
+            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
+            mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+        ).to(device)
+    elif args.model_type == 'FTTransformer':
+        model = FTTransformer(
+            categories=categories,                                      # tuple containing the number of unique values within each category
+            num_continuous=len(numerical_feature_indices),              # number of continuous values
+            dim=args.dim,                                               # dimension, paper set at 192
+            dim_out=1,                                                  # binary prediction, but could be anything
+            depth=args.depth,                                           # depth, paper recommended 3
+            heads=args.heads,                                           # heads, paper recommends 8
+            attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
+            ff_dropout=args.ff_dropout                                  # feed forward dropout, paper recommends 0.1
+        ).to(device)
+    elif args.model_type == 'Transformer':
+        model = torch.nn.Transformer(
+            d_model=args.dim,                                           # embedding dimension
+            nhead=args.heads,                                           # number of attention heads
+            num_encoder_layers=6,                                       # number of encoder layers
+            num_decoder_layers=6,                                       # number of decoder layers
+            dim_feedforward=2048,                                       # dimension of the feedforward network
+            dropout=0.1,                                                # dropout rate
+            activation=torch.nn.ReLU(),                                 # activation function
+            custom_encoder=None,                                        # custom encoder
+            custom_decoder=None,                                        # custom decoder
+            layer_norm_eps=1e-05,                                       # layer normalization epsilon
+            batch_first=False,                                          # if True, input and output tensors are provided as (batch, seq, feature)
+            norm_first=False,                                           # if True, layer normalization is done before self-attention
+            device=device,                                              # device to run the model on
+            dtype=None                                                  # data type
+        ).to(device)
+    else:
+        raise ValueError(f"Invalid model type: {args.model_type}")
 
     # Using multiple GPUs if available
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
@@ -413,7 +414,7 @@ def main(args):
     train_losses, train_aurocs, val_losses, val_aurocs = load_performance_history(performance_file_name)
 
     # Add early stopping parameters
-    best_val_loss = float('inf')
+    best_val_auroc = float('inf')
     patience_counter = 0
     early_stopping_patience = args.early_stopping_patience  # assuming this argument is added to the parser
 
@@ -441,14 +442,14 @@ def main(args):
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
         # Check for early stopping conditions
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_auroc < best_val_auroc:
+            best_val_auroc = val_auroc
             patience_counter = 0
             # Save the best model
             best_model_wts = copy.deepcopy(model.state_dict())
         else:
             patience_counter += 1
-            print(f"No improvement in validation loss for {patience_counter} epochs.")
+            print(f"No improvement in validation AUROC for {patience_counter} epochs.")
             if patience_counter >= early_stopping_patience:
                 print(f"Stopping early at epoch {epoch+1}")
                 break
@@ -501,7 +502,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['TabTransformer', 'FTTransformer'],
+                        choices=['Transformer','TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
@@ -539,5 +540,20 @@ if __name__ == "__main__":
         args.depth = args.depth if args.depth is not None else 3
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
+    elif args.model_type == 'Transformer':
+        if args.dim is None:
+            args.dim = 512  # Default for FTTransformer
+        args.heads = args.heads if args.heads is not None else 8
+        # args.num_encoder_layers = 6
+        # args.num_decoder_layers = 6
+        # args.dim_feedforward = 2048
+        # args.dropout = 0.1
+        # args.activation = torch.nn.ReLU()
+        # args.custom_encoder = None
+        # args.custom_decoder = None
+        # args.layer_norm_eps = 1e-05
+        # args.batch_first = False
+        # args.norm_first = False
+        # args.bias = True
 
     main(args)

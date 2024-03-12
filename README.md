@@ -112,14 +112,14 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 $ python3 src/data_analysis.py
 ```
 
-3. Train and evaluate transformer ('TabTransformer' or 'FTTransformer'). Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path` :
+3. Train and evaluate transformer ('Transformer', 'TabTransformer', or 'FTTransformer'). Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path` :
 
 ```bash
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 6 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 8 --learning_rate 0.1 --epochs 25 --early_stopping_patience 10 --use_cutmix --model_path 'model_weights/FTTransformer_dim128_adr0.1_A1cGreaterThan7_bs8_lr0.1_ep13_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' 
-# python3 src/train.py --model_type FTTransformer --attn_dropout 0.0 --ff_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16--epochs 100 --early_stopping_patience 100 # model to overfit with
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 6 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 12 --learning_rate 0.1 --epochs 25 --early_stopping_patience 10 --use_cutmix --model_path 'model_weights/FTTransformer_dim128_adr0.1_A1cGreaterThan7_bs8_lr0.1_ep13_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' 
+# python3 src/train.py --model_type FTTransformer --dim 32 --depth 2 --heads 3 --attn_dropout 0.0 --ff_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 32 --epochs 100 --early_stopping_patience 100 # model to overfit with
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:

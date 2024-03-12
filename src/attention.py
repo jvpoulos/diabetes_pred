@@ -11,60 +11,7 @@ import os
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
-
-def fix_state_dict(state_dict):
-    new_state_dict = {}
-    for k, v in state_dict.items():
-        name = k[7:] if k.startswith('module.') else 'module.' + k  # Adjust keys
-        new_state_dict[name] = v
-    return new_state_dict
-
-class CustomDataset(Dataset):
-    def __init__(self, features, labels):
-        self.features = features
-        self.labels = labels
-
-    def __len__(self):
-        return len(self.features)
-
-    def __getitem__(self, idx):
-        # Since features and labels are already tensors, no conversion is needed
-        return self.features[idx], self.labels[idx]
-
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous):
-
-    if model_type == 'TabTransformer':
-        model = TabTransformer(
-            categories=categories,  # tuple containing the number of unique values within each category
-            num_continuous=num_continuous,                              # number of continuous values
-            dim=dim,                                               # dimension, paper set at 32
-            dim_out=1,                                                  # binary prediction, but could be anything
-            depth=depth,                                           # depth, paper recommended 6
-            heads=heads,                                           # heads, paper recommends 8
-            attn_dropout=attn_dropout,                             # post-attention dropout
-            ff_dropout=ff_dropout ,                                # feed forward dropout
-            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
-            mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-        )
-    elif model_type == 'FTTransformer':
-            model = FTTransformer(
-            categories = categories,      # tuple containing the number of unique values within each category
-            num_continuous = num_continuous,  # number of continuous values
-            dim = dim,                     # dimension, paper set at 192
-            dim_out = 1,                        # binary prediction, but could be anything
-            depth = depth,                          # depth, paper recommended 3
-            heads = heads,                          # heads, paper recommends 8
-            attn_dropout = attn_dropout,   # post-attention dropout, paper recommends 0.2
-            ff_dropout = ff_dropout                   # feed forward dropout, paper recommends 0.1
-        )
-    else:
-        raise ValueError("Invalid model type. Choose 'TabTransformer' or 'FTTransformer'.")
-
-    # Load the state dict with fix_state_dict applied
-    state_dict = torch.load(model_path)
-    model.load_state_dict(fix_state_dict(state_dict))
-    model.eval()
-    return model
+from model_utils import load_model, CustomDataset
 
 def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, device):
     model.eval()
@@ -252,7 +199,7 @@ def main():
     parser = argparse.ArgumentParser(description='Extract attention maps.')
     parser.add_argument('--dataset_type', type=str, choices=['train','validation'], required=True, help='Specify dataset type for evaluation')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['TabTransformer', 'FTTransformer'],
+                        choices=['Transformer','TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
@@ -282,6 +229,21 @@ def main():
         args.depth = args.depth if args.depth is not None else 3
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
+    elif args.model_type == 'Transformer':
+        if args.dim is None:
+            args.dim = 512  # Default for FTTransformer
+        args.heads = args.heads if args.heads is not None else 8
+        # args.num_encoder_layers = 6
+        # args.num_decoder_layers = 6
+        # args.dim_feedforward = 2048
+        # args.dropout = 0.1
+        # args.activation = torch.nn.ReLU()
+        # args.custom_encoder = None
+        # args.custom_decoder = None
+        # args.layer_norm_eps = 1e-05
+        # args.batch_first = False
+        # args.norm_first = False
+        # args.bias = True
 
     print("Loading dataset...")
     if args.dataset_type == 'train':
@@ -335,11 +297,6 @@ def main():
     print("Loading model...")
     model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
     print("Model loaded.")
-
-    # # Using multiple GPUs if available
-    # if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-    #     print(f"Using {torch.cuda.device_count()} GPUs!")
-    #     model = nn.DataParallel(model)
 
     model = model.to(device)  # Move the model to the appropriate device
     print("Computing attention maps...")
