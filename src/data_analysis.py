@@ -65,7 +65,7 @@ def load_cpt_codes(file_path, cpt_txt_file_path):
     cpt_df.index = cpt_df.index.map(format_icd_code)
 
     # Load the CPT.txt file with explicit encoding
-    cpt_txt_df = pd.read_csv(cpt_txt_file_path, sep=',', header=None, usecols=[0, 3], names=['CPTcode', 'long_description'], encoding='latin1')
+    cpt_txt_df = pd.read_csv(cpt_txt_file_path, sep='\t', header=None, usecols=[0, 3], names=['CPTcode', 'long_description'], encoding='latin1')
 
     # Convert code column to string to ensure proper matching
     cpt_txt_df['CPTcode'] = cpt_txt_df['CPTcode'].astype(str)

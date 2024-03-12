@@ -82,7 +82,7 @@ $ source env/bin/activate #Activate virtualenv for linux/MacOS
 $ pip3 install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html
 ```
 
-4. Install dependencies for your project from `requirements.txt` file:
+4. Install other dependencies from `requirements.txt` file:
 ```bash
 $ pip3 install -r requirements.txt
 ```
@@ -119,7 +119,7 @@ $ python3 src/data_analysis.py
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
 $ python3 src/train.py --model_type FTTransformer --dim 128 --depth 6 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 8 --learning_rate 0.1 --epochs 25 --early_stopping_patience 10 --use_cutmix --model_path 'model_weights/FTTransformer_dim128_adr0.1_A1cGreaterThan7_bs8_lr0.1_ep13_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' 
-# 1. pre-trained with cutmix, stopped early at epoch 14; 2. mixup, early stop at 12; 3. cutmix, early_stopping 10 -> 15, expochs 15->20, stopped at 20; 4; cutmix, epochs 20 --> 25, lr 0.001 --> 0.01, stopped at 21; 5. cutmix, lr: 0.01 to 0.05, early stop at 19; 6. cutmix, lr:0.05 to 0.01, batch size 8 to 16; 7. mixup, batch size 16 to 32, epochs 25 to 50, early stopping 10, early stopped at 12; 8. cutmix, epochs 50 -> 25, early stop at 21; 9. cutmix, cutmix prob 0.3 -> 0.2, early stop at 22; 10. cutmix, cutmix lambda 10 -> 1, early stop at 9. 11. cutmix, lambda 1 --> 10, cutmix prob 0.2 -> 0.1, early stop at 15; 12. mixup, alpha 0.2 -> 0.1, early stop at 6; 13. no augmentation, epochs 25 -> 100, early stopped at 17 14. cutmix, cutmix prob 0.2, cutmix lamba 10, attn_dropout 0.2 to 0.1, early stopped at 21; 15. cutmix, cutmix prob 0.2, cutmix lamba 0.2, early stop at 11; 16. batch size 32->16, dim 192 -> 256, stopped early at 7; 16. batch size 16 -> 8, dim 256 -> 384, early stop at 11; 17. dim 384 -> 512, early stop at 24; 18. dim 512->640, early stop at 14; 19. cutmix, cutmox prob. 0.3, cutmix lambda 1, dim 640 -> 512, early stop at 20; 20. attn_dropout, 0.1 -> 0, early stop at 20; 21. attn_dropout 0 -> 0.1, cutmix_prob 0.3 -> 0.2, cutmix alpha 10, depth 3 ->6, early stop at 17; 22. learning rate 0.01 -> 0.1, depth 6 ->3, early stop at 18; depth 3 -> 4, early stop at 21; depth 4 -> 5, early stop at 24; depth 5 -> 6, dim 512 -> 128, early stop at 13
+# python3 src/train.py --model_type FTTransformer --attn_dropout 0.0 --ff_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16--epochs 100 --early_stopping_patience 100 # model to overfit with
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:

@@ -12,6 +12,8 @@ import logging
 import json
 import torchvision
 import torchvision.transforms
+from torch.profiler import profile, record_function, ProfilerActivity
+import wandb
 import random
 import numpy as np
 from tqdm import tqdm
@@ -56,9 +58,9 @@ def load_performance_history(performance_file_name):
     if os.path.exists(performance_file_name):
         with open(performance_file_name, 'rb') as f:
             history = pickle.load(f)
-        return history.get('train_losses', []), history.get('val_losses', []), history.get('val_aurocs', [])
+        return history.get('train_losses', []), history.get('train_aurocs', []), history.get('val_losses', []), history.get('val_aurocs', [])
     else:
-        return [], [], []
+        return [], [], [], []
 
 def extract_epoch(filename):
     # Extracts epoch number from filename using a regular expression
@@ -107,13 +109,14 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def plot_auroc(val_aurocs, hyperparameters, plot_dir='auroc_plots'):
+def plot_auroc(train_aurocs, val_aurocs, hyperparameters, plot_dir='auroc_plots'):
     os.makedirs(plot_dir, exist_ok=True)
     plt.figure()
+    plt.plot(train_aurocs, label='Training AUROC')
     plt.plot(val_aurocs, label='Validation AUROC')
     plt.xlabel('Epochs')
     plt.ylabel('AUROC')
-    plt.title('Validation AUROC Over Epochs')
+    plt.title('Training and Validation AUROC Over Epochs')
     plt.legend()
     
     # Construct filename based on hyperparameters
@@ -144,58 +147,79 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
     model.train()
     total_loss = 0
 
-    for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
-        optimizer.zero_grad()
+    true_labels = []
+    predictions = []
 
-        # Extracting categorical and numerical features based on their indices
-        categorical_features = features[:, binary_feature_indices].to(device)
-        categorical_features = categorical_features.long()  # Convert categorical_features to long type
-        numerical_features = features[:, numerical_feature_indices].to(device)
-        labels = labels.to(device)
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+             profile_memory=True, record_shapes=True) as prof:
 
-        # Ensure variables are initialized
-        lam = 1.0  # Default value for lam
-        labels_a = labels.clone()  # Default values for labels_a and labels_b
-        labels_b = labels.clone()
+        for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
+            optimizer.zero_grad()
 
-        # Initialize augmented_cat and augmented_num before the if-else blocks
-        augmented_cat, augmented_num = None, None
+            # Extracting categorical and numerical features based on their indices
+            categorical_features = features[:, binary_feature_indices].to(device)
+            categorical_features = categorical_features.long()  # Convert categorical_features to long type
+            numerical_features = features[:, numerical_feature_indices].to(device)
+            labels = labels.to(device)
 
-        # Apply mixup or cutmix augmentation if enabled
-        if use_mixup and np.random.rand() < mixup_alpha:
-            combined_features = torch.cat((categorical_features, numerical_features), dim=1)
-            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
-            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
-            augmented_num = augmented_data[:, len(binary_feature_indices):]
-        elif use_cutmix and np.random.rand() < cutmix_prob:
-            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
-            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
-            augmented_num = augmented_data[:, len(binary_feature_indices):]
-        else:
-            augmented_cat = categorical_features
-            augmented_num = numerical_features
+            # Ensure variables are initialized
+            lam = 1.0  # Default value for lam
+            labels_a = labels.clone()  # Default values for labels_a and labels_b
+            labels_b = labels.clone()
 
-        # Forward pass through the model
-        outputs = model(augmented_cat, augmented_num).squeeze()
+            # Initialize augmented_cat and augmented_num before the if-else blocks
+            augmented_cat, augmented_num = None, None
 
-        # Calculate loss
-        if use_mixup or use_cutmix:
-            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-        else:
-            loss = criterion(outputs, labels)
+            # Apply mixup or cutmix augmentation if enabled
+            if use_mixup and np.random.rand() < mixup_alpha:
+                combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+                augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
+                augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+                augmented_num = augmented_data[:, len(binary_feature_indices):]
+            elif use_cutmix and np.random.rand() < cutmix_prob:
+                augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
+                augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+                augmented_num = augmented_data[:, len(binary_feature_indices):]
+            else:
+                augmented_cat = categorical_features
+                augmented_num = numerical_features
 
-        # Backward pass and optimization step
-        loss.backward()
-        optimizer.step()
+            # Forward pass through the model
+            outputs = model(augmented_cat, augmented_num).squeeze()
 
-        # Accumulate loss
-        total_loss += loss.item() * features.size(0)
-        torch.cuda.empty_cache()
+            # Calculate loss
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels)
+
+            # Backward pass and optimization step
+            loss.backward()
+            optimizer.step()
+
+            # Accumulate loss
+            total_loss += loss.item() * features.size(0)
+            torch.cuda.empty_cache()
+
+            # Accumulate true labels and predictions for AUROC calculation
+            true_labels.extend(labels.cpu().numpy())
+            predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model
+
+    print("CPU Memory Usage:")
+    print(prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=10))
+
+    print("CUDA Memory Usage:")
+    print(prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=10))
 
     # Calculate average loss
     average_loss = total_loss / len(train_loader.dataset)
     print(f'Average Training Loss: {average_loss:.4f}')
-    return average_loss
+
+    # Calculate AUROC on the training set
+    train_auroc = roc_auc_score(true_labels, predictions)
+    print(f'Training AUROC: {train_auroc:.4f}')
+
+    return average_loss, train_auroc
 
 def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
     model.eval()
@@ -218,7 +242,7 @@ def validate_model(model, validation_loader, criterion, device, binary_feature_i
             total_loss += loss.item()
 
             true_labels.extend(labels.cpu().numpy())  # Accumulate true labels
-            predictions.extend(torch.sigmoid(outputs).cpu().numpy())  # Accumulate predictions
+            predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model  # Accumulate predictions (logits applied in model)
 
     average_loss = total_loss / len(validation_loader)
     print(f'Average Validation Loss: {average_loss:.4f}')
@@ -269,7 +293,7 @@ def main(args):
     feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
 
     label_index = column_names.index(args.outcome)
-
+ 
     # Selecting features and labels
     train_features = dataset_tensor[:, feature_indices]
     train_labels = dataset_tensor[:, label_index]
@@ -278,9 +302,6 @@ def main(args):
     validation_dataset_tensor = validation_dataset.tensors[0]
     validation_features = validation_dataset_tensor[:, feature_indices]
     validation_labels = validation_dataset_tensor[:, label_index]
-
-    print(f"Unique train labels: {torch.unique(train_labels)}")
-    print(f"Unique validation labels: {torch.unique(validation_labels)}")
 
     # Save validation and training features to file (for attention.py)
     torch.save(train_features, 'train_features.pt')
@@ -374,13 +395,22 @@ def main(args):
     'mixup_alpha': args.mixup_alpha,
     'use_cutmix': 'true' if args.use_cutmix else 'false'
     }   
+
+    # start a new wandb run to track this script
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="diabetes_pred",
+        
+        # track hyperparameters and run metadata
+        config=hyperparameters
+    )
     
     # Constructing the file name from hyperparameters
     hyperparameters_str = '_'.join([f"{key}-{str(value).replace('.', '_')}" for key, value in hyperparameters.items()])
     performance_file_name = f"training_performance_{hyperparameters_str}.pkl"
 
     # Initialize losses
-    train_losses, val_losses, val_aurocs = load_performance_history(performance_file_name)
+    train_losses, train_aurocs, val_losses, val_aurocs = load_performance_history(performance_file_name)
 
     # Add early stopping parameters
     best_val_loss = float('inf')
@@ -397,14 +427,18 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
+        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
         val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
+        train_aurocs.append(train_auroc)
         val_losses.append(val_loss)
         val_aurocs.append(val_auroc)
-        print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Validation Loss: {val_loss}, Validation AUROC: {val_auroc}')
+        print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Training AUROC: {train_auroc}, Validation Loss: {val_loss}, Validation AUROC: {val_auroc}')
+
+        # log metrics to wandb
+        wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
         # Check for early stopping conditions
         if val_loss < best_val_loss:
@@ -443,10 +477,11 @@ def main(args):
 
     # After training, plot the losses and save them to file
     plot_losses(train_losses, val_losses, hyperparameters)
-    plot_auroc(val_aurocs, hyperparameters)
+    plot_auroc(train_aurocs, val_aurocs, hyperparameters)
 
     losses_and_aurocs = {
     'train_losses': train_losses,
+    'train_aurocs': train_aurocs,
     'val_losses': val_losses,
     'val_aurocs': val_aurocs
 }
