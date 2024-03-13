@@ -1,6 +1,7 @@
 import json
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 
 class CustomDataset(Dataset):
@@ -31,7 +32,7 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
         )
     elif model_type == 'FTTransformer':
-            model = FTTransformer(
+        model = FTTransformer(
             categories = categories,      # tuple containing the number of unique values within each category
             num_continuous = num_continuous,  # number of continuous values
             dim = dim,                     # dimension, paper set at 192
@@ -42,22 +43,22 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             ff_dropout = ff_dropout                   # feed forward dropout, paper recommends 0.1
         )
     elif args.model_type == 'Transformer':
-    model = torch.nn.Transformer(
-        d_model=dim,                                           # embedding dimension
-        nhead=heads,                                           # number of attention heads
-        num_encoder_layers=6,                                       # number of encoder layers
-        num_decoder_layers=6,                                       # number of decoder layers
-        dim_feedforward=2048,                                       # dimension of the feedforward network
-        dropout=0.1,                                                # dropout rate
-        activation=torch.nn.ReLU(),                                 # activation function
-        custom_encoder=None,                                        # custom encoder
-        custom_decoder=None,                                        # custom decoder
-        layer_norm_eps=1e-05,                                       # layer normalization epsilon
-        batch_first=False,                                          # if True, input and output tensors are provided as (batch, seq, feature)
-        norm_first=False,                                           # if True, layer normalization is done before self-attention
-        device=device,                                              # device to run the model on
-        dtype=None                                                  # data type
-    )
+        model = torch.nn.Transformer(
+            d_model=dim,                                           # embedding dimension
+            nhead=heads,                                           # number of attention heads
+            num_encoder_layers=6,                                       # number of encoder layers
+            num_decoder_layers=6,                                       # number of decoder layers
+            dim_feedforward=2048,                                       # dimension of the feedforward network
+            dropout=0.1,                                                # dropout rate
+            activation=torch.nn.ReLU(),                                 # activation function
+            custom_encoder=None,                                        # custom encoder
+            custom_decoder=None,                                        # custom decoder
+            layer_norm_eps=1e-05,                                       # layer normalization epsilon
+            batch_first=False,                                          # if True, input and output tensors are provided as (batch, seq, feature)
+            norm_first=False,                                           # if True, layer normalization is done before self-attention
+            device=device,                                              # device to run the model on
+            dtype=None                                                  # data type
+        )
     else:
         raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer' or 'FTTransformer'.")
 

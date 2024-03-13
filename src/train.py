@@ -369,7 +369,6 @@ def main(args):
     # Check if model_path is specified and exists
     if args.model_path and os.path.isfile(args.model_path):
         epoch_counter = extract_epoch(args.model_path)
-        # Use the newly defined function for loading weights
         load_model_weights(model, args.model_path)
         print(f"Loaded model from {args.model_path} starting from epoch {epoch_counter}")
     else:
@@ -398,13 +397,28 @@ def main(args):
     }   
 
     # start a new wandb run to track this script
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="diabetes_pred",
-        
-        # track hyperparameters and run metadata
-        config=hyperparameters
-    )
+    if args.run_id:
+        print("Resuming a wandb run.")
+        wandb.init(id=args.run_id, project="diabetes_pred", resume="allow")
+
+        # Restore the model checkpoint
+        checkpoint = torch.load(wandb.restore("model_checkpoint.tar").name)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        epoch_counter = checkpoint["epoch"]
+        train_losses = checkpoint["train_losses"]
+        train_aurocs = checkpoint["train_aurocs"]
+        val_losses = checkpoint["val_losses"]
+        val_aurocs = checkpoint["val_aurocs"]
+    else:
+        print("Starting a new wandb run.")
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="diabetes_pred",
+            
+            # track hyperparameters and run metadata
+            config=hyperparameters
+        )
     
     # Constructing the file name from hyperparameters
     hyperparameters_str = '_'.join([f"{key}-{str(value).replace('.', '_')}" for key, value in hyperparameters.items()])
@@ -442,7 +456,7 @@ def main(args):
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
         # Check for early stopping conditions
-        if val_auroc < best_val_auroc:
+        if val_auroc > best_val_auroc:
             best_val_auroc = val_auroc
             patience_counter = 0
             # Save the best model
@@ -463,19 +477,45 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_dim{args.heads}_dim{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
-            torch.save(model.state_dict(), model_filepath)
+            
+            # Save the model checkpoint
+            checkpoint = {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_losses": train_losses,
+                "train_aurocs": train_aurocs,
+                "val_losses": val_losses,
+                "val_aurocs": val_aurocs
+            }
+            torch.save(checkpoint, model_filepath)
+            wandb.save(model_filepath)
+            
             print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_dim{args.heads}_dim{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
-        torch.save(best_model_wts, best_model_filepath)
+        
+        # Save the best model checkpoint
+        best_checkpoint = {
+            "epoch": epoch + 1,
+            "model_state_dict": best_model_wts,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_losses": train_losses,
+            "train_aurocs": train_aurocs,
+            "val_losses": val_losses,
+            "val_aurocs": val_aurocs
+        }
+        torch.save(best_checkpoint, best_model_filepath)
+        wandb.save(best_model_filepath)
+        
         print(f"Best model saved as {best_model_filepath}")
-
+    
     # After training, plot the losses and save them to file
     plot_losses(train_losses, val_losses, hyperparameters)
     plot_auroc(train_aurocs, val_aurocs, hyperparameters)
@@ -485,7 +525,7 @@ def main(args):
     'train_aurocs': train_aurocs,
     'val_losses': val_losses,
     'val_aurocs': val_aurocs
-}
+    }
 
     # Define the directory path
     dir_path = 'losses'
@@ -516,6 +556,8 @@ if __name__ == "__main__":
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
+    parser.add_argument('--run_id', type=str, default=None,
+                    help='Optional Weights & Biases run ID.')
     parser.add_argument('--cutmix_prob', type=float, default=0.3, help='Probability to apply CutMix')
     parser.add_argument('--cutmix_alpha', type=float, default=10, help='Alpha value for the CutMix beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_mixup', action='store_true', help='Enable MixUp data augmentation')
@@ -557,3 +599,4 @@ if __name__ == "__main__":
         # args.bias = True
 
     main(args)
+    wandb.finish()
