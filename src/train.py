@@ -428,17 +428,17 @@ def main(args):
     train_losses, train_aurocs, val_losses, val_aurocs = load_performance_history(performance_file_name)
 
     # Add early stopping parameters
-    best_val_auroc = float('inf')
+    best_val_auroc = float('-inf')  # Initialize to negative infinity
     patience_counter = 0
     early_stopping_patience = args.early_stopping_patience  # assuming this argument is added to the parser
 
     # CutMix and mixup parameters
     use_cutmix = args.use_cutmix
-    cutmix_prob=args.cutmix_prob
-    cutmix_alpha=args.cutmix_alpha
+    cutmix_prob = args.cutmix_prob
+    cutmix_alpha = args.cutmix_alpha
 
-    use_mixup=args.use_mixup
-    mixup_alpha=args.mixup_alpha
+    use_mixup = args.use_mixup
+    mixup_alpha = args.mixup_alpha
 
     # Training loop
     for epoch in range(args.epochs):
@@ -450,6 +450,7 @@ def main(args):
         train_aurocs.append(train_auroc)
         val_losses.append(val_loss)
         val_aurocs.append(val_auroc)
+
         print(f'Epoch {epoch+1}/{args.epochs}, Training Loss: {train_loss}, Training AUROC: {train_auroc}, Validation Loss: {val_loss}, Validation AUROC: {val_auroc}')
 
         # log metrics to wandb

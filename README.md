@@ -118,7 +118,8 @@ $ python3 src/data_analysis.py
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 200 --early_stopping_patience 15 --use_cutmix --model_path 'model_weights/FTTransformer_dim128_dim3_dim8_dim0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep12_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' --run_id 'jvpoulos/diabetes_pred/yf0geuyq'
+$ python3 src/train.py --model_type FTTransformer --dim 128 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 200 --early_stopping_patience 15 --use_cutmix --cutmix_prob 0.2 --cutmix_alpha 1
+#--model_path 'model_weights/FTTransformer_dim128_dim3_dim8_dim0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep12_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' --run_id 'jvpoulos/diabetes_pred/yf0geuyq'
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
