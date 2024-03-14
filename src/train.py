@@ -18,7 +18,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import CustomDataset
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses
 
 # Create a logger
 logger = logging.getLogger()
@@ -40,96 +40,6 @@ console_handler.setFormatter(formatter)
 # Add the handlers to the logger
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
-
-def load_model_weights(model, saved_model_path):
-    model_state_dict = model.state_dict()
-    saved_state_dict = torch.load(saved_model_path)
-    for name, param in saved_state_dict.items():
-        if name in model_state_dict:
-            if model_state_dict[name].shape == param.shape:
-                model_state_dict[name].copy_(param)
-            else:
-                print(f"Skipping {name} due to size mismatch: model({model_state_dict[name].shape}) saved({param.shape})")
-        else:
-            print(f"Skipping {name} as it is not in the current model.")
-    model.load_state_dict(model_state_dict)
-
-def load_performance_history(performance_file_name):
-    if os.path.exists(performance_file_name):
-        with open(performance_file_name, 'rb') as f:
-            history = pickle.load(f)
-        return history.get('train_losses', []), history.get('train_aurocs', []), history.get('val_losses', []), history.get('val_aurocs', [])
-    else:
-        return [], [], [], []
-
-def extract_epoch(filename):
-    # Extracts epoch number from filename using a regular expression
-    match = re.search(r'ep(\d+)', filename)
-    if match:
-        return int(match.group(1))
-    return 0  # Default to 0 if not found
-
-def apply_cutmix_numerical(data, labels, beta=1.0):
-    lam = np.random.beta(beta, beta)
-    batch_size = data.size(0)
-    feature_count = data.size(1)
-    index = torch.randperm(batch_size).to(data.device)
-
-    # Determine the number of features to mix
-    mix_feature_count = int(feature_count * lam)
-
-    # Randomly choose the features to mix
-    mix_features_indices = torch.randperm(feature_count)[:mix_feature_count]
-
-    # Swap the chosen features for all examples in the batch
-    for i in range(batch_size):
-        data[i, mix_features_indices] = data[index[i], mix_features_indices]
-
-    labels_a, labels_b = labels, labels[index]
-    return data, labels_a, labels_b, lam
-
-def apply_mixup_numerical(data, labels, alpha=0.2):
-    lam = np.random.beta(alpha, alpha) if alpha > 0 else 1
-    batch_size = data.size(0)
-    index = torch.randperm(batch_size).to(data.device)
-
-    mixed_data = lam * data + (1 - lam) * data[index, :]
-    labels_a, labels_b = labels, labels[index]
-    return mixed_data, labels_a, labels_b, lam
-
-def plot_auroc(train_aurocs, val_aurocs, hyperparameters, plot_dir='auroc_plots'):
-    os.makedirs(plot_dir, exist_ok=True)
-    plt.figure()
-    plt.plot(train_aurocs, label='Training AUROC')
-    plt.plot(val_aurocs, label='Validation AUROC')
-    plt.xlabel('Epochs')
-    plt.ylabel('AUROC')
-    plt.title('Training and Validation AUROC Over Epochs')
-    plt.legend()
-    
-    # Construct filename based on hyperparameters
-    filename = '_'.join([f"{key}-{value}" for key, value in hyperparameters.items()]) + '_auroc.png'
-    filepath = os.path.join(plot_dir, filename)
-    
-    plt.savefig(filepath)
-    plt.close()
-
-def plot_losses(train_losses, val_losses, hyperparameters, plot_dir='loss_plots'):
-    os.makedirs(plot_dir, exist_ok=True)
-    plt.figure()
-    plt.plot(train_losses, label='Training Loss')
-    plt.plot(val_losses, label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss Over Epochs')
-    plt.legend()
-    
-    # Construct filename based on hyperparameters
-    filename = '_'.join([f"{key}-{value}" for key, value in hyperparameters.items()]) + '.png'
-    filepath = os.path.join(plot_dir, filename)
-    
-    plt.savefig(filepath)
-    plt.close()
 
 def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
     model.train()
@@ -230,6 +140,16 @@ def validate_model(model, validation_loader, criterion, device, binary_feature_i
     return average_loss, auroc
 
 def main(args):
+    # Set random seed for reproducibility
+    random.seed(args.random_seed)
+    np.random.seed(args.random_seed)
+    torch.manual_seed(args.random_seed)
+    torch.cuda.manual_seed_all(args.random_seed)
+
+    # Set deterministic and benchmark flags for PyTorch
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     # Load datasets
     train_dataset = torch.load('train_dataset.pt')
     validation_dataset = torch.load('validation_dataset.pt')
@@ -304,8 +224,8 @@ def main(args):
     train_data = CustomDataset(train_features, train_labels)
     validation_data = CustomDataset(validation_features, validation_labels)
 
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
-    validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, worker_init_fn=worker_init_fn)
+    validation_loader = DataLoader(validation_data, batch_size=args.batch_size, shuffle=False, worker_init_fn=worker_init_fn)
 
     categories = [2] * len(binary_feature_indices)
     print("Categories length:", len(categories))
@@ -478,7 +398,7 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
@@ -498,7 +418,7 @@ def main(args):
             print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
@@ -555,6 +475,7 @@ if __name__ == "__main__":
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
+    parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
     parser.add_argument('--wandb_path', type=str, default=None,
