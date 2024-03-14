@@ -402,7 +402,7 @@ def main(args):
         wandb.init(id=args.run_id, project="diabetes_pred", resume="allow")
 
         # Restore the model checkpoint
-        checkpoint = torch.load(wandb.restore("model_checkpoint.tar").name)
+        checkpoint = torch.load(wandb.restore(args.wandb_path).name)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         epoch_counter = checkpoint["epoch"]
@@ -556,6 +556,8 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--model_path', type=str, default=None,
+                    help='Optional path to the saved model file to load before training')
+    parser.add_argument('--wandb_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')
     parser.add_argument('--run_id', type=str, default=None,
                     help='Optional Weights & Biases run ID.')
