@@ -1,6 +1,7 @@
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
@@ -18,6 +19,14 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
+
+class InputProjection(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(InputProjection, self).__init__()
+        self.linear = nn.Linear(input_size, output_size)
+
+    def forward(self, x):
+        return self.linear(x)
 
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32

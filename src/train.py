@@ -1,6 +1,7 @@
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
@@ -18,30 +19,9 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, InputProjection
 
-# Create a logger
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-# Create handlers for both file and console
-file_handler = logging.FileHandler('train.log')
-console_handler = logging.StreamHandler()
-
-# Set logging level for both handlers
-file_handler.setLevel(logging.INFO)
-console_handler.setLevel(logging.INFO)
-
-# Create a logging format
-formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
-file_handler.setFormatter(formatter)
-console_handler.setFormatter(formatter)
-
-# Add the handlers to the logger
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
     model.train()
     total_loss = 0
 
@@ -80,13 +60,28 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
             augmented_num = numerical_features
 
         # Forward pass through the model
-        outputs = model(augmented_cat, augmented_num).squeeze()
+        if model_type == 'Transformer':
+            input_size = len(binary_feature_indices) + len(numerical_feature_indices)
+            input_projection = InputProjection(input_size, args.dim).to(device)
+            src = input_projection(torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1))
+            outputs = model(src=src, tgt=src)
+            outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
+        else:
+            outputs = model(augmented_cat, augmented_num).squeeze()
 
         # Calculate loss
         if use_mixup or use_cutmix:
-            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            outputs_flattened = outputs.view(-1)
+            if labels_a.ndim == 1:
+                labels_a = labels_a.unsqueeze(1)
+            if labels_b.ndim == 1:
+                labels_b = labels_b.unsqueeze(1)
+            loss = lam * criterion(outputs_flattened, labels_a.view(-1)) + (1 - lam) * criterion(outputs_flattened, labels_b.view(-1))
         else:
-            loss = criterion(outputs, labels)
+            outputs_flattened = outputs.view(-1)
+            if labels.ndim == 1:
+                labels = labels.unsqueeze(1)
+            loss = criterion(outputs_flattened, labels.view(-1))
 
         # Backward pass and optimization step
         loss.backward()
@@ -110,7 +105,7 @@ def train_model(model, train_loader, criterion, optimizer, device, use_cutmix, c
 
     return average_loss, train_auroc
 
-def validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices):
+def validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices):
     model.eval()
     total_loss = 0
 
@@ -125,9 +120,19 @@ def validate_model(model, validation_loader, criterion, device, binary_feature_i
             numerical_features = features[:, numerical_feature_indices].to(device)
             labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
-            outputs = model(categorical_features, numerical_features)
-            outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
-            loss = criterion(outputs, labels)  # Now both tensors have compatible shapes
+            if model_type == 'Transformer':
+                input_size = len(binary_feature_indices) + len(numerical_feature_indices)
+                input_projection = InputProjection(input_size, args.dim).to(device)
+                src = input_projection(torch.cat((categorical_features, numerical_features), dim=-1).unsqueeze(1))
+                outputs = model(src=src, tgt=src)
+                outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
+            else:
+                outputs = model(categorical_features, numerical_features)
+                outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
+            outputs_flattened = outputs.view(-1)
+            if labels.ndim == 1:
+                labels = labels.unsqueeze(1)
+            loss = criterion(outputs_flattened, labels.view(-1))
             total_loss += loss.item()
 
             true_labels.extend(labels.cpu().numpy())  # Accumulate true labels
@@ -261,21 +266,19 @@ def main(args):
             ff_dropout=args.ff_dropout                                  # feed forward dropout, paper recommends 0.1
         ).to(device)
     elif args.model_type == 'Transformer':
-        model = torch.nn.Transformer(
-            d_model=args.dim,                                           # embedding dimension
-            nhead=args.heads,                                           # number of attention heads
-            num_encoder_layers=6,                                       # number of encoder layers
-            num_decoder_layers=6,                                       # number of decoder layers
-            dim_feedforward=2048,                                       # dimension of the feedforward network
-            dropout=0.1,                                                # dropout rate
-            activation=torch.nn.ReLU(),                                 # activation function
-            custom_encoder=None,                                        # custom encoder
-            custom_decoder=None,                                        # custom decoder
-            layer_norm_eps=1e-05,                                       # layer normalization epsilon
-            batch_first=False,                                          # if True, input and output tensors are provided as (batch, seq, feature)
-            norm_first=False,                                           # if True, layer normalization is done before self-attention
-            device=device,                                              # device to run the model on
-            dtype=None                                                  # data type
+        model = nn.Transformer(
+            d_model=args.dim,
+            nhead=args.heads,
+            num_encoder_layers=args.num_encoder_layers,
+            num_decoder_layers=args.num_decoder_layers,
+            dim_feedforward=args.dim_feedforward,
+            dropout=args.dropout,
+            activation='relu',
+            layer_norm_eps=1e-5,
+            batch_first=True,
+            norm_first=False,
+            device=device,
+            dtype=getattr(torch, args.dtype)
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
@@ -347,10 +350,14 @@ def main(args):
     # Initialize losses
     train_losses, train_aurocs, val_losses, val_aurocs = load_performance_history(performance_file_name)
 
-    # Add early stopping parameters
+    # Initialize early stopping parameters
     best_val_auroc = float('-inf')  # Initialize to negative infinity
     patience_counter = 0
-    early_stopping_patience = args.early_stopping_patience  # assuming this argument is added to the parser
+        
+    if args.disable_early_stopping:
+        early_stopping_patience = float('inf')  # Effectively disable early stopping
+    else:
+        early_stopping_patience = args.early_stopping_patience  # Use the provided early stopping patience
 
     # CutMix and mixup parameters
     use_cutmix = args.use_cutmix
@@ -360,10 +367,12 @@ def main(args):
     use_mixup = args.use_mixup
     mixup_alpha = args.mixup_alpha
 
+    model_type = args.model_type
+
     # Training loop
     for epoch in range(args.epochs):
-        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
-        val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, binary_feature_indices, numerical_feature_indices)
+        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
+        val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
@@ -377,17 +386,18 @@ def main(args):
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
         # Check for early stopping conditions
-        if val_auroc > best_val_auroc:
-            best_val_auroc = val_auroc
-            patience_counter = 0
-            # Save the best model
-            best_model_wts = copy.deepcopy(model.state_dict())
-        else:
-            patience_counter += 1
-            print(f"No improvement in validation AUROC for {patience_counter} epochs.")
-            if patience_counter >= early_stopping_patience:
-                print(f"Stopping early at epoch {epoch+1}")
-                break
+        if not args.disable_early_stopping:
+            if val_auroc > best_val_auroc:
+                best_val_auroc = val_auroc
+                patience_counter = 0
+                # Save the best model
+                best_model_wts = copy.deepcopy(model.state_dict())
+            else:
+                patience_counter += 1
+                print(f"No improvement in validation AUROC for {patience_counter} epochs.")
+                if patience_counter >= early_stopping_patience:
+                    print(f"Stopping early at epoch {epoch+1}")
+                    break
 
     # Define the directory where model weights will be saved
     model_weights_dir = 'model_weights'
@@ -398,7 +408,7 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_dl{args.num_decoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
@@ -418,7 +428,7 @@ def main(args):
             print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_dl{args.num_decoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
@@ -470,10 +480,15 @@ if __name__ == "__main__":
     parser.add_argument('--heads', type=int, help='Number of attention heads.')
     parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
+    parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
+    parser.add_argument('--num_decoder_layers', type=float, default=6, help=' Number of sub-decoder-layers in the decoder')
+    parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
+    parser.add_argument('--disable_early_stopping', action='store_true', help='Disable early stopping')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--model_path', type=str, default=None,
@@ -487,6 +502,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_mixup', action='store_true', help='Enable MixUp data augmentation')
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
+    parser.add_argument('--dtype', type=str, default='float32', help='Data type for the Transformer model')
     args = parser.parse_args()
 
     # Conditional defaults based on model_type
@@ -507,20 +523,13 @@ if __name__ == "__main__":
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
     elif args.model_type == 'Transformer':
+        if args.heads is None:
+            raise ValueError("The 'heads' argument must be provided when using the 'Transformer' model type.")
+        if args.dtype is None:
+            args.dtype = torch.float32  # Set a default value for dtype
         if args.dim is None:
-            args.dim = 512  # Default for FTTransformer
-        args.heads = args.heads if args.heads is not None else 8
-        # args.num_encoder_layers = 6
-        # args.num_decoder_layers = 6
-        # args.dim_feedforward = 2048
-        # args.dropout = 0.1
-        # args.activation = torch.nn.ReLU()
-        # args.custom_encoder = None
-        # args.custom_decoder = None
-        # args.layer_norm_eps = 1e-05
-        # args.batch_first = False
-        # args.norm_first = False
-        # args.bias = True
+            args.dim = 512
+        args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
 
     main(args)
     wandb.finish()
