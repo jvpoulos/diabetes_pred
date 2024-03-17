@@ -124,7 +124,7 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
             if model_type == 'Transformer':
-                src = torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1)
+                src = torch.cat((categorical_features, numerical_features), dim=-1).unsqueeze(1)
                 outputs = model(src)
                 outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
             else:
