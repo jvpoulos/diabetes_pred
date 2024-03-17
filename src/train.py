@@ -26,7 +26,8 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
     total_loss = 0
 
     true_labels = []
-    predictions = []
+    predictions_transformer = []
+    predictions_other = []
 
     for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
         optimizer.zero_grad()
@@ -73,16 +74,15 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
         if use_mixup or use_cutmix:
             outputs_flattened = outputs.view(-1)
             if labels_a.ndim == 1:
-                labels_a = labels_a.unsqueeze(1)
+                labels_a = labels_a.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels_a.size(0))
             if labels_b.ndim == 1:
-                labels_b = labels_b.unsqueeze(1)
+                labels_b = labels_b.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels_b.size(0))
             loss = lam * criterion(outputs_flattened, labels_a.view(-1)) + (1 - lam) * criterion(outputs_flattened, labels_b.view(-1))
         else:
             outputs_flattened = outputs.view(-1)
             if labels.ndim == 1:
-                labels = labels.unsqueeze(1)
+                labels = labels.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels.size(0))
             loss = criterion(outputs_flattened, labels.view(-1))
-
         # Backward pass and optimization step
         loss.backward()
         optimizer.step()
@@ -93,13 +93,18 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
         # Accumulate true labels and predictions for AUROC calculation
         true_labels.extend(labels.cpu().numpy())
-        predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model
+        if model_type == 'Transformer':
+            predictions_transformer.extend(outputs.squeeze(-1).detach().cpu().numpy().reshape(-1))
+        else:
+            predictions_other.extend(outputs.detach().cpu().numpy())
 
     # Calculate average loss
     average_loss = total_loss / len(train_loader.dataset)
     print(f'Average Training Loss: {average_loss:.4f}')
 
     # Calculate AUROC on the training set
+    true_labels = np.array(true_labels)
+    predictions = np.concatenate([predictions_transformer, predictions_other])
     train_auroc = roc_auc_score(true_labels, predictions)
     print(f'Training AUROC: {train_auroc:.4f}')
 
@@ -110,7 +115,8 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
     total_loss = 0
 
     true_labels = []
-    predictions = []
+    predictions_transformer = []
+    predictions_other = []
 
     # Wrap the validation loader with tqdm for a progress bar
     with torch.no_grad():
@@ -131,16 +137,23 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
                 outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
             outputs_flattened = outputs.view(-1)
             if labels.ndim == 1:
-                labels = labels.unsqueeze(1)
+                labels = labels.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels.size(0))
             loss = criterion(outputs_flattened, labels.view(-1))
             total_loss += loss.item()
 
-            true_labels.extend(labels.cpu().numpy())  # Accumulate true labels
-            predictions.extend(outputs.detach().cpu().numpy())  # logits applied in model  # Accumulate predictions (logits applied in model)
+        # Accumulate true labels and predictions for AUROC calculation
+        true_labels.extend(labels.cpu().numpy())
+        if model_type == 'Transformer':
+            predictions_transformer.extend(outputs.squeeze(-1).detach().cpu().numpy().reshape(-1))
+        else:
+            predictions_other.extend(outputs.detach().cpu().numpy())
 
     average_loss = total_loss / len(validation_loader)
     print(f'Average Validation Loss: {average_loss:.4f}')
-    auroc = roc_auc_score(true_labels, predictions)  # Calculate AUROC
+
+    true_labels = np.array(true_labels)
+    predictions = np.concatenate([predictions_transformer, predictions_other])
+    train_auroc = roc_auc_score(true_labels, predictions)
     print(f'Validation AUROC: {auroc:.4f}')
     return average_loss, auroc
 
