@@ -118,9 +118,9 @@ $ python3 src/data_analysis.py
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train.py --model_type Transformer --dim 512 --heads 8 --outcome 'A1cGreaterThan7' --batch_size 32 --epochs 100 --disable_early_stopping
-#$ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 15 --run_id 'bnymues5' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep46_esp15_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
-#augmentation --run_id '8zthc8tx' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep39_esp10_rs42_cmp0.1_cml1.0_umfalse_ma0.2_uctrue_best.pth' 
+#$ python3 src/train.py --model_type Transformer --dim 512 --heads 8 --outcome 'A1cGreaterThan7' --batch_size 32 --epochs 200 --early_stopping_patience 15
+# no augmentation: $ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 15 --run_id 'bnymues5' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep46_esp15_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
+#augmentation: python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id '8zthc8tx' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep39_esp10_rs42_cmp0.1_cml1.0_umfalse_ma0.2_uctrue_best.pth' 
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:

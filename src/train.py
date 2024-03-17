@@ -19,15 +19,14 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, InputProjection
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection
 
 def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
     model.train()
     total_loss = 0
 
     true_labels = []
-    predictions_transformer = []
-    predictions_other = []
+    predictions = []
 
     for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
         optimizer.zero_grad()
@@ -62,10 +61,8 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
         # Forward pass through the model
         if model_type == 'Transformer':
-            input_size = len(binary_feature_indices) + len(numerical_feature_indices)
-            input_projection = InputProjection(input_size, args.dim).to(device)
-            src = input_projection(torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1))
-            outputs = model(src=src, tgt=src)
+            src = torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1)
+            outputs = model(src)
             outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
         else:
             outputs = model(augmented_cat, augmented_num).squeeze()
@@ -93,10 +90,7 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
         # Accumulate true labels and predictions for AUROC calculation
         true_labels.extend(labels.cpu().numpy())
-        if model_type == 'Transformer':
-            predictions_transformer.extend(outputs.squeeze(-1).detach().cpu().numpy().reshape(-1))
-        else:
-            predictions_other.extend(outputs.detach().cpu().numpy())
+        predictions.extend(outputs.detach().cpu().numpy())
 
     # Calculate average loss
     average_loss = total_loss / len(train_loader.dataset)
@@ -104,7 +98,11 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
     # Calculate AUROC on the training set
     true_labels = np.array(true_labels)
-    predictions = np.concatenate([predictions_transformer, predictions_other])
+    predictions = np.array(predictions)
+
+    if len(predictions.shape) > 1:
+        predictions = predictions.squeeze()
+
     train_auroc = roc_auc_score(true_labels, predictions)
     print(f'Training AUROC: {train_auroc:.4f}')
 
@@ -115,8 +113,7 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
     total_loss = 0
 
     true_labels = []
-    predictions_transformer = []
-    predictions_other = []
+    predictions = []
 
     # Wrap the validation loader with tqdm for a progress bar
     with torch.no_grad():
@@ -127,10 +124,8 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
             if model_type == 'Transformer':
-                input_size = len(binary_feature_indices) + len(numerical_feature_indices)
-                input_projection = InputProjection(input_size, args.dim).to(device)
-                src = input_projection(torch.cat((categorical_features, numerical_features), dim=-1).unsqueeze(1))
-                outputs = model(src=src, tgt=src)
+                src = torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1)
+                outputs = model(src)
                 outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
             else:
                 outputs = model(categorical_features, numerical_features)
@@ -141,19 +136,20 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             loss = criterion(outputs_flattened, labels.view(-1))
             total_loss += loss.item()
 
-        # Accumulate true labels and predictions for AUROC calculation
-        true_labels.extend(labels.cpu().numpy())
-        if model_type == 'Transformer':
-            predictions_transformer.extend(outputs.squeeze(-1).detach().cpu().numpy().reshape(-1))
-        else:
-            predictions_other.extend(outputs.detach().cpu().numpy())
+            # Accumulate true labels and predictions for AUROC calculation
+            true_labels.extend(labels.cpu().numpy())
+            predictions.extend(outputs.detach().cpu().numpy())
 
     average_loss = total_loss / len(validation_loader)
     print(f'Average Validation Loss: {average_loss:.4f}')
 
     true_labels = np.array(true_labels)
-    predictions = np.concatenate([predictions_transformer, predictions_other])
-    train_auroc = roc_auc_score(true_labels, predictions)
+    predictions = np.array(predictions)
+
+    if len(predictions.shape) > 1:
+        predictions = predictions.squeeze()
+
+    auroc = roc_auc_score(true_labels, predictions)
     print(f'Validation AUROC: {auroc:.4f}')
     return average_loss, auroc
 
@@ -279,7 +275,9 @@ def main(args):
             ff_dropout=args.ff_dropout                                  # feed forward dropout, paper recommends 0.1
         ).to(device)
     elif args.model_type == 'Transformer':
-        model = nn.Transformer(
+        input_size = len(binary_feature_indices) + len(numerical_feature_indices)
+        model = TransformerWithInputProjection(
+            input_size=input_size,
             d_model=args.dim,
             nhead=args.heads,
             num_encoder_layers=args.num_encoder_layers,
@@ -287,11 +285,7 @@ def main(args):
             dim_feedforward=args.dim_feedforward,
             dropout=args.dropout,
             activation='relu',
-            layer_norm_eps=1e-5,
-            batch_first=True,
-            norm_first=False,
-            device=device,
-            dtype=getattr(torch, args.dtype)
+            device=device
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")

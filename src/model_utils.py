@@ -20,13 +20,27 @@ from tqdm import tqdm
 import re
 import pickle
 
-class InputProjection(nn.Module):
-    def __init__(self, input_size, output_size):
-        super(InputProjection, self).__init__()
-        self.linear = nn.Linear(input_size, output_size)
+class TransformerWithInputProjection(nn.Module):
+    def __init__(self, input_size, d_model, nhead, num_encoder_layers, num_decoder_layers, dim_feedforward=2048, dropout=0.1, activation="relu", device=None):
+        super(TransformerWithInputProjection, self).__init__()
+        self.input_projection = nn.Linear(input_size, d_model)
+        self.transformer = nn.Transformer(d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation, batch_first=True)
+        self.output_projection = nn.Linear(d_model, 1)  # Add a final linear layer
+        self.sigmoid = nn.Sigmoid()  # Add a sigmoid activation
+        self.device = device
 
-    def forward(self, x):
-        return self.linear(x)
+    def forward(self, src):
+        # Project input
+        src = self.input_projection(src)
+        
+        # Pass the projected input through the transformer
+        output = self.transformer(src, src)
+        
+        # Apply the final linear layer and sigmoid activation
+        output = self.output_projection(output)
+        output = self.sigmoid(output)
+        
+        return output
 
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
