@@ -5,8 +5,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 import seaborn as sns
 import pandas as pd
-from tab_transformer_pytorch import TabTransformer, FTTransformer
-print(FTTransformer)
+from ft_transformer import FTTransformer
 import os
 import argparse
 import json
@@ -56,7 +55,7 @@ def main():
     dataset = CustomDataset(features, labels)
 
     # Create the DataLoader
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
 
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
@@ -94,15 +93,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
     print(f"Model created: {model}")
 
     model = model.to(device)  # Move the model to the appropriate device
-
-    if hasattr(model, 'get_embeddings'):
-        print("get_embeddings method exists in model.")
-    else:
-        print("get_embeddings method does not exist in model.")
 
     # Get embeddings
     embeddings = extract_embeddings(model, data_loader, device)
@@ -120,12 +114,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Extract embeddings.')
     parser.add_argument('--dataset_type', type=str, choices=['train','validation'], required=True, help='Specify dataset type for evaluation')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['TabTransformer', 'FTTransformer'],
+                        choices=['Transformer','TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
     parser.add_argument('--heads', type=int, help='Number of attention heads.')
     parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
+    parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
+    parser.add_argument('--num_decoder_layers', type=float, default=6, help=' Number of sub-decoder-layers in the decoder')
+    parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
@@ -151,18 +149,12 @@ if __name__ == '__main__':
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
     elif args.model_type == 'Transformer':
+        if args.heads is None:
+            raise ValueError("The 'heads' argument must be provided when using the 'Transformer' model type.")
+        if args.dtype is None:
+            args.dtype = torch.float32  # Set a default value for dtype
         if args.dim is None:
-            args.dim = 512  # Default for FTTransformer
-        args.heads = args.heads if args.heads is not None else 8
-        # args.num_encoder_layers = 6
-        # args.num_decoder_layers = 6
-        # args.dim_feedforward = 2048
-        # args.dropout = 0.1
-        # args.activation = torch.nn.ReLU()
-        # args.custom_encoder = None
-        # args.custom_decoder = None
-        # args.layer_norm_eps = 1e-05
-        # args.batch_first = False
-        # args.norm_first = False
-        # args.bias = True
+            args.dim = 512
+        args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
+
     main()

@@ -61,25 +61,23 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
         # Forward pass through the model
         if model_type == 'Transformer':
-            src = torch.cat((augmented_cat, augmented_num), dim=-1).unsqueeze(1)
+            src = torch.cat((augmented_cat, augmented_num), dim=-1)
             outputs = model(src)
-            outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
         else:
             outputs = model(augmented_cat, augmented_num).squeeze()
 
         # Calculate loss
-        if use_mixup or use_cutmix:
-            outputs_flattened = outputs.view(-1)
-            if labels_a.ndim == 1:
-                labels_a = labels_a.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels_a.size(0))
-            if labels_b.ndim == 1:
-                labels_b = labels_b.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels_b.size(0))
-            loss = lam * criterion(outputs_flattened, labels_a.view(-1)) + (1 - lam) * criterion(outputs_flattened, labels_b.view(-1))
+        if model_type == 'Transformer':
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels.unsqueeze(1))
         else:
-            outputs_flattened = outputs.view(-1)
-            if labels.ndim == 1:
-                labels = labels.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels.size(0))
-            loss = criterion(outputs_flattened, labels.view(-1))
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels)
+
         # Backward pass and optimization step
         loss.backward()
         optimizer.step()
@@ -89,20 +87,14 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
         torch.cuda.empty_cache()
 
         # Accumulate true labels and predictions for AUROC calculation
-        true_labels.extend(labels.cpu().numpy())
-        predictions.extend(outputs.detach().cpu().numpy())
+        true_labels.extend(labels.cpu().squeeze().numpy())
+        predictions.extend(outputs.detach().cpu().squeeze().numpy())
 
     # Calculate average loss
     average_loss = total_loss / len(train_loader.dataset)
     print(f'Average Training Loss: {average_loss:.4f}')
 
     # Calculate AUROC on the training set
-    true_labels = np.array(true_labels)
-    predictions = np.array(predictions)
-
-    if len(predictions.shape) > 1:
-        predictions = predictions.squeeze()
-
     train_auroc = roc_auc_score(true_labels, predictions)
     print(f'Training AUROC: {train_auroc:.4f}')
 
@@ -121,33 +113,23 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             categorical_features = features[:, binary_feature_indices].to(device)
             categorical_features = categorical_features.long()
             numerical_features = features[:, numerical_feature_indices].to(device)
-            labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
             if model_type == 'Transformer':
-                src = torch.cat((categorical_features, numerical_features), dim=-1).unsqueeze(1)
+                src = torch.cat((categorical_features, numerical_features), dim=-1)
                 outputs = model(src)
-                outputs = outputs.squeeze(-1)  # Remove the last dimension (output sequence length)
+                labels = labels.unsqueeze(1)  # Add an extra dimension to match the model outputs
             else:
                 outputs = model(categorical_features, numerical_features)
                 outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
-            outputs_flattened = outputs.view(-1)
-            if labels.ndim == 1:
-                labels = labels.unsqueeze(1).repeat(1, outputs_flattened.size(0) // labels.size(0))
-            loss = criterion(outputs_flattened, labels.view(-1))
+            loss = criterion(outputs, labels)
             total_loss += loss.item()
 
             # Accumulate true labels and predictions for AUROC calculation
-            true_labels.extend(labels.cpu().numpy())
-            predictions.extend(outputs.detach().cpu().numpy())
+            true_labels.extend(labels.cpu().squeeze().numpy())
+            predictions.extend(outputs.detach().cpu().squeeze().numpy())
 
     average_loss = total_loss / len(validation_loader)
     print(f'Average Validation Loss: {average_loss:.4f}')
-
-    true_labels = np.array(true_labels)
-    predictions = np.array(predictions)
-
-    if len(predictions.shape) > 1:
-        predictions = predictions.squeeze()
 
     auroc = roc_auc_score(true_labels, predictions)
     print(f'Validation AUROC: {auroc:.4f}')
@@ -281,7 +263,6 @@ def main(args):
             d_model=args.dim,
             nhead=args.heads,
             num_encoder_layers=args.num_encoder_layers,
-            num_decoder_layers=args.num_decoder_layers,
             dim_feedforward=args.dim_feedforward,
             dropout=args.dropout,
             activation='relu',
@@ -415,7 +396,7 @@ def main(args):
     if patience_counter < early_stopping_patience:
         # Save checkpoints only if early stopping didn't trigger
         for checkpoint_epoch in range(10, args.epochs + 1, 10):
-            model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_dl{args.num_decoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
             # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
@@ -435,7 +416,7 @@ def main(args):
             print(f"Model checkpoint saved as {model_filepath}")
     else:
         # If early stopping was triggered, save the best model weights
-        best_model_filename = f"{args.model_type}_dim{args.dim}_dim{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_dl{args.num_decoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
         # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
@@ -488,7 +469,6 @@ if __name__ == "__main__":
     parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
-    parser.add_argument('--num_decoder_layers', type=float, default=6, help=' Number of sub-decoder-layers in the decoder')
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
     parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')

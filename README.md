@@ -118,9 +118,11 @@ $ python3 src/data_analysis.py
 # Set CUDA_VISIBLE_DEVICES environment variable within the script (optional)
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-#$ python3 src/train.py --model_type Transformer --dim 512 --heads 8 --outcome 'A1cGreaterThan7' --batch_size 32 --epochs 200 --early_stopping_patience 15
-# no augmentation: $ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 15 --run_id 'bnymues5' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.1_A1cGreaterThan7_bs16_lr0.001_ep46_esp15_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
-#augmentation: python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id '8zthc8tx' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep16_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' 
+#$ python3 src/train.py --model_type Transformer --dim 512 --heads 8 --dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 128 --epochs 200 --disable_early_stopping
+# no augmentation: $ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id 'bnymues5' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
+# CutMix augmentation: python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --ff_dropout 0.0  --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id '8zthc8tx' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
+# MixUp augmentation: 
+python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 200 --disable_early_stopping --use_mixup
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
@@ -132,17 +134,17 @@ $ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransform
 4. Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 6 --attn_dropout 0.1 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_adr0.1_A1cGreaterThan7_bs8_lr0.1_ep13_esp10_cmp0.3_cml10_umfalse_ma0.2_uctrue_best.pth' --batch_size 4 
+$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 8 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 16
 ```
 
 5. Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs8_lr0.001_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 8 
+$ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 8 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 16 
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_A1cGreaterThan7_bs8_lr0.001_ep0_esp10_cmp0.3_cml10.0_umfalse_ma0.2_uctrue_best.pth' --batch_size 8
+$ python3 src/test.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 16
 ```

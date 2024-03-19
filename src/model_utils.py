@@ -19,33 +19,51 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
+from einops import rearrange, repeat
 
 class TransformerWithInputProjection(nn.Module):
-    def __init__(self, input_size, d_model, nhead, num_encoder_layers, num_decoder_layers, dim_feedforward=2048, dropout=0.1, activation="relu", device=None):
+    def __init__(self, input_size, d_model, nhead, num_encoder_layers, dim_feedforward=2048, dropout=0.1, activation="relu", device=None):
         super(TransformerWithInputProjection, self).__init__()
         self.input_projection = nn.Linear(input_size, d_model)
-        self.transformer = nn.Transformer(d_model=d_model, nhead=nhead, num_encoder_layers=num_encoder_layers, num_decoder_layers=num_decoder_layers, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation=activation)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
         self.output_projection = nn.Linear(d_model, 1)  # Add a final linear layer
-        self.sigmoid = nn.Sigmoid()  # Add a sigmoid activation
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))  # CLS token
         self.device = device
 
     def forward(self, src):
         # Project input
         src = self.input_projection(src)
-        
-        # Pass the projected input through the transformer
-        output = self.transformer(src, src)
-        
-        # Apply the final linear layer and sigmoid activation
-        output = self.output_projection(output)
-        output = self.sigmoid(output)
-        
+
+        # Ensure src has the correct number of dimensions
+        if src.ndim == 2:
+            src = src.unsqueeze(1)  # Add a dummy sequence dimension
+
+        # Add CLS token
+        batch_size = src.size(0)
+        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=batch_size)
+        src = torch.cat((cls_tokens, src), dim=1)
+
+        # Pass the projected input through the transformer encoder
+        output = self.transformer_encoder(src)
+
+        # Extract the CLS token output and apply the linear projection
+        cls_output = output[:, 0, :]  # Extract the CLS token output (batch_size, d_model)
+        output = self.output_projection(cls_output)  # Apply the linear projection (batch_size, 1)
+
         return output
 
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+def fix_state_dict(state_dict):
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        name = k[7:] if k.startswith('module.') else 'module.' + k  # Adjust keys
+        new_state_dict[name] = v
+    return new_state_dict
     
 class CustomDataset(Dataset):
     def __init__(self, features, labels):
@@ -60,57 +78,61 @@ class CustomDataset(Dataset):
         return self.features[idx], self.labels[idx]
 
 def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous):
-
     if model_type == 'TabTransformer':
         model = TabTransformer(
-            categories=categories,  # tuple containing the number of unique values within each category
-            num_continuous=num_continuous,                              # number of continuous values
-            dim=dim,                                               # dimension, paper set at 32
-            dim_out=1,                                                  # binary prediction, but could be anything
-            depth=depth,                                           # depth, paper recommended 6
-            heads=heads,                                           # heads, paper recommends 8
-            attn_dropout=attn_dropout,                             # post-attention dropout
-            ff_dropout=ff_dropout ,                                # feed forward dropout
-            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
-            mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+            categories=categories,
+            num_continuous=num_continuous,
+            dim=dim,
+            dim_out=1,
+            depth=depth,
+            heads=heads,
+            attn_dropout=attn_dropout,
+            ff_dropout=ff_dropout,
+            mlp_hidden_mults=(4, 2),
+            mlp_act=nn.ReLU()
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
-            categories = categories,      # tuple containing the number of unique values within each category
-            num_continuous = num_continuous,  # number of continuous values
-            dim = dim,                     # dimension, paper set at 192
-            dim_out = 1,                        # binary prediction, but could be anything
-            depth = depth,                          # depth, paper recommended 3
-            heads = heads,                          # heads, paper recommends 8
-            attn_dropout = attn_dropout,   # post-attention dropout, paper recommends 0.2
-            ff_dropout = ff_dropout                   # feed forward dropout, paper recommends 0.1
+            categories=categories,
+            num_continuous=num_continuous,
+            dim=dim,
+            dim_out=1,
+            depth=depth,
+            heads=heads,
+            attn_dropout=attn_dropout,
+            ff_dropout=ff_dropout
         )
-    elif args.model_type == 'Transformer':
-        model = torch.nn.Transformer(
-            d_model=dim,                                           # embedding dimension
-            nhead=heads,                                           # number of attention heads
-            num_encoder_layers=6,                                       # number of encoder layers
-            num_decoder_layers=6,                                       # number of decoder layers
-            dim_feedforward=2048,                                       # dimension of the feedforward network
-            dropout=0.1,                                                # dropout rate
-            activation=torch.nn.ReLU(),                                 # activation function
-            custom_encoder=None,                                        # custom encoder
-            custom_decoder=None,                                        # custom decoder
-            layer_norm_eps=1e-05,                                       # layer normalization epsilon
-            batch_first=False,                                          # if True, input and output tensors are provided as (batch, seq, feature)
-            norm_first=False,                                           # if True, layer normalization is done before self-attention
-            device=device,                                              # device to run the model on
-            dtype=None                                                  # data type
+    elif model_type == 'Transformer':
+        input_size = len(binary_feature_indices) + len(numerical_feature_indices)
+        model = TransformerWithInputProjection(
+            input_size=input_size,
+            d_model=dim,
+            nhead=heads,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation='relu',
+            device=device
         )
     else:
         raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer' or 'FTTransformer'.")
 
-    # Load the state dict with fix_state_dict applied
-    state_dict = torch.load(model_path)
-    model.load_state_dict(fix_state_dict(state_dict))
+    if model_path is not None:
+        state_dict = torch.load(model_path)
+        
+        # Remove unexpected keys from the state dictionary
+        unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict",
+                           "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
+        for key in unexpected_keys:
+            if key in state_dict:
+                del state_dict[key]
+        
+        # Load the state dictionary while ignoring missing keys
+        model.load_state_dict(state_dict, strict=False)
+        
     model.eval()
     return model
-
 
 def plot_auroc(train_aurocs, val_aurocs, hyperparameters, plot_dir='auroc_plots'):
     os.makedirs(plot_dir, exist_ok=True)
