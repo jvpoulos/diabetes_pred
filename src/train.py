@@ -179,6 +179,12 @@ def main(args):
     # Find indices of the continuous features
     numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
 
+    with open('binary_feature_indices.json', 'w') as file:
+        json.dump(binary_feature_indices, file)
+
+    with open('numerical_feature_indices.json', 'w') as file:
+        json.dump(numerical_feature_indices, file)
+
     # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
     dataset_tensor = train_dataset.tensors[0]  # This gets the tensor from the dataset
 

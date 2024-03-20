@@ -160,9 +160,6 @@ print("Training Data Dimensions:", df_train.shape)
 print("Validation Data Dimensions:", df_validation.shape)
 print("Test Data Dimensions:", df_test.shape)
 
-# Save the training data to disk
-#df_train.to_csv('training_data.csv', index=False)
-
 # Print dataset descriptions
 print("Training Dataset Description:\n", df_train.describe())
 

@@ -12,4 +12,6 @@ openpyxl==3.1.2
 cachey==0.2.1
 pickle-mixin==1.0.2
 wandb==0.15.11
+ray==2.4.0
+bertviz==1.4.0
 

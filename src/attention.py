@@ -14,9 +14,6 @@ import numpy as np
 from model_utils import load_model, CustomDataset
 import pickle
 
-import os
-import pickle
-
 def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns):
     model.eval()
 
@@ -24,6 +21,8 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
     os.makedirs(attention_weights_dir, exist_ok=True)
 
     feature_names = []
+    aggregated_attention_weights = {}
+    valid_feature_names = {}
 
     print("Starting attention map computation...")
     with torch.no_grad():
@@ -44,26 +43,24 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
             elif isinstance(attns, torch.Tensor):
                 attns = [attns]
 
-            for attn in attns:
+            for head_idx, attn in enumerate(attns):
                 if attn.dim() == 5:
                     attn = attn.mean(dim=0)  # Average across the batch dimension
 
-                # Reduce the size of the tensor by averaging across heads and layers if they exist
-                while attn.dim() > 3:
-                    attn = attn.mean(dim=0)  # Average across heads or layers
+                # Now attn should be of shape [num_heads, num_features, num_features]
+                num_heads = attn.size(0)
+                num_features = attn.size(1)
 
-                # Now attn should be of shape [num_features, num_features]
-                num_features = attn.size(0)
-
-                # Normalize attention weights across features
+                # Normalize attention weights across features for each head
                 attn = attn / attn.sum(dim=-1, keepdim=True)
 
-                # Save the attention weights to disk
-                attention_weights_file = os.path.join(attention_weights_dir, f"attention_weights_{batch_idx}.pkl")
-                with open(attention_weights_file, "wb") as f:
-                    pickle.dump(attn.cpu().numpy(), f)
+                # Aggregate attention weights and feature names
+                if head_idx not in aggregated_attention_weights:
+                    aggregated_attention_weights[head_idx] = []
+                    valid_feature_names[head_idx] = []
 
-                feature_names.append([col for col in column_names[:num_features] if col not in excluded_columns])
+                aggregated_attention_weights[head_idx].append(attn.cpu().numpy())
+                valid_feature_names[head_idx].append([col for col in column_names[:num_features] if col not in excluded_columns])
 
             # Clear the GPU cache and release memory after each batch
             del x_categ, x_cont, attns
@@ -71,46 +68,29 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
 
     print("Attention map computation completed.")
 
-    # Check if feature_names is empty
-    if len(feature_names) == 0:
-        print("Warning: No feature names computed.")
+    # Check if aggregated_attention_weights and valid_feature_names are empty
+    if len(aggregated_attention_weights) == 0 or len(valid_feature_names) == 0:
+        print("Warning: No valid attention weights or feature names found.")
         return None, None
 
-    print(f"Number of attention weight files: {len(os.listdir(attention_weights_dir))}")
-    print(f"Number of feature name lists: {len(feature_names)}")
+    top_attention_weights = {}
+    top_feature_names = {}
 
-    # Load the attention weights from disk and aggregate them
-    attention_weights_files = sorted(os.listdir(attention_weights_dir))
-    aggregated_attention_weights = []
-    valid_feature_names = []
+    for head_idx in aggregated_attention_weights:
+        head_attention_weights = np.mean(aggregated_attention_weights[head_idx], axis=0)
+        head_feature_names = valid_feature_names[head_idx][0]  # Assuming feature names are the same across valid batches
 
-    for file in attention_weights_files:
-        with open(os.path.join(attention_weights_dir, file), "rb") as f:
-            attention_weights = pickle.load(f)
-            if len(aggregated_attention_weights) > 0 and attention_weights.shape != aggregated_attention_weights[0].shape:
-                print(f"Skipping attention weights from file {file} due to shape mismatch.")
-                continue
-            aggregated_attention_weights.append(attention_weights)
-            valid_feature_names.append(feature_names[int(file.split("_")[-1].split(".")[0])])
-
-    if len(aggregated_attention_weights) == 0:
-        print("Warning: No valid attention weights found.")
-        return None, None
-
-    aggregated_attention_weights = np.mean(aggregated_attention_weights, axis=0)
-    aggregated_feature_names = valid_feature_names[0]  # Assuming feature names are the same across valid batches
-
-    # Select the top 100 features based on the aggregated attention weights
-    top_indices = np.argsort(aggregated_attention_weights)[::-1][:100]
-    top_attention_weights = aggregated_attention_weights[top_indices]
-    top_feature_names = [aggregated_feature_names[idx] for idx in top_indices]
+        # Select the top 100 features based on the aggregated attention weights for each head
+        top_indices = np.argsort(head_attention_weights)[::-1][:100]
+        top_attention_weights[head_idx] = head_attention_weights[top_indices]
+        top_feature_names[head_idx] = [head_feature_names[idx] for idx in top_indices]
 
     return top_attention_weights, top_feature_names
 
 def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names):
     model.eval()
     
-    feature_value_attention_weights = {feature: {} for feature in top_feature_names}
+    feature_value_attention_weights = {head_idx: {feature: {} for feature in top_feature_names[head_idx]} for head_idx in top_feature_names}
     
     print("Starting feature value attention weight computation...")
     with torch.no_grad():
@@ -123,29 +103,30 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
             
             attns = attns if isinstance(attns, list) else [attns]
             
-            for attn in attns:
-                # Reduce the size of the tensor by averaging across heads and layers if they exist
+            for head_idx, attn in enumerate(attns):
+                # Reduce the size of the tensor by averaging across layers if they exist
                 while attn.dim() > 3:
                     attn = attn.mean(dim=1)
                 
-                # Now attn should be of shape [batch_size, num_features, num_features]
+                # Now attn should be of shape [batch_size, num_heads, num_features, num_features]
                 batch_size = attn.size(0)
-                num_features = attn.size(1)
+                num_heads = attn.size(1)
+                num_features = attn.size(2)
                 
-                # Normalize attention weights across features for each sample
+                # Normalize attention weights across features for each sample and head
                 attn = attn / attn.sum(dim=-1, keepdim=True)
                 
-                for feature_name in top_feature_names[:10]:  # Consider only the top 10 features
+                for feature_name in top_feature_names[head_idx][:10]:  # Consider only the top 10 features
                     if feature_name in column_names:
                         feature_index = column_names.index(feature_name)
                         if feature_index < features.size(1):
                             feature_values = features[:, feature_index].cpu().numpy()
                             
-                            for value, label, attention in zip(feature_values, labels.cpu().numpy(), attn[:, feature_index, feature_index].cpu().numpy()):
+                            for value, label, attention in zip(feature_values, labels.cpu().numpy(), attn[:, head_idx, feature_index, feature_index].cpu().numpy()):
                                 if label == 1:
-                                    feature_value_attention_weights[feature_name].setdefault('HbA1c ≥ 7.0%', {}).setdefault(value, []).append(attention)
+                                    feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c ≥ 7.0%', {}).setdefault(value, []).append(attention)
                                 else:
-                                    feature_value_attention_weights[feature_name].setdefault('HbA1c < 7.0%', {}).setdefault(value, []).append(attention)
+                                    feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c < 7.0%', {}).setdefault(value, []).append(attention)
             
             # Clear the GPU cache and release memory after each batch
             del x_categ, x_cont, attns
@@ -154,77 +135,80 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
     print("Feature value attention weight computation completed.")
     
     # Compute average attention weights for each feature value and outcome
-    for feature_name in top_feature_names[:10]:
-        if feature_name in feature_value_attention_weights:
-            for outcome in ['HbA1c ≥ 7.0%', 'HbA1c < 7.0%']:
-                if outcome in feature_value_attention_weights[feature_name]:
-                    for value in feature_value_attention_weights[feature_name][outcome]:
-                        feature_value_attention_weights[feature_name][outcome][value] = np.mean(feature_value_attention_weights[feature_name][outcome][value])
+    for head_idx in feature_value_attention_weights:
+        for feature_name in top_feature_names[head_idx][:10]:
+            if feature_name in feature_value_attention_weights[head_idx]:
+                for outcome in ['HbA1c ≥ 7.0%', 'HbA1c < 7.0%']:
+                    if outcome in feature_value_attention_weights[head_idx][feature_name]:
+                        for value in feature_value_attention_weights[head_idx][feature_name][outcome]:
+                            feature_value_attention_weights[head_idx][feature_name][outcome][value] = np.mean(feature_value_attention_weights[head_idx][feature_name][outcome][value])
     
     return feature_value_attention_weights
 
 def save_attention_maps_to_html(attention_maps, feature_names, filename):
-    attention_data = list(zip(feature_names, attention_maps))
+    for head_idx in attention_maps:
+        attention_data = list(zip(feature_names[head_idx], attention_maps[head_idx]))
 
-    # Create a DataFrame to represent the attention data
-    df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
+        # Create a DataFrame to represent the attention data
+        df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
 
-    # Load the df_train_summary.csv file
-    df_train_summary = pd.read_csv('df_train_summary.csv')
+        # Load the df_train_summary.csv file
+        df_train_summary = pd.read_csv('df_train_summary.csv')
 
-    # Merge the attention data with the descriptions from df_train_summary
-    df = pd.merge(df, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+        # Merge the attention data with the descriptions from df_train_summary
+        df = pd.merge(df, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
 
-    # Sort the DataFrame by the attention weights in descending order
-    df = df.sort_values(by='Attention Weight', ascending=False)
+        # Sort the DataFrame by the attention weights in descending order
+        df = df.sort_values(by='Attention Weight', ascending=False)
 
-    # Convert the DataFrame to an HTML table representation
-    html_table = df.to_html(index=False)
+        # Convert the DataFrame to an HTML table representation
+        html_table = df.to_html(index=False)
 
-    # Save the HTML table to a file
-    with open(filename, 'w') as file:
-        file.write('<h1>Normalized attention weights per feature across all patients, regardless of their outcome: Top 100 features</h1>')
-        file.write(html_table)
+        # Save the HTML table to a file
+        with open(f"{filename.split('.')[0]}_head_{head_idx}.html", 'w') as file:
+            file.write(f'<h1>Normalized attention weights per feature across all patients, regardless of their outcome: Top 100 features (Attention Head {head_idx})</h1>')
+            file.write(html_table)
 
-    print(f"Attention maps saved to {filename}")
+        print(f"Attention maps for head {head_idx} saved to {filename.split('.')[0]}_head_{head_idx}.html")
 
 def save_top_feature_values_to_html(top_feature_value_attention_weights, filename):
-    # Create a DataFrame for each outcome
-    df_high = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
-    df_low = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
+    for head_idx in top_feature_value_attention_weights:
+        # Create a DataFrame for each outcome
+        df_high = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
+        df_low = pd.DataFrame(columns=['Feature', 'Feature Value', 'Attention Weight'])
 
-    for feature_name, outcome_values in top_feature_value_attention_weights.items():
-        if 'HbA1c ≥ 7.0%' in outcome_values:
-            for (value, weight) in outcome_values['HbA1c ≥ 7.0%'].items():
-                df_high = df_high.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
-        if 'HbA1c < 7.0%' in outcome_values:
-            for (value, weight) in outcome_values['HbA1c < 7.0%'].items():
-                df_low = df_low.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
+        for feature_name, outcome_values in top_feature_value_attention_weights[head_idx].items():
+            if 'HbA1c ≥ 7.0%' in outcome_values:
+                for (value, weight) in outcome_values['HbA1c ≥ 7.0%'].items():
+                    df_high = df_high.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
+            if 'HbA1c < 7.0%' in outcome_values:
+                for (value, weight) in outcome_values['HbA1c < 7.0%'].items():
+                    df_low = df_low.append({'Feature': feature_name, 'Feature Value': value, 'Attention Weight': weight}, ignore_index=True)
 
-    # Load the df_train_summary.csv file
-    df_train_summary = pd.read_csv('df_train_summary.csv')
+        # Load the df_train_summary.csv file
+        df_train_summary = pd.read_csv('df_train_summary.csv')
 
-    # Merge the attention data with the descriptions from df_train_summary
-    df_high = pd.merge(df_high, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
-    df_low = pd.merge(df_low, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+        # Merge the attention data with the descriptions from df_train_summary
+        df_high = pd.merge(df_high, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+        df_low = pd.merge(df_low, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
 
-    # Sort the DataFrames by attention weights in descending order
-    df_high = df_high.sort_values(by='Attention Weight', ascending=False)
-    df_low = df_low.sort_values(by='Attention Weight', ascending=False)
+        # Sort the DataFrames by attention weights in descending order
+        df_high = df_high.sort_values(by='Attention Weight', ascending=False)
+        df_low = df_low.sort_values(by='Attention Weight', ascending=False)
 
-    # Convert the DataFrames to HTML tables
-    html_table_high = df_high.to_html(index=False)
-    html_table_low = df_low.to_html(index=False)
+        # Convert the DataFrames to HTML tables
+        html_table_high = df_high.to_html(index=False)
+        html_table_low = df_low.to_html(index=False)
 
-    # Save the HTML tables to a file
-    with open(filename, 'w') as file:
-        file.write('<h1>Normalized attention weights for each feature value within each outcome group (HbA1c >= 7.0% and HbA1c < 7.0%): Top 10 features</h1>')
-        file.write('<h2>Patients with HbA1c >= 7.0%</h2>')
-        file.write(html_table_high)
-        file.write('<h2>Patients with HbA1c < 7.0%</h2>')
-        file.write(html_table_low)
+        # Save the HTML tables to a file
+        with open(f"{filename.split('.')[0]}_head_{head_idx}.html", 'w') as file:
+            file.write(f'<h1>Normalized attention weights for each feature value within each outcome group (HbA1c >= 7.0% and HbA1c < 7.0%): Top 10 features (Attention Head {head_idx})</h1>')
+            file.write('<h2>Patients with HbA1c >= 7.0%</h2>')
+            file.write(html_table_high)
+            file.write('<h2>Patients with HbA1c < 7.0%</h2>')
+            file.write(html_table_low)
 
-    print(f"Top feature values saved to {filename}")
+        print(f"Top feature values for head {head_idx} saved to {filename.split('.')[0]}_head_{head_idx}.html")
     
 def main():
     parser = argparse.ArgumentParser(description='Extract attention maps.')
@@ -295,23 +279,15 @@ def main():
 
     with open('columns_to_normalize.json', 'r') as file:
         columns_to_normalize = json.load(file)
+        
+    with open('numerical_feature_indices.json', 'r') as file:
+        numerical_feature_indices = json.load(file)
+
+    with open('binary_feature_indices.json', 'r') as file:
+        binary_feature_indices = json.load(file)
 
     # Define excluded columns and additional binary variables
     excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
-    additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
-
-    # Filter out excluded columns
-    column_names_filtered = [col for col in column_names if col not in excluded_columns]
-    encoded_feature_names_filtered = [name for name in encoded_feature_names if name in column_names_filtered]
-
-    # Combine and deduplicate encoded and additional binary variables
-    binary_features_combined = list(set(encoded_feature_names_filtered + additional_binary_vars))
-
-    # Calculate binary feature indices, ensuring they're within the valid range
-    binary_feature_indices = [column_names_filtered.index(col) for col in binary_features_combined if col in column_names_filtered]
-
-    # Find indices of the continuous features
-    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
 
     categories = [2] * len(binary_feature_indices)
     print("Categories:", len(categories))
