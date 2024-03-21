@@ -37,19 +37,27 @@ def custom_search_space(config):
         "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if use_cutmix else 0),
     }
 
-def hyperparameter_optimization(model_type):
+def hyperparameter_optimization(model_type, epochs):
     search_space = {
-        "dim": tune.choice([32, 192, 512]),
-        "depth": tune.choice([1, 3, 6]),
         "heads": tune.choice([4, 8, 16]),
-        "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
-        "ff_dropout": tune.choice([0.0, 0.1, 0.2]),
-        "dropout": tune.choice([0.0, 0.1, 0.2]),
-        "num_encoder_layers": tune.choice([2, 4, 6]),
-        "dim_feedforward": tune.choice([1024, 2048, 4096]),
         "disable_early_stopping": tune.choice([True, False]),
         "early_stopping_patience": tune.sample_from(lambda spec: tune.choice([5, 10, 15]) if not spec.config.get("disable_early_stopping", False) else 0),
     }
+
+    if model_type in ['TabTransformer', 'FTTransformer']:
+        search_space.update({
+            "dim": tune.choice([32, 128, 192]),
+            "depth": tune.choice([3, 6, 12]),
+            "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
+            "ff_dropout": tune.choice([0.0, 0.1, 0.2]),
+        })
+    elif model_type == 'Transformer':
+        search_space.update({
+            "dim": tune.choice([256, 512, 1024]),
+            "num_encoder_layers": tune.choice([2, 4, 6]),
+            "dim_feedforward": tune.choice([1024, 2048, 4096]),
+            "dropout": tune.choice([0.0, 0.1, 0.2]),
+        })
 
     # Update the search space with the custom search space function
     search_space.update(custom_search_space({}))  # Pass an empty dictionary as the config argument
@@ -59,18 +67,18 @@ def hyperparameter_optimization(model_type):
         mode="max",
         max_t=100,
         grace_period=1,
-        reduction_factor=2,
+        reduction_factor=4, # only 25% of all trials are kept each time they are reduced
     )
 
     tuner = tune.Tuner(
         tune.with_resources(
-            tune.with_parameters(functools.partial(tune_model, model_type=model_type)),
-            resources={"cpu": 2, "gpu": 2}  # Allocate 2 CPUs and 2 GPUs per trial
+            tune.with_parameters(functools.partial(tune_model, model_type=model_type, epochs=epochs)),
+            resources={"cpu": 8, "gpu": 2}
         ),
         param_space=search_space,
         tune_config=tune.TuneConfig(
-            scheduler=scheduler,
-            num_samples=1,
+            scheduler=scheduler,  # Use ASHAScheduler for early stopping and resource allocation
+            num_samples=10,  # Explore 10 different parameter configurations
         ),
     )
 
@@ -80,9 +88,8 @@ def hyperparameter_optimization(model_type):
 
     return results
 
-def tune_model(config, model_type):
+def tune_model(config, model_type, epochs):
     dim = config["dim"] 
-    depth = config["depth"]
     heads = config["heads"]
     use_mixup = config["use_mixup"]
     use_cutmix = config["use_cutmix"]
@@ -93,13 +100,19 @@ def tune_model(config, model_type):
     early_stopping_patience = config["early_stopping_patience"].sample() if isinstance(config["early_stopping_patience"], tune.search.sample.Domain) else config["early_stopping_patience"]
 
     if model_type in ['TabTransformer', 'FTTransformer']:
+        depth = config["depth"]
         attn_dropout = config["attn_dropout"]
         ff_dropout = config["ff_dropout"]
-        batch_size = 8
+        if dim>128 or heads>8 or depth>6:
+            batch_size = 8
+        elif dim==128 and heads<16 and depth<12:
+            batch_size = 16
+        else:
+            batch_size = 32
     elif model_type == 'Transformer':
-        dropout = config["dropout"]
         num_encoder_layers = config["num_encoder_layers"]
         dim_feedforward = config["dim_feedforward"]
+        dropout = config["dropout"]
         batch_size = 32
 
     # Provide the absolute path to the train_dataset.pt file
@@ -195,6 +208,9 @@ def tune_model(config, model_type):
         )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
     model = model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
@@ -203,7 +219,7 @@ def tune_model(config, model_type):
     best_val_auroc = float('-inf')
     patience_counter = 0
 
-    for epoch in range(100):  
+    for epoch in range(epochs):  
         train_args = {
             'model': model,
             'train_loader': train_loader,
@@ -248,6 +264,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization using Ray Tune')
     parser.add_argument('--model_type', type=str, required=True, choices=['TabTransformer', 'FTTransformer', 'Transformer'],
                         help='Type of the model to train')
+    parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train')
     args = parser.parse_args()
 
-    results = hyperparameter_optimization(args.model_type)
+    results = hyperparameter_optimization(args.model_type, args.epochs)

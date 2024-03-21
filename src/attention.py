@@ -40,7 +40,13 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                 x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
                 x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
 
-                _, attns = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                if args.model_type == 'FTTransformer':
+                    _, attns = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                elif args.model_type == 'TabTransformer':
+                    _, attns = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
+                else:
+                    raise ValueError(f"Unsupported model type: {args.model_type}")
+                
                 outputs.append(attns)
 
             # Concatenate the outputs from all GPUs
@@ -102,7 +108,12 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
             x_categ = features[:, binary_feature_indices].to(dtype=torch.long)  # dtype is specified here
             x_cont = features[:, numerical_feature_indices]
             
-            _, attns = model(x_categ=x_categ, x_numer=x_cont, return_attn=True)
+            if args.model_type == 'FTTransformer':
+                _, attns = model(x_categ=x_categ, x_numer=x_cont, return_attn=True)
+            elif args.model_type == 'TabTransformer':
+                _, attns = model(x_categ=x_categ, x_cont=x_cont, return_attn=True)
+            else:
+                raise ValueError(f"Unsupported model type: {args.model_type}")
             
             attns = attns if isinstance(attns, list) else [attns]
             
@@ -279,8 +290,11 @@ def main():
     dataset = CustomDataset(features, labels)
 
     # Create the DataLoader
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=world_size, rank=rank)
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, pin_memory=True, num_workers=4)
+    if world_size > 1:
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, pin_memory=True, num_workers=4)
+    else:
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
 
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
@@ -320,7 +334,7 @@ def main():
     #if torch.cuda.is_available() and torch.cuda.device_count() > 1:
     #    print(f"Using {torch.cuda.device_count()} GPUs!")
     #    model = torch.nn.DataParallel(model)
-
+    
     print("Computing attention maps...")
     attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns)
     print("Attention maps computed.")

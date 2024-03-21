@@ -117,10 +117,10 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 ```bash
 $ python3 src/data_analysis.py
 ``` 
-3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', or 'FTTransformer').
+3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', or 'FTTransformer') `--epochs`.
 
 ```bash
-$ python3 scr/train_tune.py --model_type FTTransformer
+$ python3 scr/train_tune.py --model_type FTTransformer 20
 ```
 
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path`.

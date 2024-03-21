@@ -1,12 +1,16 @@
 import argparse
 import os
 import torch
-from transformers import AutoModel, utils
+from transformers import utils
 from bertviz import head_view, model_view
 from model_utils import load_model
+from ft_transformer import FTTransformer
+from tab_transformer_pytorch import TabTransformer
+import json
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Visualize attention from a loaded model using BertViz.')
+parser.add_argument('--dataset_type', type=str, choices=['train', 'validation'], required=True, help='Specify dataset type for visualization')
 parser.add_argument('--model_path', type=str, required=True, help='Path to the saved model file')
 parser.add_argument('--model_type', type=str, required=True, choices=['Transformer', 'TabTransformer', 'FTTransformer'], help='Type of the model')
 parser.add_argument('--dim', type=int, required=True, help='Dimension of the model')
@@ -15,6 +19,14 @@ parser.add_argument('--heads', type=int, required=True, help='Number of attentio
 parser.add_argument('--attn_dropout', type=float, required=True, help='Attention dropout rate')
 parser.add_argument('--ff_dropout', type=float, required=True, help='Feed forward dropout rate')
 args = parser.parse_args()
+
+# Load features and labels based on the dataset type
+if args.dataset_type == 'train':
+    features = torch.load('train_features.pt')
+    labels = torch.load('train_labels.pt')
+elif args.dataset_type == 'validation':
+    features = torch.load('validation_features.pt')
+    labels = torch.load('validation_labels.pt')
 
 # Feature indices
 
@@ -57,8 +69,20 @@ input_continuous = input_features[:, numerical_feature_indices]
 
 # Generate attention maps
 with torch.no_grad():
-    outputs = model(x_categ=input_binary, x_numer=input_continuous, return_attn=True)
+    if model_type == 'FTTransformer':
+        outputs = model(x_categ=input_binary, x_numer=input_continuous, return_attn=True)
+    elif model_type == 'TabTransformer':
+        outputs = model(x_categ=input_binary, x_cont=input_continuous, return_attn=True)
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}")
+
     attention = outputs[-1]  # Output includes attention weights when return_attn=True
+    
+    # Convert attention weights to the expected format for BertViz
+    if isinstance(attention, tuple):
+        attention = list(attention)
+    elif isinstance(attention, torch.Tensor):
+        attention = [attention]
 
 # Create output directory if it doesn't exist
 output_dir = 'attn_html'
