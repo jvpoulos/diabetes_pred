@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -17,9 +19,6 @@ import pickle
 def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns):
     model.eval()
 
-    attention_weights_dir = "attention_weights"
-    os.makedirs(attention_weights_dir, exist_ok=True)
-
     feature_names = []
     aggregated_attention_weights = {}
     valid_feature_names = {}
@@ -31,17 +30,21 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
             x_categ = features[:, binary_feature_indices].to(dtype=torch.long)  # dtype is specified here
             x_cont = features[:, numerical_feature_indices]
 
-            # Move the input tensors to the same device as the model
-            x_categ = x_categ.to(next(model.parameters()).device)
-            x_cont = x_cont.to(next(model.parameters()).device)
+            # Split the batch across available GPUs
+            x_categ_chunks = torch.chunk(x_categ, chunks=torch.cuda.device_count(), dim=0)
+            x_cont_chunks = torch.chunk(x_cont, chunks=torch.cuda.device_count(), dim=0)
 
-            # Pass the input tensors to the model
-            _, attns = model(x_categ=x_categ, x_numer=x_cont, return_attn=True)
+            # Process each chunk on a separate GPU
+            outputs = []
+            for x_categ_chunk, x_cont_chunk in zip(x_categ_chunks, x_cont_chunks):
+                x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
+                x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
 
-            if isinstance(attns, tuple):
-                attns = list(attns)
-            elif isinstance(attns, torch.Tensor):
-                attns = [attns]
+                _, attns = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                outputs.append(attns)
+
+            # Concatenate the outputs from all GPUs
+            attns = [torch.cat([output[i] for output in outputs], dim=0) for i in range(len(outputs[0]))]
 
             for head_idx, attn in enumerate(attns):
                 if attn.dim() == 5:
@@ -63,7 +66,7 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                 valid_feature_names[head_idx].append([col for col in column_names[:num_features] if col not in excluded_columns])
 
             # Clear the GPU cache and release memory after each batch
-            del x_categ, x_cont, attns
+            del x_categ, x_cont, attns, outputs
             torch.cuda.empty_cache()
 
     print("Attention map computation completed.")
@@ -257,6 +260,13 @@ def main():
             args.dim = 512
         args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
 
+    # Initialize distributed environment
+    dist.init_process_group(backend='nccl', init_method='env://')
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(os.environ['LOCAL_RANK'])
+    device = torch.device(f'cuda:{local_rank}')
+
     print("Loading dataset...")
     if args.dataset_type == 'train':
         features = torch.load('train_features.pt')
@@ -269,7 +279,8 @@ def main():
     dataset = CustomDataset(features, labels)
 
     # Create the DataLoader
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
+    sampler = torch.utils.data.distributed.DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, pin_memory=True, num_workers=4)
 
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
@@ -297,31 +308,34 @@ def main():
 
     print("Loading model...")
     model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
+    model = model.to(device)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
     print("Model loaded.")
 
     # Determine the device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)  # Move the model to the appropriate device
+    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #model = model.to(device)  # Move the model to the appropriate device
 
     # Using multiple GPUs if available, wrapping the model just once here
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        model = torch.nn.DataParallel(model)
+    #if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    #    print(f"Using {torch.cuda.device_count()} GPUs!")
+    #    model = torch.nn.DataParallel(model)
 
     print("Computing attention maps...")
     attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns)
     print("Attention maps computed.")
     
-    if attention_maps is not None and feature_names is not None:
-        save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
+    if rank == 0:
+        if attention_maps is not None and feature_names is not None:
+            save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
 
-        print("Identifying top feature values...")
-        top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10])
-        print("Feature value attention weights:", top_feature_value_attention_weights)
-        save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
-        print("Top feature values identified.")
-    else:
-        print("No attention maps to process.")
+            print("Identifying top feature values...")
+            top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10])
+            print("Feature value attention weights:", top_feature_value_attention_weights)
+            save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
+            print("Top feature values identified.")
+        else:
+            print("No attention maps to process.")
 
 if __name__ == '__main__':
     main()

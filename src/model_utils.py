@@ -21,6 +21,120 @@ import re
 import pickle
 from einops import rearrange, repeat
 
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
+    model.train()
+    total_loss = 0
+
+    true_labels = []
+    predictions = []
+
+    for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
+        optimizer.zero_grad()
+
+        # Extracting categorical and numerical features based on their indices
+        categorical_features = features[:, binary_feature_indices].to(device)
+        categorical_features = categorical_features.long()  # Convert categorical_features to long type
+        numerical_features = features[:, numerical_feature_indices].to(device)
+        labels = labels.to(device)
+
+        # Ensure variables are initialized
+        lam = 1.0  # Default value for lam
+        labels_a = labels.clone()  # Default values for labels_a and labels_b
+        labels_b = labels.clone()
+
+        # Initialize augmented_cat and augmented_num before the if-else blocks
+        augmented_cat, augmented_num = None, None
+
+        # Apply mixup or cutmix augmentation if enabled
+        if use_mixup and np.random.rand() < mixup_alpha:
+            combined_features = torch.cat((categorical_features, numerical_features), dim=1)
+            augmented_data, labels_a, labels_b, lam = apply_mixup_numerical(combined_features, labels, mixup_alpha)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        elif use_cutmix and np.random.rand() < cutmix_prob:
+            augmented_data, labels_a, labels_b, lam = apply_cutmix_numerical(features, labels, cutmix_alpha)
+            augmented_cat = augmented_data[:, :len(binary_feature_indices)].long()
+            augmented_num = augmented_data[:, len(binary_feature_indices):]
+        else:
+            augmented_cat = categorical_features
+            augmented_num = numerical_features
+
+        # Forward pass through the model
+        if model_type == 'Transformer':
+            src = torch.cat((augmented_cat, augmented_num), dim=-1)
+            outputs = model(src)
+        else:
+            outputs = model(augmented_cat, augmented_num).squeeze()
+
+        # Calculate loss
+        if model_type == 'Transformer':
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels.unsqueeze(1))
+        else:
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels)
+
+        # Backward pass and optimization step
+        loss.backward()
+        optimizer.step()
+
+        # Accumulate loss
+        total_loss += loss.item() * features.size(0)
+        torch.cuda.empty_cache()
+
+        # Accumulate true labels and predictions for AUROC calculation
+        true_labels.extend(labels.cpu().squeeze().numpy())
+        predictions.extend(outputs.detach().cpu().squeeze().numpy())
+
+    # Calculate average loss
+    average_loss = total_loss / len(train_loader.dataset)
+    print(f'Average Training Loss: {average_loss:.4f}')
+
+    # Calculate AUROC on the training set
+    train_auroc = roc_auc_score(true_labels, predictions)
+    print(f'Training AUROC: {train_auroc:.4f}')
+
+    return average_loss, train_auroc
+
+def validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices):
+    model.eval()
+    total_loss = 0
+
+    true_labels = []
+    predictions = []
+
+    # Wrap the validation loader with tqdm for a progress bar
+    with torch.no_grad():
+        for batch_idx, (features, labels) in tqdm(enumerate(validation_loader), total=len(validation_loader), desc="Validating"):
+            categorical_features = features[:, binary_feature_indices].to(device)
+            categorical_features = categorical_features.long()
+            numerical_features = features[:, numerical_feature_indices].to(device)
+            labels = labels.to(device)  # Move labels to the device
+            if model_type == 'Transformer':
+                src = torch.cat((categorical_features, numerical_features), dim=-1)
+                outputs = model(src)
+                labels = labels.unsqueeze(1)  # Add an extra dimension to match the model outputs
+            else:
+                outputs = model(categorical_features, numerical_features)
+                outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
+
+            # Accumulate true labels and predictions for AUROC calculation
+            true_labels.extend(labels.cpu().squeeze().numpy())
+            predictions.extend(outputs.detach().cpu().squeeze().numpy())
+
+    average_loss = total_loss / len(validation_loader)
+    print(f'Average Validation Loss: {average_loss:.4f}')
+
+    auroc = roc_auc_score(true_labels, predictions)
+    print(f'Validation AUROC: {auroc:.4f}')
+    return average_loss, auroc
+    
 class TransformerWithInputProjection(nn.Module):
     def __init__(self, input_size, d_model, nhead, num_encoder_layers, dim_feedforward=2048, dropout=0.1, activation="relu", device=None):
         super(TransformerWithInputProjection, self).__init__()

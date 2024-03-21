@@ -11,15 +11,76 @@ import random
 import numpy as np
 from tqdm import tqdm
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model
 from ray import tune
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune import ExperimentAnalysis
-from ray.air import session
+from ray.tune import with_resources
 from ray.tune.schedulers import ASHAScheduler
+from ray.air.config import RunConfig
 import json
+import functools
 
-def train_model(config, model_type):
+def custom_search_space(config):
+    use_mixup = config.get("use_mixup", False)
+    use_cutmix = config.get("use_cutmix", False)
+
+    if use_mixup and use_cutmix:
+        # If both are true, set use_cutmix to False
+        use_cutmix = False
+
+    return {
+        "use_mixup": use_mixup,
+        "use_cutmix": use_cutmix,
+        "mixup_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if use_mixup else 1),
+        "cutmix_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if use_cutmix else 1),
+        "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if use_cutmix else 0),
+    }
+
+def hyperparameter_optimization(model_type):
+    search_space = {
+        "dim": tune.choice([32, 192, 512]),
+        "depth": tune.choice([1, 3, 6]),
+        "heads": tune.choice([4, 8, 16]),
+        "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
+        "ff_dropout": tune.choice([0.0, 0.1, 0.2]),
+        "dropout": tune.choice([0.0, 0.1, 0.2]),
+        "num_encoder_layers": tune.choice([2, 4, 6]),
+        "dim_feedforward": tune.choice([1024, 2048, 4096]),
+        "disable_early_stopping": tune.choice([True, False]),
+        "early_stopping_patience": tune.sample_from(lambda spec: tune.choice([5, 10, 15]) if not spec.config.get("disable_early_stopping", False) else 0),
+    }
+
+    # Update the search space with the custom search space function
+    search_space.update(custom_search_space({}))  # Pass an empty dictionary as the config argument
+
+    scheduler = ASHAScheduler(
+        metric="val_auroc",
+        mode="max",
+        max_t=100,
+        grace_period=1,
+        reduction_factor=2,
+    )
+
+    tuner = tune.Tuner(
+        tune.with_resources(
+            tune.with_parameters(functools.partial(tune_model, model_type=model_type)),
+            resources={"cpu": 2, "gpu": 2}  # Allocate 2 CPUs and 2 GPUs per trial
+        ),
+        param_space=search_space,
+        tune_config=tune.TuneConfig(
+            scheduler=scheduler,
+            num_samples=1,
+        ),
+    )
+
+    results = tuner.fit()
+
+    print("Best hyperparameters found were: ", results.get_best_result().config)
+
+    return results
+
+def tune_model(config, model_type):
     dim = config["dim"] 
     depth = config["depth"]
     heads = config["heads"]
@@ -29,7 +90,7 @@ def train_model(config, model_type):
     cutmix_alpha = config["cutmix_alpha"]
     cutmix_prob = config["cutmix_prob"]
     disable_early_stopping = config["disable_early_stopping"]
-    early_stopping_patience = config["early_stopping_patience"]
+    early_stopping_patience = config["early_stopping_patience"].sample() if isinstance(config["early_stopping_patience"], tune.search.sample.Domain) else config["early_stopping_patience"]
 
     if model_type in ['TabTransformer', 'FTTransformer']:
         attn_dropout = config["attn_dropout"]
@@ -151,10 +212,10 @@ def train_model(config, model_type):
             'device': device,
             'model_type': model_type,
             'use_cutmix': use_cutmix,
-            'cutmix_prob': cutmix_prob,
-            'cutmix_alpha': cutmix_alpha,
+            'cutmix_prob': config["cutmix_prob"].sample() if isinstance(config["cutmix_prob"], tune.search.sample.Domain) else config["cutmix_prob"],
+            'cutmix_alpha': config["cutmix_alpha"].sample() if isinstance(config["cutmix_alpha"], tune.search.sample.Domain) else config["cutmix_alpha"],
             'use_mixup': use_mixup,
-            'mixup_alpha': mixup_alpha,
+            'mixup_alpha': config["mixup_alpha"].sample() if isinstance(config["mixup_alpha"], tune.search.sample.Domain) else config["mixup_alpha"],
             'binary_feature_indices': binary_feature_indices,
             'numerical_feature_indices': numerical_feature_indices
         }
@@ -182,48 +243,6 @@ def train_model(config, model_type):
 
             if patience_counter >= early_stopping_patience:
                 break
-
-def hyperparameter_optimization(model_type):
-    search_space = {
-        "dim": tune.choice([32, 192, 512]),
-        "depth": tune.choice([1, 3, 6]),  
-        "heads": tune.choice([4, 8, 16]),
-        "use_mixup": tune.choice([True, False]),
-        "use_cutmix": tune.choice([True, False]),
-        "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
-        "ff_dropout": tune.choice([0.0, 0.1, 0.2]), 
-        "dropout": tune.choice([0.0, 0.1, 0.2]),
-        "num_encoder_layers": tune.choice([2, 4, 6]),
-        "dim_feedforward": tune.choice([1024, 2048, 4096]),
-        "mixup_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.use_mixup else 1),
-        "cutmix_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.use_cutmix else 1),
-        "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if spec.config.use_cutmix else 0),
-        "disable_early_stopping": tune.choice([True, False]),
-        "early_stopping_patience": tune.sample_from(lambda spec: tune.choice([5, 10, 15]) if not spec.config.disable_early_stopping else 0),
-    }
-
-    scheduler = ASHAScheduler(
-        metric="val_auroc",
-        mode="max",
-        max_t=100,
-        grace_period=1,
-        reduction_factor=2,
-    )
-
-    tuner = tune.Tuner(
-        lambda config: train_model(config, model_type),
-        param_space=search_space,
-        tune_config=tune.TuneConfig(
-            scheduler=scheduler,
-            num_samples=1,
-        ),
-    )
-
-    results = tuner.fit()
-
-    print("Best hyperparameters found were: ", results.get_best_result().config)
-
-    return results
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization using Ray Tune')
