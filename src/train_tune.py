@@ -67,7 +67,7 @@ def hyperparameter_optimization(model_type, epochs):
         mode="max",
         max_t=100,
         grace_period=1,
-        reduction_factor=4, # only 25% of all trials are kept each time they are reduced
+        reduction_factor=4,
     )
 
     tuner = tune.Tuner(
@@ -77,8 +77,10 @@ def hyperparameter_optimization(model_type, epochs):
         ),
         param_space=search_space,
         tune_config=tune.TuneConfig(
-            scheduler=scheduler,  # Use ASHAScheduler for early stopping and resource allocation
-            num_samples=10,  # Explore 10 different parameter configurations
+            metric="val_auroc",  # Specify the metric here
+            mode="max",  # Specify the mode (maximize or minimize)
+            scheduler=scheduler,
+            num_samples=10,
         ),
     )
 
@@ -105,10 +107,8 @@ def tune_model(config, model_type, epochs):
         ff_dropout = config["ff_dropout"]
         if dim>128 or heads>8 or depth>6:
             batch_size = 8
-        elif dim==128 and heads<16 and depth<12:
-            batch_size = 16
         else:
-            batch_size = 32
+            batch_size = 16
     elif model_type == 'Transformer':
         num_encoder_layers = config["num_encoder_layers"]
         dim_feedforward = config["dim_feedforward"]

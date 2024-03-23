@@ -14,4 +14,5 @@ pickle-mixin==1.0.2
 wandb==0.15.11
 ray==2.4.0
 bertviz==1.4.0
+ipython==7.16.3
 

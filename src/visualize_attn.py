@@ -50,8 +50,8 @@ depth = args.depth
 heads = args.heads
 attn_dropout = args.attn_dropout
 ff_dropout = args.ff_dropout
-binary_feature_indices = args.binary_feature_indices
-numerical_feature_indices = args.numerical_feature_indices
+binary_feature_indices = binary_feature_indices
+numerical_feature_indices = numerical_feature_indices
 categories = [2] * len(binary_feature_indices)
 num_continuous = len(numerical_feature_indices)
 
@@ -78,11 +78,18 @@ with torch.no_grad():
 
     attention = outputs[-1]  # Output includes attention weights when return_attn=True
     
-    # Convert attention weights to the expected format for BertViz
+    # Check the dimensions of the attention tensor
     if isinstance(attention, tuple):
         attention = list(attention)
     elif isinstance(attention, torch.Tensor):
-        attention = [attention]
+        if attention.dim() == 5:
+            # Reshape the attention tensor from [num_layers, batch_size, num_heads, seq_len, seq_len]
+            # to a list of [batch_size, num_heads, seq_len, seq_len] tensors
+            attention = [attn.squeeze(0) for attn in torch.unbind(attention, dim=0)]
+        else:
+            raise ValueError(f"Unexpected attention tensor shape: {attention.shape}")
+    else:
+        raise ValueError(f"Unexpected attention type: {type(attention)}")
 
 # Create output directory if it doesn't exist
 output_dir = 'attn_html'

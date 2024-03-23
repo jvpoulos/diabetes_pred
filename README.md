@@ -126,10 +126,7 @@ $ python3 scr/train_tune.py --model_type FTTransformer 20
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path`.
 
 ```bash
-#$ python3 src/train.py --model_type Transformer --dim 512 --heads 8 --dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 128 --epochs 200 --disable_early_stopping
-# no augmentation: $ python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id 'bnymues5' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.1_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth'
-# CutMix augmentation: python3 src/train.py --model_type FTTransformer --dim 128 --attn_dropout 0.0 --ff_dropout 0.0  --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 100 --early_stopping_patience 10 --run_id '8zthc8tx' --wandb_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' 
-python3 src/train.py --model_type FTTransformer --outcome 'A1cGreaterThan7' --batch_size 8 --epochs 200 --disable_early_stopping
+python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 200 --early_stopping_patience 10
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
@@ -141,7 +138,7 @@ $ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransform
 4. (Optional) Extract attention weights from the last layer of the transformer and plot attention maps. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--model_path` `--batch_size`:
 
 ```bash
-$ python3 -m torch.distributed.launch --nproc_per_node=2 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 8 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 16
+$ python3 -m torch.distributed.launch --nproc_per_node=2 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 8 --attn_dropout 0.0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dim3_heads8_fdr0.0_adr0.0_el6_dl6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep24_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 2
 ```
 
 5. (Optional) Generate HTML representations for the head view, model view, and neuron view using the BertViz package.

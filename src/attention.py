@@ -16,10 +16,9 @@ import numpy as np
 from model_utils import load_model, CustomDataset
 import pickle
 
-def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns):
+def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, model_type):
     model.eval()
 
-    feature_names = []
     aggregated_attention_weights = {}
     valid_feature_names = {}
 
@@ -30,57 +29,50 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
             x_categ = features[:, binary_feature_indices].to(dtype=torch.long)  # dtype is specified here
             x_cont = features[:, numerical_feature_indices]
 
-            # Split the batch across available GPUs
-            x_categ_chunks = torch.chunk(x_categ, chunks=torch.cuda.device_count(), dim=0)
-            x_cont_chunks = torch.chunk(x_cont, chunks=torch.cuda.device_count(), dim=0)
+            # Split the batch into smaller chunks
+            chunk_size = 32
+            num_chunks = (x_categ.size(0) + chunk_size - 1) // chunk_size
 
-            # Process each chunk on a separate GPU
-            outputs = []
-            for x_categ_chunk, x_cont_chunk in zip(x_categ_chunks, x_cont_chunks):
-                x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
-                x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
+            for chunk_idx in range(num_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, x_categ.size(0))
 
-                if args.model_type == 'FTTransformer':
-                    _, attns = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
-                elif args.model_type == 'TabTransformer':
-                    _, attns = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
+                x_categ_chunk = x_categ[start_idx:end_idx].to(next(model.parameters()).device)
+                x_cont_chunk = x_cont[start_idx:end_idx].to(next(model.parameters()).device)
+
+                if model_type == 'FTTransformer':
+                    _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                elif model_type == 'TabTransformer':
+                    _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
                 else:
-                    raise ValueError(f"Unsupported model type: {args.model_type}")
-                
-                outputs.append(attns)
+                    raise ValueError(f"Unsupported model type: {model_type}")
 
-            # Concatenate the outputs from all GPUs
-            attns = [torch.cat([output[i] for output in outputs], dim=0) for i in range(len(outputs[0]))]
+                attns_chunk = attns_chunk if isinstance(attns_chunk, list) else [attns_chunk]
 
-            for head_idx, attn in enumerate(attns):
-                if attn.dim() == 5:
-                    attn = attn.mean(dim=0)  # Average across the batch dimension
+                for head_idx, attn_chunk in enumerate(attns_chunk):
+                    if attn_chunk.dim() == 5:
+                        attn_chunk = attn_chunk.mean(dim=0)  # Average across the batch dimension
 
-                # Now attn should be of shape [num_heads, num_features, num_features]
-                num_heads = attn.size(0)
-                num_features = attn.size(1)
+                    # Now attn_chunk should be of shape [num_heads, num_features, num_features]
+                    num_heads = attn_chunk.size(0)
+                    num_features = attn_chunk.size(1)
 
-                # Normalize attention weights across features for each head
-                attn = attn / attn.sum(dim=-1, keepdim=True)
+                    # Normalize attention weights across features for each head
+                    attn_chunk = attn_chunk / attn_chunk.sum(dim=-1, keepdim=True)
 
-                # Aggregate attention weights and feature names
-                if head_idx not in aggregated_attention_weights:
-                    aggregated_attention_weights[head_idx] = []
-                    valid_feature_names[head_idx] = []
+                    # Aggregate attention weights and feature names
+                    if head_idx not in aggregated_attention_weights:
+                        aggregated_attention_weights[head_idx] = []
+                        valid_feature_names[head_idx] = []
 
-                aggregated_attention_weights[head_idx].append(attn.cpu().numpy())
-                valid_feature_names[head_idx].append([col for col in column_names[:num_features] if col not in excluded_columns])
+                    aggregated_attention_weights[head_idx].append(attn_chunk.cpu().numpy())
+                    valid_feature_names[head_idx].append([col for col in column_names[:num_features] if col not in excluded_columns])
 
-            # Clear the GPU cache and release memory after each batch
-            del x_categ, x_cont, attns, outputs
-            torch.cuda.empty_cache()
+                # Clear the GPU cache and release memory after each chunk
+                del x_categ_chunk, x_cont_chunk, attns_chunk
+                torch.cuda.empty_cache()
 
     print("Attention map computation completed.")
-
-    # Check if aggregated_attention_weights and valid_feature_names are empty
-    if len(aggregated_attention_weights) == 0 or len(valid_feature_names) == 0:
-        print("Warning: No valid attention weights or feature names found.")
-        return None, None
 
     top_attention_weights = {}
     top_feature_names = {}
@@ -107,6 +99,10 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
             features, labels = batch
             x_categ = features[:, binary_feature_indices].to(dtype=torch.long)  # dtype is specified here
             x_cont = features[:, numerical_feature_indices]
+            
+            # Move the input tensors to the same device as the model
+            x_categ = x_categ.to(next(model.parameters()).device)
+            x_cont = x_cont.to(next(model.parameters()).device)
             
             if args.model_type == 'FTTransformer':
                 _, attns = model(x_categ=x_categ, x_numer=x_cont, return_attn=True)
@@ -242,8 +238,10 @@ def main():
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None,
-                    help='Optional path to the saved model file to load before training')
-    args = parser.parse_args()
+                        help='Optional path to the saved model file to load before training')
+
+    # Parse known arguments and ignore unknown arguments (like --local_rank)
+    args, _ = parser.parse_known_args()
 
     # Conditional defaults based on model_type
     if args.model_type == 'TabTransformer':
@@ -336,7 +334,7 @@ def main():
     #    model = torch.nn.DataParallel(model)
     
     print("Computing attention maps...")
-    attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns)
+    attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, args.model_type)
     print("Attention maps computed.")
     
     if rank == 0:

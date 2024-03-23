@@ -362,7 +362,7 @@ if __name__ == "__main__":
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
-    parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
+    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
