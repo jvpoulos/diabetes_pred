@@ -265,34 +265,11 @@ def main(args):
         # log metrics to wandb
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
-        # Check for early stopping conditions
-        if not args.disable_early_stopping:
-            if val_auroc > best_val_auroc:
-                best_val_auroc = val_auroc
-                patience_counter = 0
-                # Save the best model
-                best_model_wts = copy.deepcopy(model.state_dict())
-            else:
-                patience_counter += 1
-                print(f"No improvement in validation AUROC for {patience_counter} epochs.")
-                if patience_counter >= early_stopping_patience:
-                    print(f"Stopping early at epoch {epoch+1}")
-                    break
-
-    # Define the directory where model weights will be saved
-    model_weights_dir = 'model_weights'
-    # Ensure the directory exists
-    os.makedirs(model_weights_dir, exist_ok=True)
-
-    # Checkpoint saving logic
-    if patience_counter < early_stopping_patience:
-        # Save checkpoints only if early stopping didn't trigger
-        for checkpoint_epoch in range(10, args.epochs + 1, 10):
+        # Save model weights every 10 epochs
+        if (epoch + 1) % 10 == 0:
             model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
-            # Modify the file path to include the model_weights directory
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
-            # Save the model checkpoint
             checkpoint = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
@@ -306,13 +283,26 @@ def main(args):
             wandb.save(model_filepath)
             
             print(f"Model checkpoint saved as {model_filepath}")
-    else:
-        # If early stopping was triggered, save the best model weights
+
+        # Check for early stopping conditions
+        if not args.disable_early_stopping:
+            if val_auroc > best_val_auroc:
+                best_val_auroc = val_auroc
+                patience_counter = 0
+                # Save the best model
+                best_model_wts = copy.deepcopy(model.state_dict())
+            else:
+                patience_counter += 1
+                print(f"No improvement in validation AUROC for {patience_counter} epochs.")
+                if patience_counter >= args.early_stopping_patience and val_auroc <= val_aurocs[-2]:
+                    print(f"Stopping early at epoch {epoch+1}")
+                    break
+
+    # Save the best model if early stopping was triggered
+    if not args.disable_early_stopping and patience_counter >= args.early_stopping_patience:
         best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
-        # Modify the file path to include the model_weights directory
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
-        # Save the best model checkpoint
         best_checkpoint = {
             "epoch": epoch + 1,
             "model_state_dict": best_model_wts,
@@ -366,7 +356,7 @@ if __name__ == "__main__":
     parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train the model')
+    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train the model')
     parser.add_argument('--disable_early_stopping', action='store_true', help='Disable early stopping')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
     parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
@@ -382,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     parser.add_argument('--dtype', type=str, default='float32', help='Data type for the Transformer model')
+    
     args = parser.parse_args()
 
     # Conditional defaults based on model_type

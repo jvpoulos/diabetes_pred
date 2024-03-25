@@ -138,8 +138,7 @@ $ python3 scr/train_tune.py --model_type FTTransformer 20
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path`.
 
 ```bash
-#python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --batch_size 8 --epochs 200 --early_stopping_patience 10
-python3 src/train.py --model_type FTTransformer --dim 32 --depth 3 --heads 16 --ff_dropout 0.2 --attn_dropout 0.2 --outcome 'A1cGreaterThan7' --batch_size 8 --epochs 200 --disable_early_stopping
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --batch_size 8 --epochs 200 --early_stopping_patience 10
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:

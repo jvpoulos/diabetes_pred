@@ -21,7 +21,7 @@ import re
 import pickle
 from einops import rearrange, repeat
 
-def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4):
     model.train()
     total_loss = 0
 
@@ -29,8 +29,6 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
     predictions = []
 
     for batch_idx, (features, labels) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Training"):
-        optimizer.zero_grad()
-
         # Extracting categorical and numerical features based on their indices
         categorical_features = features[:, binary_feature_indices].to(device)
         categorical_features = categorical_features.long()  # Convert categorical_features to long type
@@ -78,12 +76,19 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
             else:
                 loss = criterion(outputs, labels)
 
-        # Backward pass and optimization step
+        # Normalize loss to account for batch accumulation
+        loss = loss / accum_iter
+
+        # Backward pass and gradient accumulation
         loss.backward()
-        optimizer.step()
+
+        # Perform optimizer step and zero gradients after accumulating specified number of batches
+        if ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
+            optimizer.step()
+            optimizer.zero_grad()
 
         # Accumulate loss
-        total_loss += loss.item() * features.size(0)
+        total_loss += loss.item() * features.size(0) * accum_iter  # Multiply by accum_iter to account for normalized loss
         torch.cuda.empty_cache()
 
         # Accumulate true labels and predictions for AUROC calculation
