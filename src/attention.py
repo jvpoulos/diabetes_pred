@@ -126,7 +126,7 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
                 # Normalize attention weights across features for each sample and head
                 attn = attn / attn.sum(dim=-1, keepdim=True)
                 
-                for feature_name in top_feature_names[head_idx][:10]:  # Consider only the top 10 features
+                for feature_name in top_feature_names[head_idx][:5]:  # Consider only the top 5 features
                     if feature_name in column_names:
                         feature_index = column_names.index(feature_name)
                         if feature_index < features.size(1):
@@ -212,7 +212,7 @@ def save_top_feature_values_to_html(top_feature_value_attention_weights, filenam
 
         # Save the HTML tables to a file
         with open(f"{filename.split('.')[0]}_head_{head_idx}.html", 'w') as file:
-            file.write(f'<h1>Normalized attention weights for each feature value within each outcome group (HbA1c >= 7.0% and HbA1c < 7.0%): Top 10 features (Attention Head {head_idx})</h1>')
+            file.write(f'<h1>Normalized attention weights for each feature value within each outcome group (HbA1c >= 7.0% and HbA1c < 7.0%): Top 5 features (Attention Head {head_idx})</h1>')
             file.write('<h2>Patients with HbA1c >= 7.0%</h2>')
             file.write(html_table_high)
             file.write('<h2>Patients with HbA1c < 7.0%</h2>')

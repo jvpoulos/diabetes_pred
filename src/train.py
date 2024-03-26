@@ -134,8 +134,9 @@ def main(args):
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout
             ff_dropout=args.ff_dropout,                                 # feed forward dropout
-            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits
-            mlp_act=nn.ReLU()                                           # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
+            mlp_act=nn.ReLU(),                                          # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+            checkpoint_grads=True                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'FTTransformer':
         model = FTTransformer(
@@ -146,7 +147,8 @@ def main(args):
             depth=args.depth,                                           # depth, paper recommended 3
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
-            ff_dropout=args.ff_dropout                                  # feed forward dropout, paper recommends 0.1
+            ff_dropout=args.ff_dropout,                                 # feed forward dropout, paper recommends 0.1
+            checkpoint_grads=True                                       # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'Transformer':
         input_size = len(binary_feature_indices) + len(numerical_feature_indices)
@@ -248,6 +250,11 @@ def main(args):
     mixup_alpha = args.mixup_alpha
 
     model_type = args.model_type
+
+    # Define the directory where model weights will be saved
+    model_weights_dir = 'model_weights'
+    # Ensure the directory exists
+    os.makedirs(model_weights_dir, exist_ok=True)
 
     # Training loop
     for epoch in range(args.epochs):

@@ -196,7 +196,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -228,7 +228,6 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             d_model=dim,
             nhead=heads,
             num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
             activation='relu',
