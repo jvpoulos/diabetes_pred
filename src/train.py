@@ -136,7 +136,7 @@ def main(args):
             ff_dropout=args.ff_dropout,                                 # feed forward dropout
             mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
             mlp_act=nn.ReLU(),                                          # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-            checkpoint_grads=True                                      # enable gradient checkpointing
+            checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'FTTransformer':
         model = FTTransformer(
@@ -148,7 +148,7 @@ def main(args):
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
             ff_dropout=args.ff_dropout,                                 # feed forward dropout, paper recommends 0.1
-            checkpoint_grads=True                                       # enable gradient checkpointing
+            checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'Transformer':
         input_size = len(binary_feature_indices) + len(numerical_feature_indices)

@@ -29,7 +29,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x_categ[idx], self.x_cont[idx], self.labels[idx]
 
-def extract_embeddings(model, loader, device, args):
+def extract_embeddings(model, loader, device, args, chunk_size=8):
     model.eval()
     embeddings = []
     with torch.no_grad():
@@ -38,16 +38,10 @@ def extract_embeddings(model, loader, device, args):
             x_categ = x_categ.to(device)
             x_cont = x_cont.to(device)
 
-            # Split the input into smaller chunks
-            chunk_size = 128  # Adjust this value based on your available memory
-            num_chunks = (x_categ.size(0) + chunk_size - 1) // chunk_size
-
-            for chunk_idx in range(num_chunks):
-                start_idx = chunk_idx * chunk_size
-                end_idx = min(start_idx + chunk_size, x_categ.size(0))
-
-                x_categ_chunk = x_categ[start_idx:end_idx]
-                x_cont_chunk = x_cont[start_idx:end_idx]
+            # Split the batch into smaller chunks
+            for i in range(0, x_categ.size(0), chunk_size):
+                x_categ_chunk = x_categ[i:i+chunk_size]
+                x_cont_chunk = x_cont[i:i+chunk_size]
 
                 with amp.autocast():  # Use automatic mixed precision
                     if args.model_type == 'FTTransformer':
@@ -125,7 +119,7 @@ def main(gpu, args):
 
     dataset = CustomDataset(x_categ, x_cont, labels)
 
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
 
     print("Loading model...")
     model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)

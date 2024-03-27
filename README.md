@@ -138,7 +138,7 @@ $ python3 scr/train_tune.py --model_type FTTransformer 20
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha`  `--model_path`.
 
 ```bash
-$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --batch_size 8 --epochs 200 --early_stopping_patience 10
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --batch_size 16 --epochs 200 --early_stopping_patience 10
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
@@ -149,22 +149,22 @@ $ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransform
 
 4. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--outcome` (required) `--model_path` `--batch_size`:
 ```bash
-$ python3 -m torch.distributed.launch --nproc_per_node=2 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 32 --depth 2 --heads 3 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim32_dim2_dim3_dim0.0_adr0.0_A1cGreaterThan7_bs32_lr0.001_ep100_esp100_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 1
+$ python3 -m torch.distributed.launch --nproc_per_node=2 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 8
 ```
 
 5. (Optional) Generate HTML representations for the head view, model view, and neuron view using the BertViz package (model_type = Transformer only).
 ```bash
-$ python3 src/visualize_attn.py --dataset_type 'train' --model_type Transformer --dim 32 --depth 2 --heads 3 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim32_dim2_dim3_dim0.0_adr0.0_A1cGreaterThan7_bs32_lr0.001_ep100_esp100_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 1
+$ python3 src/visualize_attn.py --dataset_type 'train' --model_type Transformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim32_dim2_dim3_dim0.0_adr0.0_A1cGreaterThan7_bs32_lr0.001_ep100_esp100_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 1
 ```
 
 5. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type train --model_type FTTransformer --dim 32 --depth 2 --heads 3 --ff_dropout 0 --attn_dropout 0 --outcome A1cGreaterThan7 --model_path 'model_weights/FTTransformer_dim32_dim2_dim3_dim0.0_adr0.0_A1cGreaterThan7_bs32_lr0.001_ep100_esp100_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 1 -n 1 -g 2 -nr 0
+$ python3 src/embeddings.py --dataset_type train --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome A1cGreaterThan7 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 8 -n 1 -g 2 -nr 0
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--outcome`  `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type FTTransformer --dim 32 --depth 2 --heads 3 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 8
+$ python3 src/test.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --outcome 'A1cGreaterThan7' --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 8
 ```

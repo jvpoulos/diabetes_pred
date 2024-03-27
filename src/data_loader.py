@@ -15,7 +15,6 @@ import re
 import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack
 from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_sparse
-import logging
 from joblib import Parallel, delayed
 import multiprocessing
 import concurrent.futures
@@ -25,133 +24,12 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
-
-logging.basicConfig(filename='data_processing.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
-
-
-def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
-    """
-    Reads a CSV file with a progress bar, selecting specific columns.
-
-    Parameters:
-        file_path (str): Path to the file.
-        columns_type (dict): Dictionary of column names and their data types.
-        columns_select (list): List of columns to read.
-        parse_dates (list or None): List of columns to parse as dates.
-        chunk_size (int): Number of rows per chunk.
-
-    Returns:
-        DataFrame: The read DataFrame.
-    """
-    # Filter columns_type to include only those columns in columns_select
-    filtered_columns_type = {col: columns_type[col] for col in columns_select if col in columns_type}
-
-    # Initialize a DataFrame to store the data
-    data = pd.DataFrame()
-
-    # Estimate the number of chunks
-    total_rows = sum(1 for _ in open(file_path))
-    total_chunks = (total_rows // chunk_size) + 1
-
-    # Read the file in chunks with a progress bar
-    with tqdm(total=total_chunks, desc="Reading CSV") as pbar:
-        for chunk in pd.read_csv(file_path, sep='|', dtype=filtered_columns_type, usecols=columns_select,
-                                 parse_dates=parse_dates, chunksize=chunk_size, low_memory=False):
-            data = pd.concat([data, chunk], ignore_index=True)
-            pbar.update(1)
-
-    return data
-
-def dask_df_to_tensor(dask_df, chunk_size=1024):
-    """
-    Convert a Dask DataFrame to a PyTorch tensor in chunks.
-    
-    Args:
-    dask_df (dask.dataframe.DataFrame): The Dask DataFrame to convert.
-    chunk_size (int): The size of chunks to use when processing.
-
-    Returns:
-    torch.Tensor: The resulting PyTorch tensor.
-    """
-    # Convert the Dask DataFrame to a Dask Array
-    dask_array = dask_df.to_dask_array(lengths=True)
-
-    # Define a function to process a chunk of the array
-    def process_chunk(dask_chunk):
-        numpy_chunk = dask_chunk.compute()  # Compute the chunk to a NumPy array
-        tensor_chunk = torch.from_numpy(numpy_chunk)  # Convert the NumPy array to a PyTorch tensor
-        return tensor_chunk
-
-    # Create a list to hold tensor chunks
-    tensor_chunks = []
-
-    # Iterate over chunks of the Dask array
-    for i in range(0, dask_array.shape[0], chunk_size):
-        chunk = dask_array[i:i + chunk_size]
-        # Use map_blocks to apply the processing function to each chunk
-        tensor_chunk = chunk.map_blocks(process_chunk, dtype=float)
-        tensor_chunks.append(tensor_chunk)
-
-    # Use da.concatenate to combine chunks into a single Dask array, then compute
-    combined_tensor = da.concatenate(tensor_chunks, axis=0).compute()
-
-    return combined_tensor
+from data_utils import read_file, dask_df_to_tensor, preprocess_data
+from rdpr_dict import outcomes_columns, dia_columns, prc_columns, outcomes_columns_select, dia_columns_select, prc_columns_select
 
 # Define the column types for each file type
 
 def main(use_dask=False):
-    outcomes_columns = {
-        'studyID': 'int32',
-        'EMPI': 'int32',
-        'IndexDate': 'object',
-        'InitialA1c': 'float32',
-        'A1cAfter12Months': 'float32',
-        'A1cGreaterThan7': 'int32',
-        'Female': 'int32',
-        'Married': 'int32',
-        'GovIns': 'int32',
-        'English': 'int32',
-        'DaysFromIndexToInitialA1cDate': 'int32',
-        'DaysFromIndexToA1cDateAfter12Months': 'int32',
-        'DaysFromIndexToFirstEncounterDate': 'int32',
-        'DaysFromIndexToLastEncounterDate': 'int32',
-        'DaysFromIndexToLatestDate': 'int32',
-        'DaysFromIndexToPatientTurns18': 'int32',
-        'AgeYears': 'int32',
-        'BirthYear': 'int32',
-        'NumberEncounters': 'int32',
-        'SDI_score': 'float32',
-        'Veteran': 'int32'
-    }
-
-    dia_columns = {
-        'EMPI': 'int32',
-        'Date': 'object', 
-        'Code_Type': 'object', 
-        'Code': 'object', 
-        'IndexDate': 'object', 
-        'DiagnosisBeforeOrOnIndexDate': 'int32', 
-        'CodeWithType': 'object'
-    }
-
-    prc_columns = {
-        'EMPI': 'int32',
-        'Date': 'object', 
-        'Code_Type': 'object', 
-        'Code': 'object', 
-        'IndexDate': 'object', 
-        'ProcedureBeforeOrOnIndexDate': 'int32', 
-        'CodeWithType': 'object'
-    }
-
-    # Select columns to read in each dataset
-
-    outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'BirthYear', 'SDI_score', 'Veteran']
-
-    dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
-
-    prc_columns_select = ['EMPI', 'ProcedureBeforeOrOnIndexDate', 'CodeWithType']
-
     # Define file path and selected columns
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
@@ -162,42 +40,7 @@ def main(use_dask=False):
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
 
-    # Limit diagnoses and procedures to those on or before patients' index date
-    # Check dimensions in diagnoses data
-    print("Number of diagnoses, unconditional on Index date:", len(df_dia)) # 8768424
-
-    # Keep only rows where 'DiagnosisBeforeOrOnIndexDate' equals 1
-    df_dia = df_dia[df_dia['DiagnosisBeforeOrOnIndexDate'] == 1]
-
-    # Drop the 'DiagnosisBeforeOrOnIndexDate' column
-    df_dia.drop('DiagnosisBeforeOrOnIndexDate', axis=1, inplace=True) 
-
-    # Check dimensions in diagnoses data
-    print("Number of diagnoses before or on Index date:", len(df_dia)) # 2881686
-
-    # Check dimensions in procedures data
-    print("Number of procedures, unconditional on Index date:", len(df_prc))
-
-    # Keep only rows where 'ProcedureBeforeOrOnIndexDate' equals 1
-    df_prc = df_prc[df_prc['ProcedureBeforeOrOnIndexDate'] == 1]
-
-    # Drop the 'DiagnosisBeforeOrOnIndexDate' column
-    df_prc.drop('ProcedureBeforeOrOnIndexDate', axis=1, inplace=True) 
-
-    # Check dimensions in procedures data
-    print("Number of procedures before or on Index date:", len(df_prc))
-
-    # Check dimensions in outcomes data
-    print("Number of patients:", len(df_outcomes)) # 55667
-    print("Total features (original):", df_outcomes.shape[1]) # 20
-
-    print("Preprocessing outcomes data")
-
-    # Create a new column 'A1cLessThan7' based on the condition
-    df_outcomes['A1cLessThan7'] = np.where(df_outcomes['A1cAfter12Months'] < 7, 1, 0)
-
-    # Drop the 'A1cAfter12Months' column
-    df_outcomes.drop('A1cAfter12Months', axis=1, inplace=True)
+    df_dia, df_prc, df_outcomes = preprocess_data(df_dia, df_prc, df_outcomes)
 
     print("Splitting outcomes data")
     # Splitting the data into train, validation, and test sets
