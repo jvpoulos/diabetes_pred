@@ -42,6 +42,11 @@ def hyperparameter_optimization(model_type, epochs):
         "heads": tune.choice([4, 8, 16]),
         "disable_early_stopping": tune.choice([True, False]),
         "early_stopping_patience": tune.sample_from(lambda spec: tune.choice([5, 10, 15]) if not spec.config.get("disable_early_stopping", False) else 0),
+        "use_mixup": tune.choice([True, False]),
+        "use_cutmix": tune.choice([True, False]),
+        "mixup_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.get("use_mixup", False) else 1),
+        "cutmix_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.get("use_cutmix", False) else 1),
+        "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if spec.config.get("use_cutmix", False) else 0),
     }
 
     if model_type in ['TabTransformer', 'FTTransformer']:
@@ -53,21 +58,18 @@ def hyperparameter_optimization(model_type, epochs):
         })
     elif model_type == 'Transformer':
         search_space.update({
-            "dim": tune.choice([256, 512, 1024]),
+            "dim": tune.choice([128, 256, 512]),
             "num_encoder_layers": tune.choice([2, 4, 6]),
-            "dim_feedforward": tune.choice([1024, 2048, 4096]),
+            "dim_feedforward": tune.choice([512, 1024, 2048]),
             "dropout": tune.choice([0.0, 0.1, 0.2]),
         })
 
-    # Update the search space with the custom search space function
-    search_space.update(custom_search_space({}))  # Pass an empty dictionary as the config argument
-
     scheduler = ASHAScheduler(
-        metric="val_auroc",
-        mode="max",
         max_t=100,
         grace_period=1,
-        reduction_factor=4,
+        reduction_factor=3,
+        metric="val_auroc",  # Specify the metric to optimize
+        mode="max"  # Specify the optimization mode (maximize or minimize)
     )
 
     tuner = tune.Tuner(
@@ -77,8 +79,6 @@ def hyperparameter_optimization(model_type, epochs):
         ),
         param_space=search_space,
         tune_config=tune.TuneConfig(
-            metric="val_auroc",  # Specify the metric here
-            mode="max",  # Specify the mode (maximize or minimize)
             scheduler=scheduler,
             num_samples=10,
         ),
@@ -86,10 +86,11 @@ def hyperparameter_optimization(model_type, epochs):
 
     results = tuner.fit()
 
-    print("Best hyperparameters found were: ", results.get_best_result().config)
+    best_result = results.get_best_result(metric="val_auroc", mode="max")  # Specify the metric and mode
+    print("Best hyperparameters found were: ", best_result.config)
 
     return results
-
+    
 def tune_model(config, model_type, epochs):
     dim = config["dim"] 
     heads = config["heads"]
@@ -100,21 +101,17 @@ def tune_model(config, model_type, epochs):
     cutmix_prob = config["cutmix_prob"]
     disable_early_stopping = config["disable_early_stopping"]
     early_stopping_patience = config["early_stopping_patience"].sample() if isinstance(config["early_stopping_patience"], tune.search.sample.Domain) else config["early_stopping_patience"]
+    batch_size = 8
 
     if model_type in ['TabTransformer', 'FTTransformer']:
         depth = config["depth"]
         attn_dropout = config["attn_dropout"]
         ff_dropout = config["ff_dropout"]
-        if dim>128 or heads>8 or depth>6:
-            batch_size = 8
-        else:
-            batch_size = 16
     elif model_type == 'Transformer':
         num_encoder_layers = config["num_encoder_layers"]
         dim_feedforward = config["dim_feedforward"]
         dropout = config["dropout"]
-        batch_size = 32
-
+   
     # Provide the absolute path to the train_dataset.pt file
     train_dataset_path = '/home/jvp/diabetes_pred/train_dataset.pt'
     validation_dataset_path = '/home/jvp/diabetes_pred/validation_dataset.pt'

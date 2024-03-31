@@ -15,4 +15,8 @@ wandb==0.15.11
 ray==2.4.0
 bertviz==1.4.0
 ipython==7.16.3
+omegaconf==2.3.0
+hydra==2.5
+polars==0.12.5
+sparklines==0.4.2
 

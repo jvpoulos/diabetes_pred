@@ -56,7 +56,7 @@ categories = [2] * len(binary_feature_indices)
 num_continuous = len(numerical_feature_indices)
 
 print("Loading model...")
-model = load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous)
+model = load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device)
 print("Model loaded.")
 
 # Suppress standard warnings

@@ -25,14 +25,14 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 
-from EventStreamGPT.EventStream.data.config import (
+from EventStream.data.config import (
     DatasetConfig,
     DatasetSchema,
     InputDFSchema,
     MeasurementConfig,
 )
-from EventStreamGPT.EventStream.data.dataset_polars import Dataset
-from EventStreamGPT.EventStream.data.types import (
+from EventStream.data.dataset_polars import Dataset
+from EventStream.data.types import (
     DataModality,
     InputDataType,
     InputDFType,
@@ -40,8 +40,7 @@ from EventStreamGPT.EventStream.data.types import (
 )
 from data_utils import read_file, dask_df_to_tensor, preprocess_data
 from rdpr_dict import outcomes_columns, dia_columns, prc_columns, outcomes_columns_select, dia_columns_select, prc_columns_select
-from EventStreamGPT.scripts.build_dataset import add_to_container
-
+from scripts.build_dataset import add_to_container
 
 def main(use_dask=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
@@ -100,20 +99,20 @@ def main(use_dask=False):
 
                         measurement_config_kwargs.update(m_dict)
 
-                    match m, modality:
-                        case str(), DataModality.UNIVARIATE_REGRESSION:
-                            add_to_container(m, InputDataType.FLOAT, data_schema)
-                        case [str() as m, str() as v], DataModality.MULTIVARIATE_REGRESSION:
-                            add_to_container(m, InputDataType.CATEGORICAL, data_schema)
-                            add_to_container(v, InputDataType.FLOAT, data_schema)
-                            measurement_config_kwargs["values_column"] = v
-                            measurement_config_kwargs["name"] = m
-                        case str(), DataModality.SINGLE_LABEL_CLASSIFICATION:
-                            add_to_container(m, InputDataType.CATEGORICAL, data_schema)
-                        case str(), DataModality.MULTI_LABEL_CLASSIFICATION:
-                            add_to_container(m, InputDataType.CATEGORICAL, data_schema)
-                        case _:
-                            raise ValueError(f"{m}, {modality} invalid! Must be in {DataModality.values()}!")
+                    # Refactored code without match-case
+                    if isinstance(m, str) and modality == DataModality.UNIVARIATE_REGRESSION:
+                        add_to_container(m, InputDataType.FLOAT, data_schema)
+                    elif isinstance(m, list) and isinstance(m[0], str) and isinstance(m[1], str) and modality == DataModality.MULTIVARIATE_REGRESSION:
+                        add_to_container(m[0], InputDataType.CATEGORICAL, data_schema)
+                        add_to_container(m[1], InputDataType.FLOAT, data_schema)
+                        measurement_config_kwargs["values_column"] = m[1]
+                        measurement_config_kwargs["name"] = m[0]
+                    elif isinstance(m, str) and modality == DataModality.SINGLE_LABEL_CLASSIFICATION:
+                        add_to_container(m, InputDataType.CATEGORICAL, data_schema)
+                    elif isinstance(m, str) and modality == DataModality.MULTI_LABEL_CLASSIFICATION:
+                        add_to_container(m, InputDataType.CATEGORICAL, data_schema)
+                    else:
+                        raise ValueError(f"{m}, {modality} invalid! Must be in {DataModality.values()}!")
 
                     if m in measurement_configs:
                         old = {k: v for k, v in measurement_configs[m].to_dict().items() if v is not None}
@@ -179,15 +178,18 @@ def main(use_dask=False):
                 cols = [list(t) for t in cols.items()]
 
             for col in cols:
-                match col:
-                    case [str() as in_name, str() as out_name] if out_name in col_schema:
-                        schema_key = in_name
-                        schema_val = (out_name, col_schema[out_name])
-                    case str() as col_name if col_name in col_schema:
-                        schema_key = col_name
-                        schema_val = (col_name, col_schema[col_name])
-                    case _:
-                        raise ValueError(f"{col} unprocessable! Col schema: {col_schema}")
+                if isinstance(col, list) and len(col) == 2 and isinstance(col[0], str) and isinstance(col[1], str) and col[1] in col_schema:
+                    in_name, out_name = col
+                    schema_key = in_name
+                    schema_val = (out_name, col_schema[out_name])
+                    # Continue processing for this case
+                elif isinstance(col, str) and col in col_schema:
+                    col_name = col
+                    schema_key = col_name
+                    schema_val = (col_name, col_schema[col_name])
+                    # Continue processing for this case
+                else:
+                    raise ValueError(f"{col} unprocessable! Col schema: {col_schema}")
 
                 cols_covered.append(schema_val[0])
                 add_to_container(schema_key, schema_val, data_schema)
@@ -206,23 +208,23 @@ def main(use_dask=False):
                     input_schema_kwargs[schema][col] = dt
 
         must_have = source_schema.get("must_have", None)
-        match must_have:
-            case None:
-                pass
-            case list():
-                input_schema_kwargs["must_have"] = must_have
-            case dict() as must_have_dict:
-                must_have = []
-                for k, v in must_have_dict.items():
-                    match v:
-                        case True:
-                            must_have.append(k)
-                        case list():
-                            must_have.append((k, v))
-                        case _:
-                            raise ValueError(f"{v} invalid for `must_have`")
-                input_schema_kwargs["must_have"] = must_have
-
+        if must_have is None:
+            pass
+        elif isinstance(must_have, list):
+            input_schema_kwargs["must_have"] = must_have
+        elif isinstance(must_have, dict):
+            must_have_processed = []
+            for k, v in must_have.items():
+                if v is True:
+                    must_have_processed.append(k)
+                elif isinstance(v, list):
+                    must_have_processed.append((k, v))
+                else:
+                    raise ValueError(f"{v} invalid for `must_have`")
+            input_schema_kwargs["must_have"] = must_have_processed
+        else:
+            raise ValueError("Unhandled `must_have` type")
+       
         return InputDFSchema(**input_schema_kwargs, **extra_kwargs)
 
     inputs = {
@@ -261,8 +263,8 @@ def main(use_dask=False):
     )
 
     # Build Config
-    split = (0.8, 0.1)
-    seed = 1
+    split = (0.7, 0.2, 0.1)
+    seed = 42
     do_overwrite = False
     DL_chunk_size = 20000
 

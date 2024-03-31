@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 from sklearn.metrics import roc_auc_score
@@ -151,15 +152,15 @@ def main(args):
             checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'Transformer':
-        input_size = len(binary_feature_indices) + len(numerical_feature_indices)
         model = TransformerWithInputProjection(
-            input_size=input_size,
+            categories=categories,
+            num_continuous=len(numerical_feature_indices),
             d_model=args.dim,
             nhead=args.heads,
             num_encoder_layers=args.num_encoder_layers,
             dim_feedforward=args.dim_feedforward,
             dropout=args.dropout,
-            activation='relu',
+            activation='geglu',
             device=device
         ).to(device)
     else:
@@ -181,6 +182,7 @@ def main(args):
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) #  scheduler to adjust the learning rate during training
 
     hyperparameters = {
     'model_type': args.model_type,
@@ -210,6 +212,7 @@ def main(args):
         checkpoint = torch.load(wandb.restore(args.wandb_path).name)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         epoch_counter = checkpoint["epoch"]
         train_losses = checkpoint["train_losses"]
         train_aurocs = checkpoint["train_aurocs"]
@@ -272,6 +275,8 @@ def main(args):
         # log metrics to wandb
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
+        scheduler.step() # update the learning rate 
+
         # Save model weights every 10 epochs
         if (epoch + 1) % 10 == 0:
             model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
@@ -281,6 +286,7 @@ def main(args):
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(), 
                 "train_losses": train_losses,
                 "train_aurocs": train_aurocs,
                 "val_losses": val_losses,

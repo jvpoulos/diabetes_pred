@@ -19,6 +19,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
+import math
 from einops import rearrange, repeat
 
 def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4):
@@ -57,30 +58,26 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
             augmented_cat = categorical_features
             augmented_num = numerical_features
 
-        # Forward pass through the model
+        # Forward pass through the model and calculate the loss
         if model_type == 'Transformer':
-            src = torch.cat((augmented_cat, augmented_num), dim=-1)
-            outputs = model(src)
+            outputs = model(augmented_cat, augmented_num)
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a.squeeze()) + (1 - lam) * criterion(outputs, labels_b.squeeze())
+            else:
+                loss = criterion(outputs, labels.squeeze())
         else:
             outputs = model(augmented_cat, augmented_num).squeeze()
-
-        # Calculate loss
-        if model_type == 'Transformer':
             if use_mixup or use_cutmix:
                 loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
             else:
-                loss = criterion(outputs, labels.unsqueeze(1))
-        else:
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-            else:
-                loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels)            
 
         # Normalize loss to account for batch accumulation
         loss = loss / accum_iter
 
         # Backward pass and gradient accumulation
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # clips the gradients of all model parameters to a maximum norm of 1.0
 
         # Perform optimizer step and zero gradients after accumulating specified number of batches
         if ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
@@ -119,14 +116,13 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             categorical_features = categorical_features.long()
             numerical_features = features[:, numerical_feature_indices].to(device)
             labels = labels.to(device)  # Move labels to the device
+
             if model_type == 'Transformer':
-                src = torch.cat((categorical_features, numerical_features), dim=-1)
-                outputs = model(src)
-                labels = labels.unsqueeze(1)  # Add an extra dimension to match the model outputs
-            else:
                 outputs = model(categorical_features, numerical_features)
-                outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
-            loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels.squeeze())
+            else:
+                outputs = model(categorical_features, numerical_features).squeeze()
+                loss = criterion(outputs, labels)
             total_loss += loss.item()
 
             # Accumulate true labels and predictions for AUROC calculation
@@ -139,39 +135,101 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
     auroc = roc_auc_score(true_labels, predictions)
     print(f'Validation AUROC: {auroc:.4f}')
     return average_loss, auroc
-    
+
+class GEGLU(nn.Module):
+    def forward(self, x):
+        x, gates = x.chunk(2, dim=-1)
+        return x * F.gelu(gates)
+        
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu"):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.GELU() if activation == "gelu" else nn.ReLU()
+
+    def forward(self, src, src_mask=None, src_key_padding_mask=None):
+        src2 = self.self_attn(src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)[0]
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        return src
+
 class TransformerWithInputProjection(nn.Module):
-    def __init__(self, input_size, d_model, nhead, num_encoder_layers, dim_feedforward=2048, dropout=0.1, activation="relu", device=None):
-        super(TransformerWithInputProjection, self).__init__()
-        self.input_projection = nn.Linear(input_size, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation=activation)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
-        self.output_projection = nn.Linear(d_model, 1)  # Add a final linear layer
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))  # CLS token
+    def __init__(self, categories, num_continuous, d_model, nhead, num_encoder_layers, dim_feedforward=2048, dropout=0.1, activation="gelu", device=None):
+        super().__init__()
+        self.num_categories = len(categories)
+        self.num_unique_categories = sum(categories)
+        self.d_model = d_model
         self.device = device
 
-    def forward(self, src):
-        # Project input
-        src = self.input_projection(src)
+        self.categorical_embedder = nn.Embedding(self.num_unique_categories, d_model) if self.num_unique_categories > 0 else None
+        self.numerical_embedder = nn.Linear(num_continuous, d_model) if num_continuous > 0 else None
+        self.positional_encoding = PositionalEncoding(d_model, dropout)
 
-        # Ensure src has the correct number of dimensions
-        if src.ndim == 2:
-            src = src.unsqueeze(1)  # Add a dummy sequence dimension
+        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
+
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+        self.output_projection = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, 1)
+        )
+
+    def forward(self, categorical_features, numerical_features):
+        batch_size = categorical_features.size(0)
+        if self.categorical_embedder:
+            categorical_embeddings = self.categorical_embedder(categorical_features)
+        else:
+            categorical_embeddings = torch.zeros(batch_size, 0, self.d_model, device=self.device)
+
+        if self.numerical_embedder:
+            numerical_embeddings = self.numerical_embedder(numerical_features).unsqueeze(1)
+        else:
+            numerical_embeddings = torch.zeros(batch_size, 0, self.d_model, device=self.device)
+
+        src = torch.cat([categorical_embeddings, numerical_embeddings], dim=1)
 
         # Add CLS token
-        batch_size = src.size(0)
-        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=batch_size)
-        src = torch.cat((cls_tokens, src), dim=1)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        src = torch.cat([cls_tokens, src], dim=1)
 
-        # Pass the projected input through the transformer encoder
+        src = src.transpose(0, 1)  # Shape: (seq_length, batch_size, d_model)
+        src = self.positional_encoding(src)
+
         output = self.transformer_encoder(src)
+        cls_output = output[0]  # Extract the CLS token representation
 
-        # Extract the CLS token output and apply the linear projection
-        cls_output = output[:, 0, :]  # Extract the CLS token output (batch_size, d_model)
-        output = self.output_projection(cls_output)  # Apply the linear projection (batch_size, 1)
-
-        return output
-
+        output = self.output_projection(cls_output)
+        return torch.sigmoid(output.squeeze(-1))
+        
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -196,7 +254,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -222,33 +280,35 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             ff_dropout=ff_dropout
         )
     elif model_type == 'Transformer':
-        input_size = len(binary_feature_indices) + len(numerical_feature_indices)
         model = TransformerWithInputProjection(
-            input_size=input_size,
+            categories=categories,
+            num_continuous=num_continuous,
             d_model=dim,
             nhead=heads,
             num_encoder_layers=num_encoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            activation='relu',
+            activation='geglu',
             device=device
         )
     else:
         raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer' or 'FTTransformer'.")
 
     if model_path is not None:
-        state_dict = torch.load(model_path)
-        
+        # Load the model weights on the CPU first
+        state_dict = torch.load(model_path, map_location='cpu')
+
         # Remove unexpected keys from the state dictionary
         unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict",
                            "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
         for key in unexpected_keys:
             if key in state_dict:
                 del state_dict[key]
-        
+
         # Load the state dictionary while ignoring missing keys
         model.load_state_dict(state_dict, strict=False)
-        
+
+    model.to(device)
     model.eval()
     return model
 

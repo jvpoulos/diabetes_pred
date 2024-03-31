@@ -29,7 +29,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x_categ[idx], self.x_cont[idx], self.labels[idx]
 
-def extract_embeddings(model, loader, device, args, chunk_size=8):
+def extract_embeddings(model, loader, device, args, chunk_size=4):
     model.eval()
     embeddings = []
     with torch.no_grad():
@@ -121,10 +121,13 @@ def main(gpu, args):
 
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
 
+   # Initialize device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
+    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     print(f"Model created: {model}")
-
+    
     model = model.to(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
@@ -192,11 +195,11 @@ if __name__ == '__main__':
             args.dim = 512
         args.heads = args.heads if args.heads is not None else 8
 
-    mp.set_start_method('forkserver')
-    context = mp.get_context('forkserver')
+    mp.set_start_method('spawn')  # Set the start method to 'spawn'
+
     processes = []
     for i in range(args.gpus):
-        p = context.Process(target=main, args=(i, args))
+        p = mp.Process(target=main, args=(i, args))
         p.start()
         processes.append(p)
     

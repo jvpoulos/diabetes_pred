@@ -112,7 +112,7 @@ def main(args):
 
     # Evaluate the model
     print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous)
+    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     print("Model loaded.")
 
 if __name__ == "__main__":
