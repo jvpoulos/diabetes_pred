@@ -15,6 +15,8 @@ from model_utils import load_model
 import torch.multiprocessing as mp
 import torch.distributed as dist
 import torch.cuda.amp as amp
+from torch.utils.checkpoint import checkpoint
+from torch.cuda.amp import autocast
 scaler = amp.GradScaler()
 
 class CustomDataset(Dataset):
@@ -29,7 +31,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x_categ[idx], self.x_cont[idx], self.labels[idx]
 
-def extract_embeddings(model, loader, device, args, chunk_size=4):
+def extract_embeddings(model, loader, device, args, sub_batch_size=4):
     model.eval()
     embeddings = []
     with torch.no_grad():
@@ -38,23 +40,23 @@ def extract_embeddings(model, loader, device, args, chunk_size=4):
             x_categ = x_categ.to(device)
             x_cont = x_cont.to(device)
 
-            # Split the batch into smaller chunks
-            for i in range(0, x_categ.size(0), chunk_size):
-                x_categ_chunk = x_categ[i:i+chunk_size]
-                x_cont_chunk = x_cont[i:i+chunk_size]
+            # Split the batch into smaller sub-batches
+            for i in range(0, x_categ.size(0), sub_batch_size):
+                x_categ_sub = x_categ[i:i+sub_batch_size]
+                x_cont_sub = x_cont[i:i+sub_batch_size]
 
                 with amp.autocast():  # Use automatic mixed precision
                     if args.model_type == 'FTTransformer':
-                        emb_chunk = model.module.get_embeddings(x_categ_chunk, x_cont_chunk)
+                        emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
                     elif args.model_type == 'TabTransformer':
-                        emb_chunk = model.module.get_embeddings(x_categ_chunk, x_cont_chunk)
+                        emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
                     else:
                         raise ValueError(f"Unsupported model type: {args.model_type}")
 
-                embeddings.append(emb_chunk)
+                embeddings.append(emb_sub)
 
-                # Clear the GPU cache and release memory after each chunk
-                del x_categ_chunk, x_cont_chunk, emb_chunk
+                # Clear the GPU cache and release memory after each sub-batch
+                del x_categ_sub, x_cont_sub, emb_sub
                 torch.cuda.empty_cache()
 
     embeddings = torch.cat(embeddings, dim=0)
@@ -131,7 +133,8 @@ def main(gpu, args):
     model = model.to(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
-    embeddings = extract_embeddings(model, data_loader, gpu, args)
+    with autocast():
+        embeddings = extract_embeddings(model, data_loader, gpu, args)
 
     embeddings_list = [torch.zeros_like(embeddings) for _ in range(dist.get_world_size())]
     dist.all_gather(embeddings_list, embeddings)

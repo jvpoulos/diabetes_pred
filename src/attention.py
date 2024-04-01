@@ -10,6 +10,7 @@ from tqdm import tqdm
 import pandas as pd
 import numpy as np
 from model_utils import load_model, CustomDataset
+from torch.utils.checkpoint import checkpoint
 
 def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, model_type, batch_size, chunk_size=4):
     model.eval()
@@ -22,18 +23,27 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
         with autocast():
             for batch_idx, batch in enumerate(tqdm(loader, desc="Processing batches")):
                 features, _ = batch
-                x_categ = features[:, binary_feature_indices].to(dtype=torch.long, device=next(model.parameters()).device)
-                x_cont = features[:, numerical_feature_indices].to(next(model.parameters()).device)
+                x_categ = features[:, binary_feature_indices].to(dtype=torch.long)
+                x_cont = features[:, numerical_feature_indices]
 
                 # Split the batch into smaller chunks
                 for i in range(0, x_categ.size(0), chunk_size):
                     x_categ_chunk = x_categ[i:i+chunk_size].to(next(model.parameters()).device)
                     x_cont_chunk = x_cont[i:i+chunk_size].to(next(model.parameters()).device)
 
+                    # Set requires_grad=True for the continuous features
+                    x_cont_chunk.requires_grad_(True)
+
                     if model_type == 'FTTransformer':
-                        _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                        def forward_pass(x_categ_chunk, x_cont_chunk):
+                            _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                            return attns_chunk
+                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
                     elif model_type == 'TabTransformer':
-                        _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
+                        def forward_pass(x_categ_chunk, x_cont_chunk):
+                            _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
+                            return attns_chunk
+                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
                     else:
                         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -80,62 +90,71 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
 
     return top_attention_weights, top_feature_names
 
-def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names):
+def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names, chunk_size=4):
     model.eval()
     
     feature_value_attention_weights = {head_idx: {feature: {} for feature in top_feature_names[head_idx]} for head_idx in top_feature_names}
     
     print("Starting feature value attention weight computation...")
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Processing batches"):
-            features, labels = batch
-            x_categ = features[:, binary_feature_indices].to(dtype=torch.long, device=next(model.parameters()).device)
-            x_cont = features[:, numerical_feature_indices].to(next(model.parameters()).device)
-            labels = labels.to(next(model.parameters()).device)
-            
-            # Split the batch into smaller chunks
-            for i in range(0, x_categ.size(0), chunk_size):
-                x_categ_chunk = x_categ[i:i+chunk_size].to(next(model.parameters()).device)
-                x_cont_chunk = x_cont[i:i+chunk_size].to(next(model.parameters()).device)
-                labels_chunk = labels[i:i+chunk_size].to(next(model.parameters()).device)
+        with autocast():
+            for batch in tqdm(loader, desc="Processing batches"):
+                features, labels = batch
+                x_categ = features[:, binary_feature_indices].to(dtype=torch.long)
+                x_cont = features[:, numerical_feature_indices]
                 
-                if args.model_type == 'FTTransformer':
-                    _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
-                elif args.model_type == 'TabTransformer':
-                    _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
-                else:
-                    raise ValueError(f"Unsupported model type: {args.model_type}")
-            
-            attns = attns if isinstance(attns, list) else [attns]
-            
-            for head_idx, attn in enumerate(attns):
-                # Reduce the size of the tensor by averaging across layers if they exist
-                while attn.dim() > 3:
-                    attn = attn.mean(dim=1)
+                # Split the batch into smaller chunks
+                for i in range(0, x_categ.size(0), chunk_size):
+                    x_categ_chunk = x_categ[i:i+chunk_size].to(next(model.parameters()).device)
+                    x_cont_chunk = x_cont[i:i+chunk_size].to(next(model.parameters()).device)
+                    labels_chunk = labels[i:i+chunk_size].to(next(model.parameters()).device)
+                    
+                    # Set requires_grad=True for the continuous features
+                    x_cont_chunk.requires_grad_(True)
+                    
+                    if args.model_type == 'FTTransformer':
+                        def forward_pass(x_categ_chunk, x_cont_chunk):
+                            _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                            return attns_chunk
+                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
+                    elif args.model_type == 'TabTransformer':
+                        def forward_pass(x_categ_chunk, x_cont_chunk):
+                            _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
+                            return attns_chunk
+                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
+                    else:
+                        raise ValueError(f"Unsupported model type: {args.model_type}")
                 
-                # Now attn should be of shape [batch_size, num_heads, num_features, num_features]
-                batch_size = attn.size(0)
-                num_heads = attn.size(1)
-                num_features = attn.size(2)
+                attns_chunk = attns_chunk if isinstance(attns_chunk, list) else [attns_chunk]
                 
-                # Normalize attention weights across features for each sample and head
-                attn = attn / attn.sum(dim=-1, keepdim=True)
+                for head_idx, attn_chunk in enumerate(attns_chunk):
+                    # Reduce the size of the tensor by averaging across layers if they exist
+                    while attn_chunk.dim() > 3:
+                        attn_chunk = attn_chunk.mean(dim=1)
+                    
+                    # Now attn_chunk should be of shape [chunk_size, num_heads, num_features, num_features]
+                    chunk_size = attn_chunk.size(0)
+                    num_heads = attn_chunk.size(1)
+                    num_features = attn_chunk.size(2)
+                    
+                    # Normalize attention weights across features for each sample and head
+                    attn_chunk = attn_chunk / attn_chunk.sum(dim=-1, keepdim=True)
+                    
+                    for feature_name in top_feature_names[head_idx][:10]:  # Consider only the top 10 features
+                        if feature_name in column_names:
+                            feature_index = column_names.index(feature_name)
+                            if feature_index < features.size(1):
+                                feature_values = features[i:i+chunk_size, feature_index].cpu().numpy()
+                                
+                                for value, label, attention in zip(feature_values, labels_chunk.cpu().numpy(), attn_chunk[:, head_idx, feature_index, feature_index].cpu().numpy()):
+                                    if label == 1:
+                                        feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c ≥ 7.0%', {}).setdefault(value, []).append(attention)
+                                    else:
+                                        feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c < 7.0%', {}).setdefault(value, []).append(attention)
                 
-                for feature_name in top_feature_names[head_idx][:10]:  # Consider only the top 10 features
-                    if feature_name in column_names:
-                        feature_index = column_names.index(feature_name)
-                        if feature_index < features.size(1):
-                            feature_values = features[:, feature_index].cpu().numpy()
-                            
-                            for value, label, attention in zip(feature_values, labels.cpu().numpy(), attn[:, head_idx, feature_index, feature_index].cpu().numpy()):
-                                if label == 1:
-                                    feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c ≥ 7.0%', {}).setdefault(value, []).append(attention)
-                                else:
-                                    feature_value_attention_weights[head_idx][feature_name].setdefault('HbA1c < 7.0%', {}).setdefault(value, []).append(attention)
-            
-            # Clear the GPU cache and release memory after each batch
-            del x_categ, x_cont, attns
-            torch.cuda.empty_cache()
+                # Clear the GPU cache and release memory after each chunk
+                del x_categ_chunk, x_cont_chunk, attns_chunk, labels_chunk
+                torch.cuda.empty_cache()
     
     print("Feature value attention weight computation completed.")
     
@@ -314,20 +333,21 @@ def main():
     
     print("Model loaded.")
 
-    print("Computing attention maps...")
-    attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, args.model_type, args.batch_size)
-    print("Attention maps computed.")
-    
-    if attention_maps is not None and feature_names is not None:
-        save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
+    with autocast():
+        print("Computing attention maps...")
+        attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, args.model_type, args.batch_size)
+        print("Attention maps computed.")
 
-        print("Identifying top feature values...")
-        top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10])
-        print("Feature value attention weights:", top_feature_value_attention_weights)
-        save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
-        print("Top feature values identified.")
-    else:
-        print("No attention maps to process.")
+        if attention_maps is not None and feature_names is not None:
+            save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
+
+            print("Identifying top feature values...")
+            top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10])
+            print("Feature value attention weights:", top_feature_value_attention_weights)
+            save_top_feature_values_to_html(top_feature_value_attention_weights, "top_feature_values.html")
+            print("Top feature values identified.")
+        else:
+            print("No attention maps to process.")
 
 if __name__ == '__main__':
     main()

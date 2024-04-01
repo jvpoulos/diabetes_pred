@@ -129,7 +129,7 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 For temporal analyses, run instead:
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:/home/jvp/EventStreamGPT
-$ python3.8 src/event_stream.py
+$ python src/event_stream.py
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset:

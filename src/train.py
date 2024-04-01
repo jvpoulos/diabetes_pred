@@ -135,8 +135,11 @@ def main(args):
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout
             ff_dropout=args.ff_dropout,                                 # feed forward dropout
-            mlp_hidden_mults=(4, 2),                                    # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
+            mlp_hidden_mults=(4,2),                                     # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
             mlp_act=nn.ReLU(),                                          # activation for final mlp, defaults to relu, but could be anything else (selu etc)
+            dim_head = 16,                                              # default is 16
+            shared_categ_dim_divisor = 8,                               # in paper, they reserve dimension / 8 for category shared embedding
+            use_shared_categ_embed = True,                              # default is True
             checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'FTTransformer':
@@ -145,6 +148,7 @@ def main(args):
             num_continuous=len(numerical_feature_indices),              # number of continuous values
             dim=args.dim,                                               # dimension, paper set at 192
             dim_out=1,                                                  # binary prediction, but could be anything
+            dim_head = 16,                                              # default is 16
             depth=args.depth,                                           # depth, paper recommended 3
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
@@ -181,8 +185,8 @@ def main(args):
         print("Starting training from scratch.")
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) #  scheduler to adjust the learning rate during training
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.learning_rate, steps_per_epoch=len(train_loader), epochs=args.epochs, pct_start=0.1, anneal_strategy='cos', cycle_momentum=False, div_factor=1e3, final_div_factor=1e5)
 
     hyperparameters = {
     'model_type': args.model_type,

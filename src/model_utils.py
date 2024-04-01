@@ -22,7 +22,7 @@ import pickle
 import math
 from einops import rearrange, repeat
 
-def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4, clipping=True):
     model.train()
     total_loss = 0
 
@@ -77,10 +77,11 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
         # Backward pass and gradient accumulation
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # clips the gradients of all model parameters to a maximum norm of 1.0
 
         # Perform optimizer step and zero gradients after accumulating specified number of batches
         if ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
+            if clipping:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -190,7 +191,10 @@ class TransformerWithInputProjection(nn.Module):
 
         self.categorical_embedder = nn.Embedding(self.num_unique_categories, d_model) if self.num_unique_categories > 0 else None
         self.numerical_embedder = nn.Linear(num_continuous, d_model) if num_continuous > 0 else None
-        self.positional_encoding = PositionalEncoding(d_model, dropout)
+        self.categorical_layer_norm = nn.LayerNorm(d_model)
+        self.numerical_layer_norm = nn.LayerNorm(d_model)
+        self.position_embedding = nn.Embedding(512, d_model)  # Adjust the maximum sequence length as needed
+        self.dropout = nn.Dropout(dropout)
 
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
@@ -200,20 +204,27 @@ class TransformerWithInputProjection(nn.Module):
             nn.Linear(d_model, dim_feedforward),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, dim_feedforward),
+            nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(dim_feedforward, 1)
         )
 
     def forward(self, categorical_features, numerical_features):
         batch_size = categorical_features.size(0)
+        
         if self.categorical_embedder:
             categorical_embeddings = self.categorical_embedder(categorical_features)
+            categorical_embeddings = self.categorical_layer_norm(categorical_embeddings)
         else:
-            categorical_embeddings = torch.zeros(batch_size, 0, self.d_model, device=self.device)
+            categorical_embeddings = torch.zeros(batch_size, categorical_features.size(1), self.d_model, device=self.device)
 
         if self.numerical_embedder:
-            numerical_embeddings = self.numerical_embedder(numerical_features).unsqueeze(1)
+            numerical_embeddings = self.numerical_embedder(numerical_features)
+            numerical_embeddings = numerical_embeddings.unsqueeze(1)  # Add an extra dimension for sequence length
+            numerical_embeddings = self.numerical_layer_norm(numerical_embeddings)
         else:
-            numerical_embeddings = torch.zeros(batch_size, 0, self.d_model, device=self.device)
+            numerical_embeddings = torch.zeros(batch_size, numerical_features.size(1), self.d_model, device=self.device)
 
         src = torch.cat([categorical_embeddings, numerical_embeddings], dim=1)
 
@@ -221,10 +232,18 @@ class TransformerWithInputProjection(nn.Module):
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         src = torch.cat([cls_tokens, src], dim=1)
 
+        seq_length = src.size(1)
+
+        # Add position embeddings
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=self.device).unsqueeze(0).expand(batch_size, -1)
+        position_embeddings = self.position_embedding(position_ids)
+        src = src + position_embeddings
+
+        src = self.dropout(src)
         src = src.transpose(0, 1)  # Shape: (seq_length, batch_size, d_model)
-        src = self.positional_encoding(src)
 
         output = self.transformer_encoder(src)
+
         cls_output = output[0]  # Extract the CLS token representation
 
         output = self.output_projection(cls_output)
@@ -266,7 +285,11 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
             mlp_hidden_mults=(4, 2),
-            mlp_act=nn.ReLU()
+            mlp_act=nn.ReLU(),
+            dim_head = 16,                                              
+            shared_categ_dim_divisor = 8,                               
+            use_shared_categ_embed = True,                              
+            checkpoint_grads=True                                       
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
@@ -274,15 +297,17 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             num_continuous=num_continuous,
             dim=dim,
             dim_out=1,
+            dim_head = 16,
             depth=depth,
             heads=heads,
             attn_dropout=attn_dropout,
-            ff_dropout=ff_dropout
+            ff_dropout=ff_dropout,
+            checkpoint_grads=False
         )
     elif model_type == 'Transformer':
         model = TransformerWithInputProjection(
             categories=categories,
-            num_continuous=num_continuous,
+            num_continuous=len(numerical_feature_indices),
             d_model=dim,
             nhead=heads,
             num_encoder_layers=num_encoder_layers,
@@ -299,7 +324,7 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
         state_dict = torch.load(model_path, map_location='cpu')
 
         # Remove unexpected keys from the state dictionary
-        unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict",
+        unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict", "module.scheduler_state_dict",
                            "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
         for key in unexpected_keys:
             if key in state_dict:
