@@ -80,7 +80,7 @@ def main(args):
     # Extracting indices for features and label
     feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
 
-    label_index = column_names.index(args.outcome)
+    label_index = column_names.index('A1cGreaterThan7')
 
     # Assuming test_dataset is a tensor, use torch.index_select
     test_features = dataset_tensor[:, feature_indices]
@@ -129,7 +129,6 @@ if __name__ == "__main__":
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
     parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
-    parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None,
                     help='Optional path to the saved model file to load before training')

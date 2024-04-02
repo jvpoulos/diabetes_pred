@@ -60,6 +60,9 @@ def preprocess_data(df_dia, df_prc, df_outcomes):
     # Drop the 'A1cAfter12Months' column
     df_outcomes.drop('A1cAfter12Months', axis=1, inplace=True)
 
+    # Drop the 'BirthYear' column
+    df_outcomes.drop('BirthYear', axis=1, inplace=True)
+
     # Return the modified dataframes
     return df_dia, df_prc, df_outcomes
 

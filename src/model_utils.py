@@ -22,7 +22,7 @@ import pickle
 import math
 from einops import rearrange, repeat
 
-def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4, clipping=True):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4, max_norm=1, clipping=True):
     model.train()
     total_loss = 0
 
@@ -81,7 +81,7 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
         # Perform optimizer step and zero gradients after accumulating specified number of batches
         if ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
             if clipping:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
             optimizer.step()
             optimizer.zero_grad()
 

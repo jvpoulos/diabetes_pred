@@ -82,7 +82,7 @@ def main(use_dask=False):
     test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
-    columns_to_normalize = ['InitialA1c', 'AgeYears', 'BirthYear', 'SDI_score']
+    columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score']
 
     print("Normalizing numeric colums: ", columns_to_normalize)
 

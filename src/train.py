@@ -80,7 +80,7 @@ def main(args):
     # Extracting indices for features and label
     feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
 
-    label_index = column_names.index(args.outcome)
+    label_index = column_names.index('A1cGreaterThan7')
  
     # Selecting features and labels
     train_features = dataset_tensor[:, feature_indices]
@@ -195,7 +195,6 @@ def main(args):
     'heads': args.heads,
     'ff_dropout': args.ff_dropout,
     'attn_dropout': args.attn_dropout,
-    'outcome': args.outcome,
     'batch_size': args.batch_size,
     'lr': args.learning_rate,
     'ep': epoch_counter,
@@ -205,6 +204,8 @@ def main(args):
     'use_mixup': 'true' if args.use_mixup else 'false',
     'mixup_alpha': args.mixup_alpha,
     'use_cutmix': 'true' if args.use_cutmix else 'false'
+    'clipping': 'true' if args.clipping else 'false',
+    'max_norm': args.max_norm
     }   
 
     # start a new wandb run to track this script
@@ -248,7 +249,7 @@ def main(args):
     else:
         early_stopping_patience = args.early_stopping_patience  # Use the provided early stopping patience
 
-    # CutMix and mixup parameters
+    # Training arameters
     use_cutmix = args.use_cutmix
     cutmix_prob = args.cutmix_prob
     cutmix_alpha = args.cutmix_alpha
@@ -257,6 +258,8 @@ def main(args):
     mixup_alpha = args.mixup_alpha
 
     model_type = args.model_type
+    max_norm = args.max_norm
+    clipping = args.clipping
 
     # Define the directory where model weights will be saved
     model_weights_dir = 'model_weights'
@@ -265,7 +268,7 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices)
+        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, max_norm, clipping)
         val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
@@ -283,7 +286,11 @@ def main(args):
 
         # Save model weights every 10 epochs
         if (epoch + 1) % 10 == 0:
-            model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}.pth"
+            if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
+                model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}.pth"
+            else:
+                model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}.pth"
+  
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
             checkpoint = {
@@ -317,7 +324,10 @@ def main(args):
 
     # Save the best model if early stopping was triggered
     if not args.disable_early_stopping and patience_counter >= args.early_stopping_patience:
-        best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_{args.outcome}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_uc{'true' if args.use_cutmix else 'false'}_best.pth"
+        if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
+            best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_best.pth"
+        else:
+            best_model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_best.pth"
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
         best_checkpoint = {
@@ -370,7 +380,6 @@ if __name__ == "__main__":
     parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
-    parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train the model')
@@ -389,6 +398,8 @@ if __name__ == "__main__":
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     parser.add_argument('--dtype', type=str, default='float32', help='Data type for the Transformer model')
+    parser.add_argument('--clipping', action='store_true', help='Enable gradient clipping')
+    parser.add_argument('--max_norm', type=float, default=1, help='Clip gradient values to max_norm.')
     
     args = parser.parse_args()
 

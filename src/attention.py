@@ -249,7 +249,6 @@ def main():
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
     parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
-    parser.add_argument('--outcome', type=str, required=True, choices=['A1cGreaterThan7', 'A1cLessThan7'], help='Outcome variable to predict')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None,
                         help='Optional path to the saved model file to load before training')
