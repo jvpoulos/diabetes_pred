@@ -186,7 +186,7 @@ def main(args):
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.learning_rate, steps_per_epoch=len(train_loader), epochs=args.epochs, pct_start=0.1, anneal_strategy='cos', cycle_momentum=False, div_factor=1e3, final_div_factor=1e5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.learning_rate / 1e3)
 
     hyperparameters = {
     'model_type': args.model_type,
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     parser.add_argument('--dtype', type=str, default='float32', help='Data type for the Transformer model')
     parser.add_argument('--clipping', action='store_true', help='Enable gradient clipping')
-    parser.add_argument('--max_norm', type=float, default=1, help='Clip gradient values to max_norm.')
+    parser.add_argument('--max_norm', type=float, default=10, help='Clip gradient values to max_norm.')
     
     args = parser.parse_args()
 

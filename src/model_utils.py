@@ -22,7 +22,7 @@ import pickle
 import math
 from einops import rearrange, repeat
 
-def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, accum_iter=4, max_norm=1, clipping=True):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, max_norm, accum_iter=4, clipping=True):
     model.train()
     total_loss = 0
 

@@ -47,6 +47,9 @@ def hyperparameter_optimization(model_type, epochs):
         "mixup_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.get("use_mixup", False) else 1),
         "cutmix_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.get("use_cutmix", False) else 1),
         "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if spec.config.get("use_cutmix", False) else 0),
+        "clipping": tune.choice([True, False]),
+        "max_norm": tune.sample_from(lambda spec: tune.choice([1, 5, 10]) if spec.config.get("clipping", False) else 0),
+        "learning_rate": tune.choice([0.001, 0.01, 0.1]),
     }
 
     if model_type in ['TabTransformer', 'FTTransformer']:
