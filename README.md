@@ -11,9 +11,7 @@ The FT Transformer extends the concepts from the Tab Transformer by incorporatin
 
 Both models have shown to outperform traditional deep learning and machine learning approaches on complex tabular datasets, making them a powerful tool for tasks such as classification and regression in structured data.
 
-## Pretraining
-
-### CutMix and MixUp Augmentation Techniques
+## CutMix and MixUp Augmentation Techniques
 
 #### CutMix
 CutMix blends portions of two different inputs and their labels, essentially "cutting" and "pasting" parts of images, but it can be adapted for numerical data by mixing features. It's designed to enhance model robustness and performance, particularly in vision tasks, but its principles can be applied to numerical data for similar benefits. The original academic paper can be found [here](https://arxiv.org/abs/1905.04899).
@@ -142,7 +140,7 @@ $ python3 src/data_analysis.py
 ```bash
 $ export CUDA_VISIBLE_DEVICES="0,1" 
 $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
-$ python3 src/train_tune.py --model_type FTTransformer --epochs 20
+$ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 ```
 
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `--max_norm` `--mixup_alpha` `--model_path`.

@@ -68,9 +68,9 @@ def hyperparameter_optimization(model_type, epochs):
         })
 
     scheduler = ASHAScheduler(
-        max_t=100,
+        max_t=epochs,
         grace_period=1,
-        reduction_factor=3,
+        reduction_factor=3, # Only 1/3 of trials are kept at each thime they are reduced
         metric="val_auroc",  # Specify the metric to optimize
         mode="max"  # Specify the optimization mode (maximize or minimize)
     )
