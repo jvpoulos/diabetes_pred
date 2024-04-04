@@ -21,8 +21,9 @@ import re
 import pickle
 import math
 from einops import rearrange, repeat
+from torch import Tensor
 
-def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, max_norm, accum_iter=4, clipping=True):
+def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, max_norm, use_batch_accumulation, accum_iter=4, clipping=True):
     model.train()
     total_loss = 0
 
@@ -65,28 +66,39 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
                 loss = lam * criterion(outputs, labels_a.squeeze()) + (1 - lam) * criterion(outputs, labels_b.squeeze())
             else:
                 loss = criterion(outputs, labels.squeeze())
+        elif model_type == 'ResNet':
+            outputs = model(augmented_cat, augmented_num).squeeze()
+            if use_mixup or use_cutmix:
+                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
+            else:
+                loss = criterion(outputs, labels)
         else:
             outputs = model(augmented_cat, augmented_num).squeeze()
             if use_mixup or use_cutmix:
                 loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
             else:
-                loss = criterion(outputs, labels)            
+                loss = criterion(outputs, labels)
 
-        # Normalize loss to account for batch accumulation
-        loss = loss / accum_iter
+        # Normalize loss to account for batch accumulation if enabled
+        if use_batch_accumulation:
+            loss = loss / accum_iter
 
         # Backward pass and gradient accumulation
         loss.backward()
 
         # Perform optimizer step and zero gradients after accumulating specified number of batches
-        if ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
+        if not use_batch_accumulation or ((batch_idx + 1) % accum_iter == 0) or (batch_idx + 1 == len(train_loader)):
             if clipping:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
             optimizer.step()
             optimizer.zero_grad()
 
         # Accumulate loss
-        total_loss += loss.item() * features.size(0) * accum_iter  # Multiply by accum_iter to account for normalized loss
+        if use_batch_accumulation:
+            total_loss += loss.item() * features.size(0) * accum_iter  # Multiply by accum_iter to account for normalized loss
+        else:
+            total_loss += loss.item() * features.size(0)
+
         torch.cuda.empty_cache()
 
         # Accumulate true labels and predictions for AUROC calculation
@@ -248,7 +260,47 @@ class TransformerWithInputProjection(nn.Module):
 
         output = self.output_projection(cls_output)
         return torch.sigmoid(output.squeeze(-1))
-        
+
+def get_activation_fn(activation):
+    if activation == 'relu':
+        return nn.ReLU()
+    elif activation == 'gelu':
+        return nn.GELU()
+    else:
+        raise ValueError(f"Unsupported activation function: {activation}")
+
+class ResNetBlock(nn.Module):
+    def __init__(self, d: int, dropout: float, normalization: str, activation: str):
+        super().__init__()
+        self.norm = {'batchnorm': nn.BatchNorm1d, 'layernorm': nn.LayerNorm}[normalization](d)
+        self.linear = nn.Linear(d, d)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = get_activation_fn(activation)
+
+    def forward(self, x: Tensor) -> Tensor:
+        z = self.norm(x)
+        z = self.dropout(self.activation(self.linear(z)))
+        return x + z
+
+class ResNetPrediction(nn.Module):
+    def __init__(self, input_dim: int, d: int, d_hidden_factor: float, n_layers: int, dropout: float, normalization: str, activation: str):
+        super().__init__()
+        self.input_layer = nn.Linear(input_dim, d)  # Add an input layer to project the input to the desired dimension
+        self.blocks = nn.Sequential(*[ResNetBlock(d, dropout, normalization, activation) for _ in range(n_layers)])
+        self.linear = nn.Linear(d, int(d * d_hidden_factor))
+        self.norm = {'batchnorm': nn.BatchNorm1d, 'layernorm': nn.LayerNorm}[normalization](int(d * d_hidden_factor))
+        self.activation = get_activation_fn(activation)
+        self.dropout = nn.Dropout(dropout)
+        self.head = nn.Linear(int(d * d_hidden_factor), 1)
+
+    def forward(self, categorical_features: Tensor, numerical_features: Tensor) -> Tensor:
+        x = torch.cat([categorical_features, numerical_features], dim=1)
+        x = self.input_layer(x)  # Project the input to the desired dimension
+        x = self.blocks(x)
+        x = self.dropout(self.activation(self.norm(self.linear(x))))
+        x = self.head(x)
+        return x.squeeze(-1)
+
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -273,7 +325,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, normalization='layernorm', activation='relu', d_hidden_factor=2.0):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -304,6 +356,25 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             ff_dropout=ff_dropout,
             checkpoint_grads=False
         )
+    elif model_type == 'FTTransformerOG':
+        model = FTTransformerOG(
+            d_numerical=num_continuous,
+            categories=categories,
+            token_bias=True,
+            n_layers=depth,
+            d_token=dim,
+            n_heads=heads,
+            d_ffn_factor=1.0,
+            attention_dropout=attn_dropout,
+            ffn_dropout=ff_dropout,
+            residual_dropout=0.0,
+            activation='reglu',
+            prenormalization=True,
+            initialization='kaiming',
+            kv_compression=None,
+            kv_compression_sharing=None,
+            d_out=1
+        )
     elif model_type == 'Transformer':
         model = TransformerWithInputProjection(
             categories=categories,
@@ -315,6 +386,17 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             dropout=dropout,
             activation='geglu',
             device=device
+        )
+    elif model_type == 'ResNet':
+        input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
+        model = ResNetPrediction(
+            input_dim=input_dim,  # Pass the input dimension
+            d=dim,
+            d_hidden_factor=d_hidden_factor,
+            n_layers=depth,
+            dropout=dropout,
+            normalization=normalization,
+            activation=activation
         )
     else:
         raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer' or 'FTTransformer'.")

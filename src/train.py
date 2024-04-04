@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 from sklearn.metrics import roc_auc_score
@@ -20,7 +20,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction
 
 def main(args):
     # Set random seed for reproducibility
@@ -155,6 +155,25 @@ def main(args):
             ff_dropout=args.ff_dropout,                                 # feed forward dropout, paper recommends 0.1
             checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
+    elif args.model_type == 'FTTransformerOG':
+        model = FTTransformerOG(
+            d_numerical=len(numerical_feature_indices),
+            categories=categories,
+            token_bias=True,
+            n_layers=args.depth,
+            d_token=args.dim,
+            n_heads=args.heads,
+            d_ffn_factor=1.0,
+            attention_dropout=args.attn_dropout,
+            ffn_dropout=args.ff_dropout,
+            residual_dropout=0.0,
+            activation='reglu',
+            prenormalization=True,
+            initialization='kaiming',
+            kv_compression=None,
+            kv_compression_sharing=None,
+            d_out=1
+        ).to(device)
     elif args.model_type == 'Transformer':
         model = TransformerWithInputProjection(
             categories=categories,
@@ -166,6 +185,17 @@ def main(args):
             dropout=args.dropout,
             activation='geglu',
             device=device
+        ).to(device)
+    elif args.model_type == 'ResNet':
+        input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
+        model = ResNetPrediction(
+            input_dim=input_dim,  # Pass the input dimension
+            d=args.dim,
+            d_hidden_factor=args.d_hidden_factor,
+            n_layers=args.depth,
+            dropout=args.dropout,
+            normalization=args.normalization,
+            activation=args.activation
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
@@ -185,28 +215,38 @@ def main(args):
         print("Starting training from scratch.")
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.learning_rate / 1e3)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+
+    scheduler = None
+    if args.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.learning_rate / 1e3)
+    elif args.scheduler == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=10, verbose=True)
 
     hyperparameters = {
     'model_type': args.model_type,
     'dim': args.dim,
-    'depth': args.depth,
+    'dep': args.depth,
     'heads': args.heads,
-    'ff_dropout': args.ff_dropout,
-    'attn_dropout': args.attn_dropout,
-    'batch_size': args.batch_size,
+    'ffdr': args.ff_dropout,
+    'adr': args.attn_dropout,
+    'bs': args.batch_size,
     'lr': args.learning_rate,
+    'wd': args.weight_decay,
     'ep': epoch_counter,
+    'es': args.disable_early_stopping,
     'esp': args.early_stopping_patience,
-    'cutmix_prob': args.cutmix_prob,
-    'cutmix_alpha': args.cutmix_alpha,
-    'use_mixup': 'true' if args.use_mixup else 'false',
-    'mixup_alpha': args.mixup_alpha,
-    'use_cutmix': 'true' if args.use_cutmix else 'false'
-    'clipping': 'true' if args.clipping else 'false',
-    'max_norm': args.max_norm
-    }   
+    'rs': args.random_seed,
+    'cmp': args.cutmix_prob,
+    'cml': args.cutmix_alpha,
+    'um': 'true' if args.use_mixup else 'false',
+    'ma': args.mixup_alpha,
+    'uc': 'true' if args.use_cutmix else 'false',
+    'cl': 'true' if args.clipping else 'false',
+    'mn': args.max_norm,
+    'ba': 'true' if args.use_batch_accumulation else 'false',
+    'sch': args.scheduler if args.scheduler else 'none'
+    }  
 
     # start a new wandb run to track this script
     if args.run_id:
@@ -217,7 +257,8 @@ def main(args):
         checkpoint = torch.load(wandb.restore(args.wandb_path).name)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if args.use_scheduler:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         epoch_counter = checkpoint["epoch"]
         train_losses = checkpoint["train_losses"]
         train_aurocs = checkpoint["train_aurocs"]
@@ -249,18 +290,6 @@ def main(args):
     else:
         early_stopping_patience = args.early_stopping_patience  # Use the provided early stopping patience
 
-    # Training arameters
-    use_cutmix = args.use_cutmix
-    cutmix_prob = args.cutmix_prob
-    cutmix_alpha = args.cutmix_alpha
-
-    use_mixup = args.use_mixup
-    mixup_alpha = args.mixup_alpha
-
-    model_type = args.model_type
-    max_norm = args.max_norm
-    clipping = args.clipping
-
     # Define the directory where model weights will be saved
     model_weights_dir = 'model_weights'
     # Ensure the directory exists
@@ -268,8 +297,8 @@ def main(args):
 
     # Training loop
     for epoch in range(args.epochs):
-        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, max_norm, clipping)
-        val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices)
+        train_loss, train_auroc = train_model(model, train_loader, criterion, optimizer, device, args.model_type, args.use_cutmix, args.cutmix_prob, args.cutmix_alpha, args.use_mixup, args.mixup_alpha, binary_feature_indices, numerical_feature_indices, args.max_norm, args.use_batch_accumulation, args.clipping)
+        val_loss, val_auroc = validate_model(model, validation_loader, criterion, device, args.model_type, binary_feature_indices, numerical_feature_indices)
 
         # Save losses for plotting
         train_losses.append(train_loss)
@@ -282,15 +311,20 @@ def main(args):
         # log metrics to wandb
         wandb.log({"train_loss": train_loss, "train_auroc": train_auroc, "val_loss": val_loss, "val_auroc": val_auroc})
 
-        scheduler.step() # update the learning rate 
+        if args.scheduler == 'cosine':
+            scheduler.step()
+        elif args.scheduler == 'plateau':
+            scheduler.step(val_auroc)
 
         # Save model weights every 10 epochs
         if (epoch + 1) % 10 == 0:
             if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
-                model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}.pth"
-            else:
-                model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}.pth"
-  
+                model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
+            elif args.model_type=='Transformer':
+                model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
+            elif args.model_type=='ResNet':
+                model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
+
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
             checkpoint = {
@@ -303,6 +337,10 @@ def main(args):
                 "val_losses": val_losses,
                 "val_aurocs": val_aurocs
             }
+
+            if scheduler is not None:
+                checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+
             torch.save(checkpoint, model_filepath)
             wandb.save(model_filepath)
             
@@ -325,9 +363,12 @@ def main(args):
     # Save the best model if early stopping was triggered
     if not args.disable_early_stopping and patience_counter >= args.early_stopping_patience:
         if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
-            best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_best.pth"
-        else:
-            best_model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_best.pth"
+            best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
+        elif args.model_type=='Transformer':
+            best_model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
+        elif args.model_type=='ResNet':
+            best_model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
+
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
         best_checkpoint = {
@@ -339,6 +380,10 @@ def main(args):
             "val_losses": val_losses,
             "val_aurocs": val_aurocs
         }
+
+        if scheduler is not None:
+            best_checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+
         torch.save(best_checkpoint, best_model_filepath)
         wandb.save(best_model_filepath)
         
@@ -370,7 +415,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['Transformer','TabTransformer', 'FTTransformer'],
+                        choices=['Transformer','TabTransformer', 'FTTransformer', 'ResNet'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
@@ -379,9 +424,10 @@ if __name__ == "__main__":
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
     parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
-    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
+    parser.add_argument('--dropout', type=float, default=None, help='Dropout rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
+    parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay coefficient')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train the model')
     parser.add_argument('--disable_early_stopping', action='store_true', help='Disable early stopping')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience')
@@ -398,9 +444,14 @@ if __name__ == "__main__":
     parser.add_argument('--mixup_alpha', type=float, default=0.2, help='Alpha value for the MixUp beta distribution. Higher values result in more mixing.')
     parser.add_argument('--use_cutmix', action='store_true', help='Enable CutMix data augmentation')
     parser.add_argument('--dtype', type=str, default='float32', help='Data type for the Transformer model')
+    parser.add_argument('--use_batch_accumulation', action='store_true', help='Enable batch accumulation')
     parser.add_argument('--clipping', action='store_true', help='Enable gradient clipping')
+    parser.add_argument('--scheduler', type=str, default=None, choices=['cosine', 'plateau'], help='Learning rate scheduler type')
     parser.add_argument('--max_norm', type=float, default=10, help='Clip gradient values to max_norm.')
-    
+    parser.add_argument('--d_hidden_factor', type=float, default=2.0, help='Hidden dimension factor for the ResNet model')
+    parser.add_argument('--normalization', type=str, default='layernorm', choices=['batchnorm', 'layernorm'], help='Normalization type for the ResNet model')
+    parser.add_argument('--activation', type=str, default='relu', help='Activation function for the ResNet model')
+
     args = parser.parse_args()
 
     # Conditional defaults based on model_type
@@ -412,7 +463,7 @@ if __name__ == "__main__":
         args.depth = args.depth if args.depth is not None else 6
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
-    elif args.model_type == 'FTTransformer':
+    elif args.model_type == 'FTTransformer' or args.model_type == 'FTTransformerOG':
         if args.dim is None:
             args.dim = 192  # Default for FTTransformer
         if args.attn_dropout is None:
@@ -428,6 +479,12 @@ if __name__ == "__main__":
         if args.dim is None:
             args.dim = 512
         args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
-
+        if args.dim is None:
+            args.dropout = 0.1
+    elif args.model_type == 'ResNet':
+        if args.dim is None:
+            args.dim = 256
+        if args.dim is None:
+            args.dropout = 0.5
     main(args)
     wandb.finish()

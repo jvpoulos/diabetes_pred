@@ -31,7 +31,7 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x_categ[idx], self.x_cont[idx], self.labels[idx]
 
-def extract_embeddings(model, loader, device, args, sub_batch_size=4):
+def extract_embeddings(model, loader, device, args, sub_batch_size=1):
     model.eval()
     embeddings = []
     with torch.no_grad():
@@ -166,7 +166,7 @@ if __name__ == '__main__':
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None, help='Optional path to the saved model file to load before training')
-    parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N', help='Number of data loading workers (default: 4)')
+    parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N', help='Number of data loading workers (default: 1)')
     parser.add_argument('-g', '--gpus', default=2, type=int, help='Number of gpus per node')
     parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
     args = parser.parse_args()

@@ -12,11 +12,12 @@ import numpy as np
 from model_utils import load_model, CustomDataset
 from torch.utils.checkpoint import checkpoint
 
-def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, model_type, batch_size, chunk_size=4):
+def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, model_type, batch_size, chunk_size=1):
     model.eval()
 
     aggregated_attention_weights = {}
     valid_feature_names = {}
+    aggregated_cls_attention_weights = {}
 
     print("Starting attention map computation...")
     with torch.no_grad():
@@ -28,8 +29,11 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
 
                 # Split the batch into smaller chunks
                 for i in range(0, x_categ.size(0), chunk_size):
-                    x_categ_chunk = x_categ[i:i+chunk_size].to(next(model.parameters()).device)
-                    x_cont_chunk = x_cont[i:i+chunk_size].to(next(model.parameters()).device)
+                    x_categ_chunk = x_categ[i:i+chunk_size]  # Assign x_categ_chunk here
+                    x_cont_chunk = x_cont[i:i+chunk_size]
+
+                    x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
+                    x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
 
                     # Set requires_grad=True for the continuous features
                     x_cont_chunk.requires_grad_(True)
@@ -57,6 +61,9 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                         num_heads = attn_chunk.size(0)
                         num_features = attn_chunk.size(1)
 
+                        # Extract the attention map corresponding to the [CLS] token for each head
+                        cls_attns_chunk = attn_chunk[:, 0, :]  # Shape: (num_heads, num_features)
+
                         # Normalize attention weights across features for each head
                         attn_chunk = attn_chunk / attn_chunk.sum(dim=-1, keepdim=True)
 
@@ -64,9 +71,11 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                         if head_idx not in aggregated_attention_weights:
                             aggregated_attention_weights[head_idx] = []
                             valid_feature_names[head_idx] = []
+                            aggregated_cls_attention_weights[head_idx] = []
 
                         aggregated_attention_weights[head_idx].append(attn_chunk.cpu().numpy())
                         valid_feature_names[head_idx].append([col for col in column_names[:num_features] if col not in excluded_columns])
+                        aggregated_cls_attention_weights[head_idx].append(cls_attns_chunk.cpu().numpy())
 
                     # Clear the GPU cache and release memory after each chunk
                     del x_categ_chunk, x_cont_chunk, attns_chunk
@@ -79,6 +88,14 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
         aggregated_attention_weights[head_idx] = np.mean(aggregated_attention_weights[head_idx], axis=0)
         valid_feature_names[head_idx] = valid_feature_names[head_idx][0]  # Assuming feature names are the same across valid batches
 
+    # Calculate the average attention map for each head
+    for head_idx in aggregated_cls_attention_weights:
+        aggregated_cls_attention_weights[head_idx] = np.mean(aggregated_cls_attention_weights[head_idx], axis=(0, 1))
+
+    # Calculate the final feature importance distribution by averaging the attention maps across all heads
+    feature_importance_distribution = np.mean(list(aggregated_cls_attention_weights.values()), axis=0)
+    feature_importance_distribution /= feature_importance_distribution.sum()
+
     # Select the top 100 features based on the aggregated attention weights for each head
     top_attention_weights = {}
     top_feature_names = {}
@@ -88,9 +105,46 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
         top_attention_weights[head_idx] = aggregated_attention_weights[head_idx][top_indices]
         top_feature_names[head_idx] = [valid_feature_names[head_idx][idx] for idx in top_indices]
 
-    return top_attention_weights, top_feature_names
+    return top_attention_weights, top_feature_names, feature_importance_distribution
 
-def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names, chunk_size=4):
+def save_attention_maps_to_html(attention_maps, feature_names, feature_importance_distribution, filename):
+    for head_idx in attention_maps:
+        attention_data = list(zip(feature_names[head_idx], attention_maps[head_idx]))
+
+        # Create a DataFrame to represent the attention data
+        df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
+
+        # Load the df_train_summary.csv file
+        df_train_summary = pd.read_csv('df_train_summary.csv')
+
+        # Merge the attention data with the descriptions from df_train_summary
+        df = pd.merge(df, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+
+        # Sort the DataFrame by the attention weights in descending order
+        df = df.sort_values(by='Attention Weight', ascending=False)
+
+        # Convert the DataFrame to an HTML table representation
+        html_table = df.to_html(index=False)
+
+        # Save the HTML table to a file
+        with open(f"{filename.split('.')[0]}_head_{head_idx}.html", 'w') as file:
+            file.write(f'<h1>Normalized attention weights per feature across all patients, regardless of their outcome: Top 100 features (Attention Head {head_idx})</h1>')
+            file.write(html_table)
+
+        print(f"Attention maps for head {head_idx} saved to {filename.split('.')[0]}_head_{head_idx}.html")
+
+    # Add feature importance distribution to the HTML file
+    importance_data = list(zip(feature_names[0], feature_importance_distribution))
+    df_importance = pd.DataFrame(importance_data, columns=['Feature', 'Importance'])
+    df_importance = pd.merge(df_importance, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
+    df_importance = df_importance.sort_values(by='Importance', ascending=False)
+    html_table_importance = df_importance.to_html(index=False)
+
+    with open(f"{filename.split('.')[0]}_importance.html", 'w') as file:
+        file.write(f'<h1>Feature Importance Distribution</h1>')
+        file.write(html_table_importance)
+
+def identify_top_feature_values(model, loader, binary_feature_indices, numerical_feature_indices, column_names, top_feature_names, chunk_size=1):
     model.eval()
     
     feature_value_attention_weights = {head_idx: {feature: {} for feature in top_feature_names[head_idx]} for head_idx in top_feature_names}
@@ -105,9 +159,9 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
                 
                 # Split the batch into smaller chunks
                 for i in range(0, x_categ.size(0), chunk_size):
-                    x_categ_chunk = x_categ[i:i+chunk_size].to(next(model.parameters()).device)
-                    x_cont_chunk = x_cont[i:i+chunk_size].to(next(model.parameters()).device)
-                    labels_chunk = labels[i:i+chunk_size].to(next(model.parameters()).device)
+                    x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
+                    x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
+                    labels_chunk = labels_chunk.to(next(model.parameters()).device)
                     
                     # Set requires_grad=True for the continuous features
                     x_cont_chunk.requires_grad_(True)
@@ -168,32 +222,6 @@ def identify_top_feature_values(model, loader, binary_feature_indices, numerical
                             feature_value_attention_weights[head_idx][feature_name][outcome][value] = np.mean(feature_value_attention_weights[head_idx][feature_name][outcome][value])
     
     return feature_value_attention_weights
-
-def save_attention_maps_to_html(attention_maps, feature_names, filename):
-    for head_idx in attention_maps:
-        attention_data = list(zip(feature_names[head_idx], attention_maps[head_idx]))
-
-        # Create a DataFrame to represent the attention data
-        df = pd.DataFrame(attention_data, columns=['Feature', 'Attention Weight'])
-
-        # Load the df_train_summary.csv file
-        df_train_summary = pd.read_csv('df_train_summary.csv')
-
-        # Merge the attention data with the descriptions from df_train_summary
-        df = pd.merge(df, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
-
-        # Sort the DataFrame by the attention weights in descending order
-        df = df.sort_values(by='Attention Weight', ascending=False)
-
-        # Convert the DataFrame to an HTML table representation
-        html_table = df.to_html(index=False)
-
-        # Save the HTML table to a file
-        with open(f"{filename.split('.')[0]}_head_{head_idx}.html", 'w') as file:
-            file.write(f'<h1>Normalized attention weights per feature across all patients, regardless of their outcome: Top 100 features (Attention Head {head_idx})</h1>')
-            file.write(html_table)
-
-        print(f"Attention maps for head {head_idx} saved to {filename.split('.')[0]}_head_{head_idx}.html")
 
 def save_top_feature_values_to_html(top_feature_value_attention_weights, filename):
     for head_idx in top_feature_value_attention_weights:
@@ -334,11 +362,11 @@ def main():
 
     with autocast():
         print("Computing attention maps...")
-        attention_maps, feature_names = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, args.model_type, args.batch_size)
+        attention_maps, feature_names, feature_importance_distribution = get_attention_maps(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, excluded_columns, args.model_type, args.batch_size)
         print("Attention maps computed.")
 
-        if attention_maps is not None and feature_names is not None:
-            save_attention_maps_to_html(attention_maps, feature_names, "attention_maps.html")
+        if attention_maps is not None and feature_names is not None and feature_importance_distribution is not None:
+            save_attention_maps_to_html(attention_maps, feature_names, feature_importance_distribution, "attention_maps.html")
 
             print("Identifying top feature values...")
             top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names[:10])

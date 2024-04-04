@@ -135,7 +135,7 @@ $ python src/event_stream.py
 ```bash
 $ python3 src/data_analysis.py
 ``` 
-3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', or 'FTTransformer') `--epochs`.
+3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', 'FTTransformer', or '') `--epochs`.
 
 ```bash
 $ export CUDA_VISIBLE_DEVICES="0,1" 
@@ -143,15 +143,20 @@ $ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
 $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 ```
 
-3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `--max_norm` `--mixup_alpha` `--model_path`.
+3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
 
 ```bash
-$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --clipping --max_norm 1 --batch_size 8 --epochs 200 --early_stopping_patience 10
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --use_batch_accumulation --clipping --max_norm 1 --batch_size 8 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 or 
 ```bash
-$ python3 src/train.py --model_type Transformer --dim 128 --depth 3 --heads 8 --dropout 0.0 --batch_size 8 --epochs 200 --disable_early_stopping
+$ python3 src/train.py --model_type ResNet --dim 256 --depth 3 --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
+```
+
+or 
+```bash
+$ python3 src/train.py --model_type FTTransformerOG --dim 192 --depth 3 --heads 8 --ff_dropout 0.1 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 10 --batch_size 32 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
@@ -162,22 +167,22 @@ $ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransform
 
 4. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size`:
 ```bash
-$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 2
+$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
 ```
 
 5. (Optional) Generate HTML representations for the head view, model view, and neuron view using the BertViz package (model_type = Transformer only).
 ```bash
-$ python3 src/visualize_attn.py --dataset_type 'train' --model_type Transformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 2
+$ python3 src/visualize_attn.py --dataset_type 'train' --model_type Transformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
 ```
 
 5. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type train --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 2 -n 1 -g 2 -nr 0
+$ python3 src/embeddings.py --dataset_type train --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2 -n 1 -g 2 -nr 0
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs16_lr0.001_ep17_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse_best.pth' --batch_size 2
+$ python3 src/test.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
 ```
