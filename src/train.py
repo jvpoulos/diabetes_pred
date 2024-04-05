@@ -20,7 +20,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction, MLPPrediction
 
 def main(args):
     # Set random seed for reproducibility
@@ -196,6 +196,17 @@ def main(args):
             dropout=args.dropout,
             normalization=args.normalization,
             activation=args.activation
+        ).to(device)
+    elif args.model_type == 'MLP':
+        model = MLPPrediction(
+            d_in_num=len(numerical_feature_indices),
+            d_in_cat=len(binary_feature_indices),
+            d_layers=args.d_layers,
+            dropout=args.dropout,
+            d_out=1,
+            categories=[2] * len(binary_feature_indices),
+            d_embedding=16,
+            device=device
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
@@ -415,8 +426,8 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['Transformer','TabTransformer', 'FTTransformer', 'ResNet'],
-                        help='Type of the model to train: TabTransformer or FTTransformer')
+                        choices=['Transformer','TabTransformer', 'FTTransformer', 'FTTransformerOG', 'ResNet', 'MLP'],
+                        help='Type of the model to train')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
     parser.add_argument('--heads', type=int, help='Number of attention heads.')
@@ -451,6 +462,8 @@ if __name__ == "__main__":
     parser.add_argument('--d_hidden_factor', type=float, default=2.0, help='Hidden dimension factor for the ResNet model')
     parser.add_argument('--normalization', type=str, default='layernorm', choices=['batchnorm', 'layernorm'], help='Normalization type for the ResNet model')
     parser.add_argument('--activation', type=str, default='relu', help='Activation function for the ResNet model')
+    parser.add_argument('--d_layers', type=int, nargs='+', default=[256, 128], help='Hidden layer dimensions for the MLP model')
+    parser.add_argument('--d_embedding', type=int, default=256, help='Embedding dimension for categorical features in the MLP model')
 
     args = parser.parse_args()
 
@@ -486,5 +499,7 @@ if __name__ == "__main__":
             args.dim = 256
         if args.dim is None:
             args.dropout = 0.5
+        if args.depth is None:
+            args.depth = 3
     main(args)
     wandb.finish()

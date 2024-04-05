@@ -135,7 +135,7 @@ $ python src/event_stream.py
 ```bash
 $ python3 src/data_analysis.py
 ``` 
-3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', 'FTTransformer', or '') `--epochs`.
+3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
 $ export CUDA_VISIBLE_DEVICES="0,1" 
@@ -154,6 +154,10 @@ or
 $ python3 src/train.py --model_type ResNet --dim 256 --depth 3 --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
 ```
 
+or 
+```bash
+$ python3 src/train.py --model_type MLP  --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
+```
 or 
 ```bash
 $ python3 src/train.py --model_type FTTransformerOG --dim 192 --depth 3 --heads 8 --ff_dropout 0.1 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 10 --batch_size 32 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'

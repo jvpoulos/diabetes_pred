@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 from sklearn.metrics import roc_auc_score
 import os
@@ -11,7 +12,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction, MLPPrediction
 from ray import tune
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune import ExperimentAnalysis
@@ -48,8 +49,11 @@ def hyperparameter_optimization(model_type, epochs):
         "cutmix_alpha": tune.sample_from(lambda spec: tune.choice([0.2, 1, 10]) if spec.config.get("use_cutmix", False) else 1),
         "cutmix_prob": tune.sample_from(lambda spec: tune.choice([0.1, 0.2, 0.3]) if spec.config.get("use_cutmix", False) else 0),
         "clipping": tune.choice([True, False]),
+        "use_batch_accumulation": tune.choice([True, False]),
         "max_norm": tune.sample_from(lambda spec: tune.choice([1, 5, 10]) if spec.config.get("clipping", False) else 0),
-        "learning_rate": tune.choice([0.001, 0.01, 0.1]),
+        "scheduler": tune.choice([None,'cosine', 'plateau']),
+        "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
+        "weight_decay": tune.choice([0.001, 0.01, 0.1]),
     }
 
     if model_type in ['TabTransformer', 'FTTransformer']:
@@ -58,6 +62,7 @@ def hyperparameter_optimization(model_type, epochs):
             "depth": tune.choice([3, 6, 12]),
             "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
             "ff_dropout": tune.choice([0.0, 0.1, 0.2]),
+            "batch_size": tune.choice([8]),
         })
     elif model_type == 'Transformer':
         search_space.update({
@@ -65,12 +70,22 @@ def hyperparameter_optimization(model_type, epochs):
             "num_encoder_layers": tune.choice([2, 4, 6]),
             "dim_feedforward": tune.choice([512, 1024, 2048]),
             "dropout": tune.choice([0.0, 0.1, 0.2]),
+            "batch_size": tune.choice([8,16,32]),
+        })
+    elif model_type == 'ResNet':
+        search_space.update({
+            "dim": tune.choice([128, 256, 512]),
+            "d_hidden_factor": tune.choice([2, 4, 6]),
+            "depth": tune.choice([3, 6, 12]),
+            "dropout": tune.choice([0.2, 0.5, 0.7]),
+            "batch_size": tune.choice([8,16,32]),
+            "normalization": tune.choice(['batchnorm', 'layernorm'])
         })
 
-    scheduler = ASHAScheduler(
+    ASHA_scheduler = ASHAScheduler(
         max_t=epochs,
         grace_period=1,
-        reduction_factor=3, # Only 1/3 of trials are kept at each thime they are reduced
+        reduction_factor=4, # Only 1/4 of trials are kept at each thime they are reduced
         metric="val_auroc",  # Specify the metric to optimize
         mode="max"  # Specify the optimization mode (maximize or minimize)
     )
@@ -82,7 +97,7 @@ def hyperparameter_optimization(model_type, epochs):
         ),
         param_space=search_space,
         tune_config=tune.TuneConfig(
-            scheduler=scheduler,
+            scheduler=ASHA_scheduler,
             num_samples=10,
         ),
     )
@@ -104,7 +119,13 @@ def tune_model(config, model_type, epochs):
     cutmix_prob = config["cutmix_prob"]
     disable_early_stopping = config["disable_early_stopping"]
     early_stopping_patience = config["early_stopping_patience"].sample() if isinstance(config["early_stopping_patience"], tune.search.sample.Domain) else config["early_stopping_patience"]
-    batch_size = 8
+    batch_size = config["batch_size"]
+    clipping= config["clipping"]
+    use_batch_accumulation =config["use_batch_accumulation"]
+    max_norm= config["max_norm"]
+    weight_decay= config["weight_decay"]
+    scheduler= config["scheduler"]
+    learning_rate= config["learning_rate"]
 
     if model_type in ['TabTransformer', 'FTTransformer']:
         depth = config["depth"]
@@ -114,7 +135,13 @@ def tune_model(config, model_type, epochs):
         num_encoder_layers = config["num_encoder_layers"]
         dim_feedforward = config["dim_feedforward"]
         dropout = config["dropout"]
-   
+    elif model_type == 'ResNet':
+        dim = config["dim"]
+        d_hidden_factor = config["d_hidden_factor"]
+        depth = config["depth"]
+        dropout = config["dropout"]
+        normalization=config["normalization"]
+
     # Provide the absolute path to the train_dataset.pt file
     train_dataset_path = '/home/jvp/diabetes_pred/train_dataset.pt'
     validation_dataset_path = '/home/jvp/diabetes_pred/validation_dataset.pt'
@@ -206,6 +233,28 @@ def tune_model(config, model_type, epochs):
             dropout=dropout,
             activation='relu'
         )
+    elif model_type == 'ResNet':
+        input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
+        model = ResNetPrediction(
+            input_dim=input_dim,  # Pass the input dimension
+            d=dim,
+            d_hidden_factor=d_hidden_factor,
+            n_layers=depth,
+            dropout=dropout,
+            normalization=normalization,
+            activation='relu'
+        )
+    elif model_type == 'MLP':
+        model = MLPPrediction(
+            d_in_num=len(numerical_feature_indices),
+            d_in_cat=len(binary_feature_indices),
+            d_layers=d_layers,
+            dropout=dropout,
+            d_out=1,
+            categories=[2] * len(binary_feature_indices),
+            d_embedding=16,
+            device=device
+        )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.device_count() > 1:
@@ -214,7 +263,13 @@ def tune_model(config, model_type, epochs):
     model = model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters())
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    scheduler = None
+    if scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=learning_rate / 1e3)
+    elif scheduler == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=10, verbose=True)
 
     best_val_auroc = float('-inf')
     patience_counter = 0
@@ -233,7 +288,10 @@ def tune_model(config, model_type, epochs):
             'use_mixup': use_mixup,
             'mixup_alpha': config["mixup_alpha"].sample() if isinstance(config["mixup_alpha"], tune.search.sample.Domain) else config["mixup_alpha"],
             'binary_feature_indices': binary_feature_indices,
-            'numerical_feature_indices': numerical_feature_indices
+            'numerical_feature_indices': numerical_feature_indices,
+            'max_norm': max_norm, 
+            'clipping': clipping,
+            'use_batch_accumulation':use_batch_accumulation
         }
         train_loss, train_auroc = train_model(**train_args)
         
@@ -262,9 +320,9 @@ def tune_model(config, model_type, epochs):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization using Ray Tune')
-    parser.add_argument('--model_type', type=str, required=True, choices=['TabTransformer', 'FTTransformer', 'Transformer'],
+    parser.add_argument('--model_type', type=str, required=True, choices=['TabTransformer', 'FTTransformer', 'Transformer','ResNet','MLP'],
                         help='Type of the model to train')
-    parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=25, help='Number of epochs to train')
     args = parser.parse_args()
 
     results = hyperparameter_optimization(args.model_type, args.epochs)

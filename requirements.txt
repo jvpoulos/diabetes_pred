@@ -20,4 +20,5 @@ hydra==2.5
 hydra-core==1.3.2
 polars==0.12.5
 sparklines==0.4.2
+humanize==3.14.0
 
