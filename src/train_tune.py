@@ -98,7 +98,7 @@ def hyperparameter_optimization(model_type, epochs):
         param_space=search_space,
         tune_config=tune.TuneConfig(
             scheduler=ASHA_scheduler,
-            num_samples=10,
+            num_samples=15,
         ),
     )
 
@@ -114,15 +114,15 @@ def tune_model(config, model_type, epochs):
     heads = config["heads"]
     use_mixup = config["use_mixup"]
     use_cutmix = config["use_cutmix"]
-    mixup_alpha = config["mixup_alpha"]
-    cutmix_alpha = config["cutmix_alpha"]
-    cutmix_prob = config["cutmix_prob"]
+    mixup_alpha = config["mixup_alpha"].sample() if isinstance(config["mixup_alpha"], tune.search.sample.Domain) else config["mixup_alpha"]
+    cutmix_alpha = config["cutmix_alpha"].sample() if isinstance(config["cutmix_alpha"], tune.search.sample.Domain) else config["cutmix_alpha"]
+    cutmix_prob = config["cutmix_prob"].sample() if isinstance(config["cutmix_prob"], tune.search.sample.Domain) else config["cutmix_prob"]
     disable_early_stopping = config["disable_early_stopping"]
     early_stopping_patience = config["early_stopping_patience"].sample() if isinstance(config["early_stopping_patience"], tune.search.sample.Domain) else config["early_stopping_patience"]
     batch_size = config["batch_size"]
     clipping= config["clipping"]
     use_batch_accumulation =config["use_batch_accumulation"]
-    max_norm= config["max_norm"]
+    max_norm = config["max_norm"].sample() if isinstance(config["max_norm"], tune.search.sample.Domain) else config["max_norm"]
     weight_decay= config["weight_decay"]
     scheduler= config["scheduler"]
     learning_rate= config["learning_rate"]
