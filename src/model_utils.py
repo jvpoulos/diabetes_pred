@@ -346,7 +346,10 @@ class MLPPrediction(nn.Module):
             x.append(x_cat_emb)
 
         x = torch.cat(x, dim=-1)
-        x = self.layers(x)
+
+        for idx, layer in enumerate(self.layers):
+            x = layer(x)
+
         x = self.head(x)
         x = x.squeeze(-1)
         return x

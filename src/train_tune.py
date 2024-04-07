@@ -86,8 +86,9 @@ def hyperparameter_optimization(model_type, epochs):
     elif model_type == 'MLP':
         search_space.update({
             "d_layers": tune.choice([
-                [512, 256, 128]
-                [1024, 512, 256, 128]
+                [512, 256],
+                [1024, 512, 256, 128, 128],
+                [1024, 512, 256, 256, 256, 128, 128, 128]
             ]),
             "dropout": tune.choice([0.2, 0.5, 0.7]),
             "batch_size": tune.choice([32, 64, 128]),
