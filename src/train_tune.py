@@ -52,7 +52,6 @@ def hyperparameter_optimization(model_type, epochs):
         "use_batch_accumulation": tune.choice([True, False]),
         "max_norm": tune.sample_from(lambda spec: tune.choice([1, 5, 10]) if spec.config.get("clipping", False) else 0),
         "scheduler": tune.choice([None,'cosine', 'plateau']),
-        "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
         "weight_decay": tune.choice([0.001, 0.01, 0.1]),
     }
 
@@ -63,6 +62,7 @@ def hyperparameter_optimization(model_type, epochs):
             "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
             "ff_dropout": tune.choice([0.0, 0.1, 0.2]),
             "batch_size": tune.choice([8]),
+            "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
         })
     elif model_type == 'Transformer':
         search_space.update({
@@ -71,6 +71,7 @@ def hyperparameter_optimization(model_type, epochs):
             "dim_feedforward": tune.choice([512, 1024, 2048]),
             "dropout": tune.choice([0.0, 0.1, 0.2]),
             "batch_size": tune.choice([8,16,32]),
+            "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
         })
     elif model_type == 'ResNet':
         search_space.update({
@@ -79,7 +80,18 @@ def hyperparameter_optimization(model_type, epochs):
             "depth": tune.choice([3, 6, 12]),
             "dropout": tune.choice([0.2, 0.5, 0.7]),
             "batch_size": tune.choice([8,16,32]),
-            "normalization": tune.choice(['batchnorm', 'layernorm'])
+            "normalization": tune.choice(['batchnorm', 'layernorm']),
+            "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
+        })
+    elif model_type == 'MLP':
+        search_space.update({
+            "d_layers": tune.choice([
+                [512, 256, 128]
+                [1024, 512, 256, 128]
+            ]),
+            "dropout": tune.choice([0.2, 0.5, 0.7]),
+            "batch_size": tune.choice([32, 64, 128]),
+            "learning_rate": tune.choice([0.001, 0.01, 0.1]),
         })
 
     ASHA_scheduler = ASHAScheduler(
@@ -98,7 +110,7 @@ def hyperparameter_optimization(model_type, epochs):
         param_space=search_space,
         tune_config=tune.TuneConfig(
             scheduler=ASHA_scheduler,
-            num_samples=15,
+            num_samples=20,
         ),
     )
 
@@ -110,8 +122,6 @@ def hyperparameter_optimization(model_type, epochs):
     return results
     
 def tune_model(config, model_type, epochs):
-    dim = config["dim"] 
-    heads = config["heads"]
     use_mixup = config["use_mixup"]
     use_cutmix = config["use_cutmix"]
     mixup_alpha = config["mixup_alpha"].sample() if isinstance(config["mixup_alpha"], tune.search.sample.Domain) else config["mixup_alpha"]
@@ -128,19 +138,26 @@ def tune_model(config, model_type, epochs):
     learning_rate= config["learning_rate"]
 
     if model_type in ['TabTransformer', 'FTTransformer']:
+        dim = config["dim"] 
+        heads = config["heads"]
         depth = config["depth"]
         attn_dropout = config["attn_dropout"]
         ff_dropout = config["ff_dropout"]
     elif model_type == 'Transformer':
+        dim = config["dim"] 
+        heads = config["heads"]
         num_encoder_layers = config["num_encoder_layers"]
         dim_feedforward = config["dim_feedforward"]
         dropout = config["dropout"]
     elif model_type == 'ResNet':
-        dim = config["dim"]
+        dim = config["dim"] 
         d_hidden_factor = config["d_hidden_factor"]
         depth = config["depth"]
         dropout = config["dropout"]
         normalization=config["normalization"]
+    elif model_type == 'MLP':
+        dropout = config["dropout"]
+        d_layers=config["d_layers"]
 
     # Provide the absolute path to the train_dataset.pt file
     train_dataset_path = '/home/jvp/diabetes_pred/train_dataset.pt'
@@ -246,15 +263,16 @@ def tune_model(config, model_type, epochs):
         )
     elif model_type == 'MLP':
         model = MLPPrediction(
-            d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices),
-            d_layers=d_layers,
-            dropout=dropout,
-            d_out=1,
-            categories=[2] * len(binary_feature_indices),
-            d_embedding=16,
-            device=device
-        )
+                d_in_num=len(numerical_feature_indices),
+                d_in_cat=len(binary_feature_indices) * 16,
+                d_layers=d_layers,
+                dropout=dropout,
+                d_out=1,
+                categories=[2] * len(binary_feature_indices),
+                d_embedding=16,
+                numerical_feature_indices=numerical_feature_indices,
+                binary_feature_indices=binary_feature_indices
+            )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.device_count() > 1:

@@ -200,13 +200,14 @@ def main(args):
     elif args.model_type == 'MLP':
         model = MLPPrediction(
             d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices),
+            d_in_cat=len(binary_feature_indices) * 16,
             d_layers=args.d_layers,
             dropout=args.dropout,
             d_out=1,
             categories=[2] * len(binary_feature_indices),
             d_embedding=16,
-            device=device
+            numerical_feature_indices=numerical_feature_indices,
+            binary_feature_indices=binary_feature_indices
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
@@ -335,6 +336,8 @@ def main(args):
                 model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
             elif args.model_type=='ResNet':
                 model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
+            elif args.model_type == 'MLP': 
+                model_filename = f"{args.model_type}_dl{'-'.join(map(str, args.d_layers))}_de{args.d_embedding}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
 
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
@@ -342,7 +345,6 @@ def main(args):
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(), 
                 "train_losses": train_losses,
                 "train_aurocs": train_aurocs,
                 "val_losses": val_losses,
@@ -379,6 +381,8 @@ def main(args):
             best_model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
         elif args.model_type=='ResNet':
             best_model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
+        elif args.model_type == 'MLP': 
+            best_model_filename = f"{args.model_type}_dl{'-'.join(map(str, args.d_layers))}_de{args.d_embedding}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
 
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         

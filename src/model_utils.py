@@ -66,18 +66,6 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
                 loss = lam * criterion(outputs, labels_a.squeeze()) + (1 - lam) * criterion(outputs, labels_b.squeeze())
             else:
                 loss = criterion(outputs, labels.squeeze())
-        elif model_type == 'ResNet':
-            outputs = model(augmented_cat, augmented_num).squeeze()
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-            else:
-                loss = criterion(outputs, labels)
-        elif model_type == 'MLP':
-            outputs = model(augmented_num, augmented_cat).squeeze()
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-            else:
-                loss = criterion(outputs, labels)
         else:
             outputs = model(augmented_cat, augmented_num).squeeze()
             if use_mixup or use_cutmix:
@@ -131,16 +119,13 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
     # Wrap the validation loader with tqdm for a progress bar
     with torch.no_grad():
         for batch_idx, (features, labels) in tqdm(enumerate(validation_loader), total=len(validation_loader), desc="Validating"):
-            categorical_features = features[:, binary_feature_indices].to(device).long()  # Convert to long data type
-            numerical_features = features[:, numerical_feature_indices].to(device)
+            numerical_features = features[:, numerical_feature_indices].to(device)  # Numerical features
+            categorical_features = features[:, binary_feature_indices].to(device).long()  # Categorical features (convert to long data type)
             labels = labels.to(device)  # Move labels to the device
 
             if model_type == 'Transformer':
                 outputs = model(categorical_features, numerical_features)
                 loss = criterion(outputs, labels.squeeze())
-            elif model_type in ['ResNet', 'MLP']:
-                outputs = model(categorical_features, numerical_features).squeeze()
-                loss = criterion(outputs, labels)
             else:
                 outputs = model(categorical_features, numerical_features).squeeze()
                 loss = criterion(outputs, labels)
@@ -320,50 +305,52 @@ class MLPBlock(nn.Module):
         return self.dropout(self.activation(self.linear(x)))
 
 class MLPPrediction(nn.Module):
-    def __init__(self, d_in_num: int, d_in_cat: int, d_layers: ty.List[int], dropout: float, d_out: int, categories: ty.Optional[ty.List[int]], d_embedding: int, device=None):
+    def __init__(self, d_in_num: int, d_in_cat: int, d_layers: ty.List[int], dropout: float, d_out: int, categories: ty.Optional[ty.List[int]], d_embedding: int, numerical_feature_indices: ty.List[int], binary_feature_indices: ty.List[int]):
         super().__init__()
         self.d_embedding = d_embedding
         self.category_embeddings = None
-        self.category_offsets = None
-        self.device = device  # Add this line to store the device
 
         if categories is not None:
-            self.category_offsets = torch.tensor([0] + categories[:-1]).cumsum(0)
-            if self.device is not None:  # Check if device is available
-                self.category_offsets = self.category_offsets.to(self.device)  # Move category_offsets to the device
             self.category_embeddings = nn.Embedding(sum(categories), d_embedding)
             nn.init.kaiming_uniform_(self.category_embeddings.weight, a=math.sqrt(5))
-            d_in_cat = len(categories) * d_embedding
+            d_in_cat = len(categories) * d_embedding  # Multiply by the number of categorical features
 
         d_in = d_in_num + d_in_cat
         layers = []
         input_dim = d_in
+
+        # Add an input layer to match the dimension of d_in with the first hidden layer
+        if d_layers:
+            layers.append(nn.Linear(1755, d_layers[0]))  # Change the input dimension of the first linear layer to 1755
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            input_dim = d_layers[0]
+        else:
+            layers.append(nn.Flatten())  # Add a flatten layer if no input layer is needed
+        
         for output_dim in d_layers:
             layers.append(MLPBlock(input_dim, output_dim, dropout))
             input_dim = output_dim
         self.layers = nn.Sequential(*layers)
         self.head = nn.Linear(d_layers[-1] if d_layers else d_in, d_out)
 
-        # Move the model to the device if available
-        if self.device is not None:
-            self.to(self.device)
-
     def forward(self, x_num: Tensor, x_cat: ty.Optional[Tensor]) -> Tensor:
         x = []
         if x_num is not None:
+            x_num = x_num.view(x_num.size(0), -1)  # Flatten numerical features
             x.append(x_num)
-        if x_cat is not None and self.category_embeddings is not None and self.category_offsets is not None:
-            x_cat = x_cat.to(self.category_embeddings.weight.device).long()  # Move x_cat to the same device as the embeddings and convert to long
-            category_offsets = self.category_offsets.to(self.category_embeddings.weight.device)  # Move category_offsets to the same device as the embeddings
-            x.append(self.category_embeddings(x_cat + category_offsets[:x_cat.size(1)]).view(x_cat.size(0), -1))
+        if x_cat is not None and self.category_embeddings is not None:
+            x_cat = x_cat.long()  # Convert x_cat to long data type
+            x_cat_emb = self.category_embeddings(x_cat)
+            x_cat_emb = x_cat_emb.view(x_cat.size(0), -1)  # Flatten categorical embeddings
+            x.append(x_cat_emb)
 
         x = torch.cat(x, dim=-1)
-
         x = self.layers(x)
         x = self.head(x)
         x = x.squeeze(-1)
         return x
-        
+
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -464,14 +451,15 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
     elif model_type == 'MLP':
         model = MLPPrediction(
             d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices),
-            d_layers=d_layers,
-            dropout=dropout,
+            d_in_cat=len(binary_feature_indices) * 16,
+            d_layers=args.d_layers,
+            dropout=args.dropout,
             d_out=1,
             categories=[2] * len(binary_feature_indices),
             d_embedding=16,
-            device=device
-        ).to(device)
+            numerical_feature_indices=numerical_feature_indices,
+            binary_feature_indices=binary_feature_indices
+        )
     else:
         raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer', 'FTTransformer', 'ResNet', or 'MLP'.")
 

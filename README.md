@@ -158,9 +158,6 @@ or
 ```bash
 $ python3 src/train.py --model_type MLP  --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
 ```
-or 
-```bash
-$ python3 src/train.py --model_type FTTransformerOG --dim 192 --depth 3 --heads 8 --ff_dropout 0.1 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 10 --batch_size 32 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:
