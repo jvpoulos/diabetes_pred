@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.cuda.amp import autocast
+import torch.nn.utils.prune as prune
+from torch.quantization import quantize_dynamic
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 import argparse
 import json
@@ -19,7 +21,6 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
     valid_feature_names = {}
     aggregated_cls_attention_weights = {}
 
-    print("Starting attention map computation...")
     with torch.no_grad():
         with autocast():
             for batch_idx, batch in enumerate(tqdm(loader, desc="Processing batches")):
@@ -27,29 +28,20 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
                 x_categ = features[:, binary_feature_indices].to(dtype=torch.long)
                 x_cont = features[:, numerical_feature_indices]
 
-                # Split the batch into smaller chunks
                 for i in range(0, x_categ.size(0), chunk_size):
-                    x_categ_chunk = x_categ[i:i+chunk_size]  # Assign x_categ_chunk here
+                    x_categ_chunk = x_categ[i:i+chunk_size]
                     x_cont_chunk = x_cont[i:i+chunk_size]
 
                     x_categ_chunk = x_categ_chunk.to(next(model.parameters()).device)
                     x_cont_chunk = x_cont_chunk.to(next(model.parameters()).device)
 
-                    # Set requires_grad=True for the continuous features
                     x_cont_chunk.requires_grad_(True)
 
-                    if model_type == 'FTTransformer':
-                        def forward_pass(x_categ_chunk, x_cont_chunk):
-                            _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
-                            return attns_chunk
-                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
-                    elif model_type == 'TabTransformer':
-                        def forward_pass(x_categ_chunk, x_cont_chunk):
-                            _, attns_chunk = model(x_categ=x_categ_chunk, x_cont=x_cont_chunk, return_attn=True)
-                            return attns_chunk
-                        attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
-                    else:
-                        raise ValueError(f"Unsupported model type: {model_type}")
+                    def forward_pass(x_categ_chunk, x_cont_chunk):
+                        _, attns_chunk = model(x_categ=x_categ_chunk, x_numer=x_cont_chunk, return_attn=True)
+                        return attns_chunk
+
+                    attns_chunk = checkpoint(forward_pass, x_categ_chunk, x_cont_chunk)
 
                     attns_chunk = attns_chunk if isinstance(attns_chunk, list) else [attns_chunk]
 
@@ -278,6 +270,8 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.1, help='Attention dropout rate')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
+    parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
+    parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
     parser.add_argument('--model_path', type=str, default=None,
                         help='Optional path to the saved model file to load before training')
 
@@ -353,11 +347,30 @@ def main():
 
     print("Loading model...")
     model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
-    
+
+    if args.pruning:
+        print("Model pruning.")
+
+        # Specify the pruning percentage
+        pruning_percentage = 0.1
+
+        # Perform global magnitude-based pruning
+        parameters_to_prune = [(module, 'weight') for module in model.modules() if isinstance(module, (nn.Linear, nn.Embedding))]
+        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=pruning_percentage)
+
+        # Remove the pruning reparameterization
+        for module, _ in parameters_to_prune:
+            prune.remove(module, 'weight')
+
+        # Save the pruned model
+        if args.model_path is not None:
+            pruned_model_path =  args.model_path + '_pruned'
+            torch.save(model.state_dict(), pruned_model_path)
+
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
-    
+
     print("Model loaded.")
 
     with autocast():

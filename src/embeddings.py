@@ -3,6 +3,8 @@ import torch.nn as nn
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
+import torch.nn.utils.prune as prune
+from torch.quantization import quantize_dynamic
 import seaborn as sns
 import pandas as pd
 from tab_transformer_pytorch import TabTransformer, FTTransformer
@@ -40,22 +42,15 @@ def extract_embeddings(model, loader, device, args, sub_batch_size=1):
             x_categ = x_categ.to(device)
             x_cont = x_cont.to(device)
 
-            # Split the batch into smaller sub-batches
             for i in range(0, x_categ.size(0), sub_batch_size):
                 x_categ_sub = x_categ[i:i+sub_batch_size]
                 x_cont_sub = x_cont[i:i+sub_batch_size]
 
-                with amp.autocast():  # Use automatic mixed precision
-                    if args.model_type == 'FTTransformer':
-                        emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
-                    elif args.model_type == 'TabTransformer':
-                        emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
-                    else:
-                        raise ValueError(f"Unsupported model type: {args.model_type}")
+                with amp.autocast():
+                    emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
 
                 embeddings.append(emb_sub)
 
-                # Clear the GPU cache and release memory after each sub-batch
                 del x_categ_sub, x_cont_sub, emb_sub
                 torch.cuda.empty_cache()
 
@@ -129,7 +124,25 @@ def main(gpu, args):
     print("Loading model...")
     model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     print(f"Model created: {model}")
-    
+
+    if args.pruning:
+        print("Model pruning.")
+        # Specify the pruning percentage
+        pruning_percentage = 0.1
+
+        # Perform global magnitude-based pruning
+        parameters_to_prune = [(module, 'weight') for module in model.modules() if isinstance(module, (nn.Linear, nn.Embedding))]
+        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=pruning_percentage)
+
+        # Remove the pruning reparameterization
+        for module, _ in parameters_to_prune:
+            prune.remove(module, 'weight')
+        
+        # Save the pruned model
+        if args.model_path is not None:
+            pruned_model_path =  args.model_path + '_pruned'
+            torch.save(model.state_dict(), pruned_model_path)
+
     model = model.to(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
@@ -169,6 +182,8 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N', help='Number of data loading workers (default: 1)')
     parser.add_argument('-g', '--gpus', default=2, type=int, help='Number of gpus per node')
     parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
+    parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
+
     args = parser.parse_args()
     args.world_size = args.gpus * args.nodes
 

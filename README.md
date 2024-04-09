@@ -146,18 +146,17 @@ $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
 
 ```bash
-$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --use_batch_accumulation --clipping --max_norm 1 --batch_size 8 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
+$ python3 src/train.py --model_type FTTransformer --dim 32 --depth 3 --heads 16 --ff_dropout 0.2 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 10 --batch_size 10 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 or 
 ```bash
-$ python3 src/train.py --model_type ResNet --dim 256 --depth 3 --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
+$ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 64 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization batchnorm --use_mixup --weight_decay 0.1 --d_hidden_factor 2
 ```
 
 or 
 ```bash
-$ python3 src/train.py --model_type MLP  --dropout 0.5 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 1 --scheduler 'cosine'
-```
+$ python3 src/train.py --model_type MLP  --dropout 0.2 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 5 --scheduler 'cosine' -use_batch_accumulation --use_mixup --use_cutmix --weight_decay 0.1
 ```
 
 4. (Optional) Plot losses and validation AUROC from saved training history. Arguments: `--file_path`:

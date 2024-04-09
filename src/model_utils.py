@@ -311,28 +311,27 @@ class MLPPrediction(nn.Module):
         self.category_embeddings = None
 
         if categories is not None:
-            self.category_embeddings = nn.Embedding(sum(categories), d_embedding)
-            nn.init.kaiming_uniform_(self.category_embeddings.weight, a=math.sqrt(5))
-            d_in_cat = len(categories) * d_embedding  # Multiply by the number of categorical features
+            self.category_embeddings = nn.ModuleList([nn.Embedding(cat_size, d_embedding) for cat_size in categories])
+            for embedding in self.category_embeddings:
+                nn.init.kaiming_uniform_(embedding.weight, a=math.sqrt(5))
+            d_in_cat = len(categories) * d_embedding  # Calculate the total embedding size
 
         d_in = d_in_num + d_in_cat
         layers = []
-        input_dim = d_in
 
         # Add an input layer to match the dimension of d_in with the first hidden layer
         if d_layers:
-            layers.append(nn.Linear(1755, d_layers[0]))  # Change the input dimension of the first linear layer to 1755
+            layers.append(nn.Linear(d_in, d_layers[0]))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
-            input_dim = d_layers[0]
+            d_in = d_layers[0]
         else:
             layers.append(nn.Flatten())  # Add a flatten layer if no input layer is needed
         
-        for output_dim in d_layers:
-            layers.append(MLPBlock(input_dim, output_dim, dropout))
-            input_dim = output_dim
+        for i in range(1, len(d_layers)):  # Iterate over the hidden layers
+            layers.append(MLPBlock(d_layers[i-1], d_layers[i], dropout))
         self.layers = nn.Sequential(*layers)
-        self.head = nn.Linear(d_layers[-1] if d_layers else d_in, d_out)
+        self.head = nn.Linear(d_layers[-1] if d_layers else d_in, d_out)  # Adjust the dimension of the head layer
 
     def forward(self, x_num: Tensor, x_cat: ty.Optional[Tensor]) -> Tensor:
         x = []
@@ -341,8 +340,9 @@ class MLPPrediction(nn.Module):
             x.append(x_num)
         if x_cat is not None and self.category_embeddings is not None:
             x_cat = x_cat.long()  # Convert x_cat to long data type
-            x_cat_emb = self.category_embeddings(x_cat)
-            x_cat_emb = x_cat_emb.view(x_cat.size(0), -1)  # Flatten categorical embeddings
+            x_cat_split = torch.split(x_cat, 1, dim=1)  # Split x_cat along the second dimension
+            x_cat_emb = [embedding(split.squeeze(1)) for split, embedding in zip(x_cat_split, self.category_embeddings)]
+            x_cat_emb = torch.cat(x_cat_emb, dim=1)  # Concatenate the embeddings
             x.append(x_cat_emb)
 
         x = torch.cat(x, dim=-1)
@@ -353,7 +353,7 @@ class MLPPrediction(nn.Module):
         x = self.head(x)
         x = x.squeeze(-1)
         return x
-
+        
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -389,10 +389,10 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             heads=heads,
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
-            mlp_hidden_mults=(4, 2),
+            mlp_hidden_mults=(2, 1),
             mlp_act=nn.ReLU(),
             dim_head = 16,                                              
-            shared_categ_dim_divisor = 8,                               
+            shared_categ_dim_divisor = 16,                               
             use_shared_categ_embed = True,                              
             checkpoint_grads=True                                       
         )
@@ -454,12 +454,12 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
     elif model_type == 'MLP':
         model = MLPPrediction(
             d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices) * 16,
+            d_in_cat=len(binary_feature_indices) * args.d_embedding,
             d_layers=args.d_layers,
             dropout=args.dropout,
             d_out=1,
             categories=[2] * len(binary_feature_indices),
-            d_embedding=16,
+            d_embedding=args.d_embedding,
             numerical_feature_indices=numerical_feature_indices,
             binary_feature_indices=binary_feature_indices
         )

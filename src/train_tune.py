@@ -40,7 +40,6 @@ def custom_search_space(config):
 
 def hyperparameter_optimization(model_type, epochs):
     search_space = {
-        "heads": tune.choice([4, 8, 16]),
         "disable_early_stopping": tune.choice([True, False]),
         "early_stopping_patience": tune.sample_from(lambda spec: tune.choice([5, 10, 15]) if not spec.config.get("disable_early_stopping", False) else 0),
         "use_mixup": tune.choice([True, False]),
@@ -57,6 +56,7 @@ def hyperparameter_optimization(model_type, epochs):
 
     if model_type in ['TabTransformer', 'FTTransformer']:
         search_space.update({
+            "heads": tune.choice([4, 8, 16]),
             "dim": tune.choice([32, 128, 192]),
             "depth": tune.choice([3, 6, 12]),
             "attn_dropout": tune.choice([0.0, 0.1, 0.2]),
@@ -66,6 +66,7 @@ def hyperparameter_optimization(model_type, epochs):
         })
     elif model_type == 'Transformer':
         search_space.update({
+            "heads": tune.choice([4, 8, 16]),
             "dim": tune.choice([128, 256, 512]),
             "num_encoder_layers": tune.choice([2, 4, 6]),
             "dim_feedforward": tune.choice([512, 1024, 2048]),
@@ -79,9 +80,9 @@ def hyperparameter_optimization(model_type, epochs):
             "d_hidden_factor": tune.choice([2, 4, 6]),
             "depth": tune.choice([3, 6, 12]),
             "dropout": tune.choice([0.2, 0.5, 0.7]),
-            "batch_size": tune.choice([8,16,32]),
+            "batch_size": tune.choice([32, 64, 128]),
             "normalization": tune.choice(['batchnorm', 'layernorm']),
-            "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
+            "learning_rate": tune.choice([0.001, 0.01, 0.1]),
         })
     elif model_type == 'MLP':
         search_space.update({
@@ -93,6 +94,7 @@ def hyperparameter_optimization(model_type, epochs):
             "dropout": tune.choice([0.2, 0.5, 0.7]),
             "batch_size": tune.choice([32, 64, 128]),
             "learning_rate": tune.choice([0.001, 0.01, 0.1]),
+            "d_embedding": tune.choice([16]),
         })
 
     ASHA_scheduler = ASHAScheduler(
@@ -159,6 +161,7 @@ def tune_model(config, model_type, epochs):
     elif model_type == 'MLP':
         dropout = config["dropout"]
         d_layers=config["d_layers"]
+        d_embedding=config["d_embedding"]
 
     # Provide the absolute path to the train_dataset.pt file
     train_dataset_path = '/home/jvp/diabetes_pred/train_dataset.pt'
@@ -265,12 +268,12 @@ def tune_model(config, model_type, epochs):
     elif model_type == 'MLP':
         model = MLPPrediction(
                 d_in_num=len(numerical_feature_indices),
-                d_in_cat=len(binary_feature_indices) * 16,
+                d_in_cat=len(binary_feature_indices) * d_embedding,
                 d_layers=d_layers,
                 dropout=dropout,
                 d_out=1,
                 categories=[2] * len(binary_feature_indices),
-                d_embedding=16,
+                d_embedding=d_embedding,
                 numerical_feature_indices=numerical_feature_indices,
                 binary_feature_indices=binary_feature_indices
             )
