@@ -33,28 +33,23 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         return self.x_categ[idx], self.x_cont[idx], self.labels[idx]
 
-def extract_embeddings(model, loader, device, args, sub_batch_size=1):
+def extract_embeddings(model, loader, device, args):
     model.eval()
-    embeddings = []
+    embeddings_list = []
     with torch.no_grad():
         for batch in loader:
             x_categ, x_cont, _ = batch
             x_categ = x_categ.to(device)
             x_cont = x_cont.to(device)
 
-            for i in range(0, x_categ.size(0), sub_batch_size):
-                x_categ_sub = x_categ[i:i+sub_batch_size]
-                x_cont_sub = x_cont[i:i+sub_batch_size]
+            with amp.autocast():  # Enable mixed precision
+                embeddings = model.module.get_embeddings(x_categ, x_cont, batch_size=args.batch_size)
 
-                with amp.autocast():
-                    emb_sub = checkpoint(model.module.get_embeddings, x_categ_sub, x_cont_sub)
+            embeddings_list.append(embeddings.cpu())  # Move embeddings to CPU
+            del x_categ, x_cont, embeddings
+            torch.cuda.empty_cache()
 
-                embeddings.append(emb_sub)
-
-                del x_categ_sub, x_cont_sub, emb_sub
-                torch.cuda.empty_cache()
-
-    embeddings = torch.cat(embeddings, dim=0)
+    embeddings = torch.cat(embeddings_list, dim=0)  # Concatenate all embeddings
     return embeddings
 
 def plot_embeddings(tsne_df, model_type, model_path):
@@ -116,32 +111,35 @@ def main(gpu, args):
 
     dataset = CustomDataset(x_categ, x_cont, labels)
 
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=4)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size // 2, shuffle=False, pin_memory=True, num_workers=4)
 
    # Initialize device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
-    print(f"Model created: {model}")
+    if args.pruning and os.path.exists(args.model_path + '_pruned'):
+        print("Loading pruned model...")
+        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
+    else:
+        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
 
-    if args.pruning:
-        print("Model pruning.")
-        # Specify the pruning percentage
-        pruning_percentage = 0.1
+        if args.pruning:
+            print("Model pruning.")
+            # Specify the pruning percentage
+            pruning_percentage = 0.4
 
-        # Perform global magnitude-based pruning
-        parameters_to_prune = [(module, 'weight') for module in model.modules() if isinstance(module, (nn.Linear, nn.Embedding))]
-        prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=pruning_percentage)
+            # Perform global magnitude-based pruning
+            parameters_to_prune = [(module, 'weight') for module in model.modules() if isinstance(module, (nn.Linear, nn.Embedding))]
+            prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=pruning_percentage)
 
-        # Remove the pruning reparameterization
-        for module, _ in parameters_to_prune:
-            prune.remove(module, 'weight')
-        
-        # Save the pruned model
-        if args.model_path is not None:
-            pruned_model_path =  args.model_path + '_pruned'
-            torch.save(model.state_dict(), pruned_model_path)
+            # Remove the pruning reparameterization
+            for module, _ in parameters_to_prune:
+                prune.remove(module, 'weight')
+            
+            # Save the pruned model
+            if args.model_path is not None:
+                pruned_model_path =  args.model_path + '_pruned'
+                torch.save(model.state_dict(), pruned_model_path)
 
     model = model.to(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
@@ -149,11 +147,23 @@ def main(gpu, args):
     with autocast():
         embeddings = extract_embeddings(model, data_loader, gpu, args)
 
-    embeddings_list = [torch.zeros_like(embeddings) for _ in range(dist.get_world_size())]
+    # Move embeddings to GPU
+    embeddings = embeddings.to(gpu)
+
+    # Create embeddings_list on the GPU
+    embeddings_list = [torch.zeros_like(embeddings, device=gpu) for _ in range(dist.get_world_size())]
+
+    # Move embeddings_list and embeddings to the same device
+    embeddings_list = [tensor.to(gpu) for tensor in embeddings_list]
+    embeddings = embeddings.to(gpu)
+
     dist.all_gather(embeddings_list, embeddings)
 
     if gpu == 0:
-        embeddings = torch.cat(embeddings_list, dim=0).cpu().numpy()
+        embeddings = torch.cat(embeddings_list, dim=0)  # Concatenate on GPU
+
+        # Move embeddings to CPU and reshape to 2D
+        embeddings = embeddings.cpu().numpy().reshape(-1, embeddings.shape[-1])
 
         tsne = TSNE(n_components=2, random_state=42)
         tsne_results = tsne.fit_transform(embeddings)

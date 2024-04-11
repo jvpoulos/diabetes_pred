@@ -140,7 +140,7 @@ def main(args):
             dim_head = 8,                                              # default is 16
             shared_categ_dim_divisor = 8,                               # in paper, they reserve dimension / 8 for category shared embedding
             use_shared_categ_embed = True,                              # default is True
-            checkpoint_grads=True                                      # enable gradient checkpointing
+            checkpoint_grads=False                                      # enable gradient checkpointing
         ).to(device)
     elif args.model_type == 'FTTransformer':
         model = FTTransformer(

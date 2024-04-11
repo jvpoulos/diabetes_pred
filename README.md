@@ -127,7 +127,7 @@ $ python3.8 src/data_loader.py # need Python 3.8 to run
 For temporal analyses, run instead:
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:/home/jvp/EventStreamGPT
-$ python src/event_stream.py
+$ python3 src/event_stream.py
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset:
@@ -146,7 +146,7 @@ $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 3. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
 
 ```bash
-$ python3 src/train.py --model_type FTTransformer --dim 32 --depth 3 --heads 16 --ff_dropout 0.2 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 10 --batch_size 10 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
+$ python3 src/train.py --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 5 --batch_size 10 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 or 
@@ -165,24 +165,24 @@ $ python3 src/train.py --model_type MLP  --dropout 0.2 --batch_size 32 --epochs 
 $ python3 src/plot_losses.py 'losses/training_performance_model_type-FTTransformer_dim-128_attn_dropout-0_1_outcome-A1cGreaterThan7_batch_size-8_lr-0_1_ep-24_esp-10_cutmix_prob-0_3_cutmix_alpha-10_use_mixup-false_mixup_alpha-0_2_use_cutmix-true.pkl'
 ```
 
-4. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size`:
+4. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning`:
 ```bash
-$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
+$ python3 src/attention.py --dataset_type 'validation' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning
 ```
 
 5. (Optional) Generate HTML representations for the head view, model view, and neuron view using the BertViz package (model_type = Transformer only).
 ```bash
-$ python3 src/visualize_attn.py --dataset_type 'train' --model_type Transformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
+$ python3 src/visualize_attn.py --dataset_type 'validation' --model_type Transformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 
 ```
 
-5. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size`:
+5. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type train --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2 -n 1 -g 2 -nr 0
+$ python3 src/embeddings.py --dataset_type 'validation' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning
 ```
 
 6. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
 
 ```bash
-$ python3 src/test.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0.0 --attn_dropout 0.0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_el6_ffdim2048_dr0.1_A1cGreaterThan7_bs8_lr0.001_ep200_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_ucfalse.pth' --batch_size 2
+$ python3 src/test.py --model_type FTTransformer --dim 32 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim32_dep1_heads4_fdr0.2_adr0.2_bs32_lr0.001_wd0.01_ep21_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2
 ```

@@ -4,8 +4,7 @@ import torch
 from transformers import utils
 from bertviz import head_view, model_view
 from model_utils import load_model
-from ft_transformer import FTTransformer
-from tab_transformer_pytorch import TabTransformer
+from tab_transformer_pytorch import TabTransformer, FTTransformer
 import json
 
 # Parse command line arguments
@@ -54,6 +53,9 @@ binary_feature_indices = binary_feature_indices
 numerical_feature_indices = numerical_feature_indices
 categories = [2] * len(binary_feature_indices)
 num_continuous = len(numerical_feature_indices)
+
+# Initialize device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 print("Loading model...")
 model = load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device)
