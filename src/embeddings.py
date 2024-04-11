@@ -45,11 +45,21 @@ def extract_embeddings(model, loader, device, args):
             with amp.autocast():  # Enable mixed precision
                 embeddings = model.module.get_embeddings(x_categ, x_cont, batch_size=args.batch_size)
 
-            embeddings_list.append(embeddings.cpu())  # Move embeddings to CPU
+            embeddings_list.append(embeddings)
             del x_categ, x_cont, embeddings
             torch.cuda.empty_cache()
 
     embeddings = torch.cat(embeddings_list, dim=0)  # Concatenate all embeddings
+    
+    # Gather embeddings on the first process (rank 0)
+    embeddings_list = [torch.zeros_like(embeddings) for _ in range(dist.get_world_size())]
+    dist.gather(embeddings, embeddings_list, dst=0)
+    
+    if dist.get_rank() == 0:
+        embeddings = torch.cat(embeddings_list, dim=0)
+    else:
+        embeddings = None
+    
     return embeddings
 
 def plot_embeddings(tsne_df, model_type, model_path):
@@ -116,12 +126,12 @@ def main(gpu, args):
    # Initialize device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    print("Loading model...")
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
-        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
+        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     else:
-        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
+        print("Loading model...")
+        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
 
         if args.pruning:
             print("Model pruning.")
@@ -141,27 +151,26 @@ def main(gpu, args):
                 pruned_model_path =  args.model_path + '_pruned'
                 torch.save(model.state_dict(), pruned_model_path)
 
+        if args.quantization is not None:
+            print(f"Quantizing model to {args.quantization} bits.")
+            model = model.to('cpu')  # Move the model to CPU
+            model = quantize_dynamic(model, {nn.Linear, nn.Embedding}, dtype=torch.qint8)
+            model = model.to(device)  # Move the quantized model back to the original device
+
+        if args.pruning or args.quantization is not None:
+            # Save the pruned and/or quantized model
+            if args.model_path is not None:
+                model_path_ext = '_pruned' if args.pruning else ''
+                model_path_ext += f'_quantized_{args.quantization}' if args.quantization is not None else ''
+                torch.save(model.state_dict(), args.model_path + model_path_ext)
+
     model = model.to(gpu)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=False)
 
     with autocast():
         embeddings = extract_embeddings(model, data_loader, gpu, args)
 
-    # Move embeddings to GPU
-    embeddings = embeddings.to(gpu)
-
-    # Create embeddings_list on the GPU
-    embeddings_list = [torch.zeros_like(embeddings, device=gpu) for _ in range(dist.get_world_size())]
-
-    # Move embeddings_list and embeddings to the same device
-    embeddings_list = [tensor.to(gpu) for tensor in embeddings_list]
-    embeddings = embeddings.to(gpu)
-
-    dist.all_gather(embeddings_list, embeddings)
-
-    if gpu == 0:
-        embeddings = torch.cat(embeddings_list, dim=0)  # Concatenate on GPU
-
+    if dist.get_rank() == 0:
         # Move embeddings to CPU and reshape to 2D
         embeddings = embeddings.cpu().numpy().reshape(-1, embeddings.shape[-1])
 
@@ -193,6 +202,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--gpus', default=2, type=int, help='Number of gpus per node')
     parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
     parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
+    parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
 
     args = parser.parse_args()
     args.world_size = args.gpus * args.nodes

@@ -378,7 +378,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, normalization='layernorm', activation='relu', d_hidden_factor=2.0, d_layers=None, d_embedding=None, checkpoint_grads=False):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, normalization='layernorm', activation='relu', d_hidden_factor=2.0, d_layers=None, d_embedding=None):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -393,8 +393,7 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             mlp_act=nn.ReLU(),
             dim_head = 16,                                              
             shared_categ_dim_divisor = 16,                               
-            use_shared_categ_embed = True,                              
-            checkpoint_grads=checkpoint_grads                                       
+            use_shared_categ_embed = True                                 
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
@@ -406,8 +405,7 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             depth=depth,
             heads=heads,
             attn_dropout=attn_dropout,
-            ff_dropout=ff_dropout,
-            checkpoint_grads=checkpoint_grads
+            ff_dropout=ff_dropout
         )
     elif model_type == 'FTTransformerOG':
         model = FTTransformerOG(

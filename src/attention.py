@@ -111,7 +111,15 @@ def get_attention_maps(model, loader, binary_feature_indices, numerical_feature_
     return top_attention_weights, top_feature_names, feature_importance_distribution
 
 def save_attention_maps_to_html(attention_maps, feature_names, feature_importance_distribution, filename):
+    if not feature_names:
+        print("No feature names found. Skipping saving attention maps to HTML.")
+        return
+
     for head_idx in attention_maps:
+        if head_idx not in feature_names:
+            print(f"Feature names not found for head {head_idx}. Skipping saving attention map for this head.")
+            continue
+
         attention_data = list(zip(feature_names[head_idx], attention_maps[head_idx]))
 
         # Create a DataFrame to represent the attention data
@@ -136,7 +144,10 @@ def save_attention_maps_to_html(attention_maps, feature_names, feature_importanc
 
         print(f"Attention maps for head {head_idx} saved to {filename.split('.')[0]}_head_{head_idx}.html")
 
-    # Add feature importance distribution to the HTML file
+    if 0 not in feature_names:
+        print("Feature names not found for feature importance distribution. Skipping saving feature importance distribution to HTML.")
+        return
+
     importance_data = list(zip(feature_names[0], feature_importance_distribution))
     df_importance = pd.DataFrame(importance_data, columns=['Feature', 'Importance'])
     df_importance = pd.merge(df_importance, df_train_summary[['Feature', 'Description']], on='Feature', how='left')
@@ -282,6 +293,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
     parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
+    parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
     parser.add_argument('--model_path', type=str, default=None,
                         help='Optional path to the saved model file to load before training')
 
@@ -313,9 +325,6 @@ def main():
         if args.dim is None:
             args.dim = 512
         args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
-
-   # Initialize device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("Loading dataset...")
     if args.dataset_type == 'train':
@@ -354,17 +363,19 @@ def main():
 
     num_continuous = len(numerical_feature_indices)
     print("Continuous:", num_continuous)
+
+    # Initialize device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    print("Loading model...")
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
-        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
+        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     else:
-        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, checkpoint_grads=True)
+        print("Loading model...")
+        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
 
         if args.pruning:
             print("Model pruning.")
-
             # Specify the pruning percentage
             pruning_percentage = 0.4
 
@@ -375,11 +386,22 @@ def main():
             # Remove the pruning reparameterization
             for module, _ in parameters_to_prune:
                 prune.remove(module, 'weight')
-
+            
             # Save the pruned model
             if args.model_path is not None:
-                pruned_model_path = args.model_path + '_pruned'
+                pruned_model_path =  args.model_path + '_pruned'
                 torch.save(model.state_dict(), pruned_model_path)
+
+        if args.quantization is not None and device.type == 'cpu':
+            print(f"Quantizing model to {args.quantization} bits.")
+            model = quantize_dynamic(model, {nn.Linear, nn.Embedding}, dtype=torch.qint8)
+
+        if args.pruning or (args.quantization is not None and device.type == 'cpu'):
+            # Save the pruned and/or quantized model
+            if args.model_path is not None:
+                model_path_ext = '_pruned' if args.pruning else ''
+                model_path_ext += f'_quantized_{args.quantization}' if args.quantization is not None else ''
+                torch.save(model.state_dict(), args.model_path + model_path_ext)
 
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
@@ -476,7 +498,10 @@ def main():
                     return
 
                 if attention_maps is not None and feature_names is not None:
-                    save_attention_maps_to_html(attention_maps, feature_names, feature_importance_distribution, "attention_maps.html")
+                    if feature_names:
+                        save_attention_maps_to_html(attention_maps, feature_names, feature_importance_distribution, "attention_maps.html")
+                    else:
+                        print("No valid feature names found. Skipping saving attention maps and feature importance distribution to HTML.")
 
                     print("Identifying top feature values...")
                     top_feature_value_attention_weights = identify_top_feature_values(model, data_loader, binary_feature_indices, numerical_feature_indices, column_names, feature_names, chunk_size=1)
