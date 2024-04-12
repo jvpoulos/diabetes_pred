@@ -51,17 +51,15 @@ def extract_embeddings(model, loader, device, args):
 
     embeddings = torch.cat(embeddings_list, dim=0)  # Concatenate all embeddings
     
-    # Gather embeddings on the first process (rank 0)
-    embeddings_list = [torch.zeros_like(embeddings) for _ in range(dist.get_world_size())]
-    dist.gather(embeddings, embeddings_list, dst=0)
+    # Gather embeddings from all processes using all_gather
+    world_size = dist.get_world_size()
+    embeddings_gather = [torch.zeros_like(embeddings) for _ in range(world_size)]
+    dist.all_gather(embeddings_gather, embeddings)
     
-    if dist.get_rank() == 0:
-        embeddings = torch.cat(embeddings_list, dim=0)
-    else:
-        embeddings = None
+    embeddings = torch.cat(embeddings_gather, dim=0)
     
     return embeddings
-
+    
 def plot_embeddings(tsne_df, model_type, model_path):
     plt.figure(figsize=(16, 10))
     sns.scatterplot(x='TSNE1', y='TSNE2', palette=sns.color_palette("hsv", 10),
@@ -98,7 +96,7 @@ def main(gpu, args):
     with open('columns_to_normalize.json', 'r') as file:
         columns_to_normalize = json.load(file)
 
-    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "studyID"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     column_names_filtered = [col for col in column_names if col not in excluded_columns]

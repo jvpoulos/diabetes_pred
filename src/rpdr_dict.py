@@ -28,7 +28,6 @@ dia_columns = {
 'Code_Type': 'object', 
 'Code': 'object', 
 'IndexDate': 'object', 
-'DiagnosisBeforeOrOnIndexDate': 'int32', 
 'CodeWithType': 'object'
 }
 
@@ -38,14 +37,13 @@ prc_columns = {
 'Code_Type': 'object', 
 'Code': 'object', 
 'IndexDate': 'object', 
-'ProcedureBeforeOrOnIndexDate': 'int32', 
 'CodeWithType': 'object'
 }
 
 # Select columns to read in each dataset
 
-outcomes_columns_select = ['studyID','EMPI', 'InitialA1c', 'A1cAfter12Months', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'BirthYear', 'SDI_score', 'Veteran']
+outcomes_columns_select = ['studyID','EMPI', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
 
-dia_columns_select = ['EMPI', 'DiagnosisBeforeOrOnIndexDate', 'CodeWithType']
+dia_columns_select = ['EMPI', 'CodeWithType']
 
-prc_columns_select = ['EMPI', 'ProcedureBeforeOrOnIndexDate', 'CodeWithType']
+prc_columns_select = ['EMPI', 'CodeWithType']

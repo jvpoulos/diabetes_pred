@@ -53,7 +53,7 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
+    excluded_columns = ["A1cGreaterThan7",  "studyID"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     # Find indices of excluded columns

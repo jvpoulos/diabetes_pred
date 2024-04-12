@@ -413,7 +413,6 @@ SELECT
     a12.EMPI,
     a12.IndexDate,
     a12.InitialA1c,
-    a12.A1cAfter12Months,
     a12.A1cGreaterThan7,
     a12.Female,
     a12.Married,
@@ -426,9 +425,7 @@ SELECT
     DATEDIFF(DAY, id.IndexDate, id.LatestDate) AS DaysFromIndexToLatestDate,
     DATEDIFF(DAY, id.IndexDate, id.PatientTurns18) AS DaysFromIndexToPatientTurns18,
    -- id.IndexDate, -- Keeping the original IndexDate for reference
-    sp.AgeYears, -- AgeYears from #tmp_studyPop
-    sp.BirthYear, -- AgeYears from #tmp_studyPop
-    ppc.NumberEncounters -- NumberEncounters from #tmp_PrimCarePatients
+    sp.AgeYears -- AgeYears from #tmp_studyPop
 INTO dbo.DiabetesOutcomes
 FROM #A1c12MonthsLaterTable a12
 INNER JOIN #tmp_indexDate id ON a12.EMPI = id.EMPI
@@ -467,40 +464,53 @@ IF OBJECT_ID('dbo.Diagnoses', 'U') IS NOT NULL DROP TABLE dbo.Diagnoses;
     SELECT
         dia.EMPI,
         dia.Date,
-        dia.Code,
+        CASE 
+            WHEN dia.Code_Type IN ('ICD9', 'ICD10') AND CHARINDEX('.', dia.Code) > 0 
+            THEN LEFT(dia.Code, CHARINDEX('.', dia.Code)) + 
+                 SUBSTRING(dia.Code, CHARINDEX('.', dia.Code) + 1, 1) -- Keep only first digit after decimal
+            ELSE dia.Code 
+        END AS Code,
         dia.Code_Type,
         do.IndexDate,
         CASE WHEN dia.Date <= do.IndexDate THEN 1 ELSE 0 END AS DiagnosisBeforeOrOnIndexDate,
         CASE 
             WHEN CHARINDEX('.', dia.Code) > 0 
-            THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) - 1) + -- Get everything before the decimal point
-                 '.' + -- Add the decimal point
-                 SUBSTRING(dia.Code, CHARINDEX('.', dia.Code) + 1, 1) -- Add the first digit after the decimal, if it exists
+            THEN LEFT(dia.Code, CHARINDEX('.', dia.Code) - 1) + 
+                 '.' + 
+                 SUBSTRING(dia.Code, CHARINDEX('.', dia.Code) + 1, 1) 
             ELSE dia.Code 
         END + 
         '_' + dia.Code_Type AS CodeWithType
     FROM dia_2_pcp_combined dia
     INNER JOIN DiabetesOutcomes do ON dia.EMPI = do.EMPI
-   WHERE dia.Code_Type IN ('ICD9', 'ICD10') AND dia.Code IS NOT NULL AND dia.Code <> ''
+    WHERE dia.Code_Type IN ('ICD9', 'ICD10') AND dia.Code IS NOT NULL AND dia.Code <> ''
 ),
 AggregatedDiagnoses AS (
     SELECT
         EMPI,
-        MAX(Date) AS Date,
         Code,
         Code_Type,
-        MAX(IndexDate) AS IndexDate,
-        MAX(DiagnosisBeforeOrOnIndexDate) AS DiagnosisBeforeOrOnIndexDate,
+        MAX(Date) AS LatestDate,
+        MAX(IndexDate) AS LatestIndexDate,
         CodeWithType
-      --  MAX(DiagnosisBeforeOrOnIndexDate) AS AggregatedBeforeOrOnIndex
     FROM CTE_Diagnoses
+    WHERE DiagnosisBeforeOrOnIndexDate = 1
     GROUP BY EMPI, Code, Code_Type, CodeWithType
 )
 
-SELECT * INTO dbo.Diagnoses FROM AggregatedDiagnoses;
-SELECT TOP 100 * FROM Diagnoses; --n = 8768424 (unique by EMPI and Code/Code_Type)
+SELECT 
+    EMPI,
+    LatestDate AS Date,
+    Code,
+    Code_Type,
+    LatestIndexDate AS IndexDate,
+    CodeWithType
+INTO dbo.Diagnoses
+FROM AggregatedDiagnoses;
 
--- Count distinct values of CodeWithType and EMPI
+SELECT TOP 100 * FROM dbo.Diagnoses;
+
+-- Count distinct values of CodeWithType and EMPI in Diagnoses table
 SELECT 
     COUNT(DISTINCT EMPI) AS UniqueEMPIs,
     COUNT(DISTINCT CodeWithType) AS UniqueCodes
@@ -518,21 +528,18 @@ IF OBJECT_ID('dbo.Procedures', 'U') IS NOT NULL DROP TABLE dbo.Procedures;
         prc.Date,
         CASE 
             WHEN prc.Code_Type IN ('ICD9', 'ICD10') AND CHARINDEX('.', prc.Code) > 0 
-            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code)) + -- Get everything up to the decimal
-                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) -- Add only the first digit after the decimal
+            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code)) + 
+                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) -- Keep only first digit after decimal
             ELSE prc.Code 
         END AS Code,
         prc.Code_Type,
         po.IndexDate,
+        CASE WHEN prc.Date <= po.IndexDate THEN 1 ELSE 0 END AS ProcedureBeforeOrOnIndexDate,
         CASE 
-            WHEN prc.Date <= po.IndexDate THEN 1 
-            ELSE 0 
-        END AS ProcedureBeforeOrOnIndexDate,
-        CASE 
-            WHEN prc.Code_Type IN ('ICD9', 'ICD10') AND CHARINDEX('.', prc.Code) > 0 
-            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code) - 1) + -- Get everything before the decimal
-                 '.' + -- Add the decimal point
-                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) -- Add only the first digit after the decimal
+            WHEN CHARINDEX('.', prc.Code) > 0 
+            THEN LEFT(prc.Code, CHARINDEX('.', prc.Code) - 1) + 
+                 '.' + 
+                 SUBSTRING(prc.Code, CHARINDEX('.', prc.Code) + 1, 1) 
             ELSE prc.Code 
         END + 
         '_' + prc.Code_Type AS CodeWithType
@@ -545,26 +552,25 @@ AggregatedProcedures AS (
         EMPI,
         Code,
         Code_Type,
-        CodeWithType,
-        MAX(Date) AS MaxDate,
-        MAX(IndexDate) AS MaxIndexDate,
-        MIN(ProcedureBeforeOrOnIndexDate) AS ProcedureBeforeOrOnIndexDate
+        MAX(Date) AS LatestDate,
+        MAX(IndexDate) AS LatestIndexDate,
+        CodeWithType
     FROM CTE_Procedures
+    WHERE ProcedureBeforeOrOnIndexDate = 1
     GROUP BY EMPI, Code, Code_Type, CodeWithType
 )
 
 SELECT 
     EMPI,
-    MaxDate AS Date,
+    LatestDate AS Date,
     Code,
     Code_Type,
-    MaxIndexDate AS IndexDate,
-    ProcedureBeforeOrOnIndexDate,
+    LatestIndexDate AS IndexDate,
     CodeWithType
 INTO dbo.Procedures
-FROM AggregatedProcedures; --n = 7554888
+FROM AggregatedProcedures;
 
-SELECT TOP 100 * FROM dbo.Procedures; -- Displaying top 100 entries for review
+SELECT TOP 100 * FROM dbo.Procedures;
 
 -- Count distinct values of CodeWithType and EMPI in Procedures table
 SELECT 
@@ -573,4 +579,4 @@ SELECT
 FROM dbo.Procedures;
 
 --UniqueEMPIs   UniqueCodes
--- 55615    14872
+-- 53675    10068

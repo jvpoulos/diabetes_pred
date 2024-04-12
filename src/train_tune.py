@@ -171,7 +171,7 @@ def tune_model(config, model_type, epochs):
     binary_feature_indices_path = '/home/jvp/diabetes_pred/binary_feature_indices.json'
     numerical_feature_indices_path = '/home/jvp/diabetes_pred/numerical_feature_indices.json'
 
-    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "studyID"]
     
     with open(column_names_path, 'r') as file:
         column_names = json.load(file)

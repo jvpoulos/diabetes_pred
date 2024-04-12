@@ -24,7 +24,7 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
-from data_utils import read_file, dask_df_to_tensor, preprocess_data
+from data_utils import read_file, dask_df_to_tensor
 from rdpr_dict import outcomes_columns, dia_columns, prc_columns, outcomes_columns_select, dia_columns_select, prc_columns_select
 
 # Define the column types for each file type
@@ -40,7 +40,11 @@ def main(use_dask=False):
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
 
-    df_dia, df_prc, df_outcomes = preprocess_data(df_dia, df_prc, df_outcomes)
+    print("Number of diagnoses before or on Index date:", len(df_dia))
+    print("Number of procedures before or on Index date:", len(df_prc))
+
+    print("Number of patients:", len(df_outcomes))
+    print("Total features (original):", df_outcomes.shape[1])
 
     print("Splitting outcomes data")
     # Splitting the data into train, validation, and test sets

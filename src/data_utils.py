@@ -25,48 +25,6 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 
-def preprocess_data(df_dia, df_prc, df_outcomes):
-    # Limit diagnoses and procedures to those on or before patients' index date
-    print("Number of diagnoses, unconditional on Index date:", len(df_dia))
-
-    # Keep only rows where 'DiagnosisBeforeOrOnIndexDate' equals 1
-    df_dia = df_dia[df_dia['DiagnosisBeforeOrOnIndexDate'] == 1]
-
-    # Drop the 'DiagnosisBeforeOrOnIndexDate' column
-    df_dia.drop('DiagnosisBeforeOrOnIndexDate', axis=1, inplace=True)
-
-    print("Number of diagnoses before or on Index date:", len(df_dia))
-
-    # Procedures data processing
-    print("Number of procedures, unconditional on Index date:", len(df_prc))
-
-    # Keep only rows where 'ProcedureBeforeOrOnIndexDate' equals 1
-    df_prc = df_prc[df_prc['ProcedureBeforeOrOnIndexDate'] == 1]
-
-    # Drop the 'ProcedureBeforeOrOnIndexDate' column
-    df_prc.drop('ProcedureBeforeOrOnIndexDate', axis=1, inplace=True)
-
-    print("Number of procedures before or on Index date:", len(df_prc))
-
-    # Outcomes data processing
-    print("Number of patients:", len(df_outcomes))
-    print("Total features (original):", df_outcomes.shape[1])
-
-    print("Preprocessing outcomes data")
-
-    # Create a new column 'A1cLessThan7' based on the condition
-    df_outcomes['A1cLessThan7'] = np.where(df_outcomes['A1cAfter12Months'] < 7, 1, 0)
-
-    # Drop the 'A1cAfter12Months' column
-    df_outcomes.drop('A1cAfter12Months', axis=1, inplace=True)
-
-    # Drop the 'BirthYear' column
-    df_outcomes.drop('BirthYear', axis=1, inplace=True)
-
-    # Return the modified dataframes
-    return df_dia, df_prc, df_outcomes
-
-
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """
     Reads a CSV file with a progress bar, selecting specific columns.

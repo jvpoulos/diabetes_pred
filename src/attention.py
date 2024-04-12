@@ -356,7 +356,7 @@ def main():
         binary_feature_indices = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7", "A1cLessThan7",  "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "studyID"]
 
     categories = [2] * len(binary_feature_indices)
     print("Categories:", len(categories))
