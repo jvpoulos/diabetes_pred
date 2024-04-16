@@ -580,3 +580,66 @@ FROM dbo.Procedures;
 
 --UniqueEMPIs   UniqueCodes
 -- 53675    10068
+
+--------------------------------------------------------------------------------------------------------
+--Preprocess Labs table (export to file)
+--------------------------------------------------------------------------------------------------------
+
+IF OBJECT_ID('dbo.Labs', 'U') IS NOT NULL DROP TABLE dbo.Labs;
+
+;WITH CombinedLabs AS (
+    SELECT
+        e.empi,
+        e.LabDate AS Date,
+        e.StudyLabCode AS Code,
+        e.NVal AS Result,
+        e.ValType,
+        'EPIC' AS Source
+    FROM dbo.labsEPIC e
+    WHERE e.LabDate BETWEEN @minDate AND @maxDate
+      AND e.NVal IS NOT NULL
+    UNION ALL
+    SELECT
+        l.empi,
+        l.LabDate,
+        l.GroupCD AS Code,
+        CAST(l.NVal AS FLOAT) AS Result,
+        l.ValType,
+        'LMR' AS Source
+    FROM dbo.labsLMR l
+    WHERE l.LabDate BETWEEN @minDate AND @maxDate
+      AND l.NVal IS NOT NULL
+    UNION ALL
+    SELECT
+        a.EMPI,
+        a.LabDate,
+        a.GroupCD AS Code,
+        CAST(a.nval AS FLOAT) AS Result,
+        a.valtype,
+        'Archive' AS Source
+    FROM dbo.labsLMRArchive a
+    WHERE a.LabDate BETWEEN @minDate AND @maxDate
+      AND a.nval IS NOT NULL
+)
+SELECT
+    cl.EMPI,
+    cl.Date,
+    cl.Code,
+    cl.Result,
+    cl.ValType,
+    cl.Source
+INTO dbo.Labs
+FROM CombinedLabs cl
+INNER JOIN #tmp_indexDate idx ON cl.EMPI = idx.EMPI AND cl.Date <= idx.IndexDate
+WHERE cl.Result IS NOT NULL;
+
+SELECT TOP 100 * FROM dbo.Labs;
+
+-- Further diagnostic queries to inspect the result set
+SELECT 
+    COUNT(DISTINCT EMPI) AS UniqueEMPIs,
+    COUNT(DISTINCT Code) AS UniqueLabCodes
+FROM dbo.Labs;
+
+--UniqueEMPIs   UniqueLabCodes
+--74960 3145

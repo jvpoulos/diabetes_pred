@@ -25,7 +25,7 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 from data_utils import read_file, dask_df_to_tensor
-from rdpr_dict import outcomes_columns, dia_columns, prc_columns, outcomes_columns_select, dia_columns_select, prc_columns_select
+from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select_static, prc_columns_select_static, labs_columns_select_static
 
 # Define the column types for each file type
 
@@ -34,17 +34,20 @@ def main(use_dask=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
+    labs_file_path = 'data/Labs.txt'
 
     # Read each file into a DataFrame
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
-    df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
-    df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
-
-    print("Number of diagnoses before or on Index date:", len(df_dia))
-    print("Number of procedures before or on Index date:", len(df_prc))
+    df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select_static)
+    df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select_static)
+    df_labs = read_file(labs_file_path, labs_columns, labs_columns_select_static, chunk_size=700000)
 
     print("Number of patients:", len(df_outcomes))
     print("Total features (original):", df_outcomes.shape[1])
+
+    print("Number of diagnoses before or on Index date:", len(df_dia))
+    print("Number of procedures before or on Index date:", len(df_prc))
+    print("Number of labs before or on Index date:", len(df_labs))
 
     print("Splitting outcomes data")
     # Splitting the data into train, validation, and test sets
@@ -86,7 +89,7 @@ def main(use_dask=False):
     test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
-    columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score']
+    columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score', 'Result']
 
     print("Normalizing numeric colums: ", columns_to_normalize)
 
@@ -105,7 +108,7 @@ def main(use_dask=False):
     print("Preprocessing diagnoses data")
 
     # Handle categorical columns
-    categorical_columns = ['CodeWithType']
+    categorical_columns = ['CodeWithType', 'Code']
 
     # Save the list of categorical columns to a JSON file
     with open('categorical_columns.json', 'w') as file:
@@ -146,7 +149,7 @@ def main(use_dask=False):
     validation_encoded_dia = one_hot_encoder.transform(validation_rows_dia[categorical_columns].astype(str))
     test_encoded_dia = one_hot_encoder.transform(test_rows_dia[categorical_columns].astype(str))
 
-    print("Extracting dia encoded feature names.")
+    print("Extracting diagnoses encoded feature names.")
 
     # Get feature names from the encoder
     dia_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
@@ -207,7 +210,7 @@ def main(use_dask=False):
 
     print("Infrequent categories saved to infrequent_categories.json.")
 
-    print("Extracting prc encoded feature names.")
+    print("Extracting procedures encoded feature names.")
 
     # Get feature names from the encoder
     prc_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
@@ -217,6 +220,93 @@ def main(use_dask=False):
 
     # Ensure encoded_feature_names is a list
     prc_encoded_feature_names = list(prc_encoded_feature_names)
+
+    print("Preprocessing labs data")
+
+    print("Converting categorical columns to string and handling missing values.")
+
+    for col in categorical_columns:
+        # Convert to string, fill missing values, then convert back to categorical if needed
+        df_labs[col] = df_labs[col].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
+     
+    # Verify no NaN values exist
+    assert not df_labs[categorical_columns] .isnull().any().any(), "NaN values found in the labs categorical columns"
+
+    print("Initializing one-hot encoder for labs data.")
+
+    # Splitting the DataFrame while preserving the order
+    train_rows_labs = df_labs[df_labs['EMPI'].isin(train_empi)].copy()
+    validation_rows_labs = df_labs[df_labs['EMPI'].isin(validation_empi)].copy()
+    test_rows_labs = df_labs[df_labs['EMPI'].isin(test_empi)].copy()
+
+    # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
+    train_rows_labs['order'] = train_rows_labs.index
+    validation_rows_labs['order'] = validation_rows_labs.index
+    test_rows_labs['order'] = test_rows_labs.index
+
+    # Verify the unique values in the 'Code' column
+    print(f"Unique values in training set 'Code': {train_rows_labs['Code'].unique()}")
+
+    # Fit the encoder on the training subset
+    one_hot_encoder.fit(train_rows_labs[categorical_columns].dropna().astype(str))
+
+    # Apply the encoding to the validation and test subsets
+    train_encoded_labs = one_hot_encoder.transform(train_rows_labs[categorical_columns].astype(str))
+    validation_encoded_labs = one_hot_encoder.transform(validation_rows_labs[categorical_columns].astype(str))
+    test_encoded_labs = one_hot_encoder.transform(test_rows_labs[categorical_columns].astype(str))
+
+    ## impute and standardize results
+
+    # # Fit the imputer on the training data and transform the training data
+    # train_df[columns_with_missing_values] = imputer.fit_transform(train_df[columns_with_missing_values])
+
+    # # Apply the same imputation to validation and test datasets without fitting again
+    # validation_df[columns_with_missing_values] = imputer.transform(validation_df[columns_with_missing_values])
+    # test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
+
+    # # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
+    # columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score', 'Result']
+
+    # print("Normalizing numeric colums: ", columns_to_normalize)
+
+    # with open('columns_to_normalize.json', 'w') as file:
+    #     json.dump(columns_to_normalize, file)
+
+    # scaler = MaxAbsScaler()
+
+    # # Fit on training data
+    # train_df[columns_to_normalize] = scaler.fit_transform(train_df[columns_to_normalize])
+
+    # # Transform validation and test data
+    # validation_df[columns_to_normalize] = scaler.transform(validation_df[columns_to_normalize])
+    # test_df[columns_to_normalize] = scaler.transform(test_df[columns_to_normalize])
+
+    print("Extracting infrequent categories.")
+
+    infrequent_categories = one_hot_encoder.infrequent_categories_
+
+    # Prepare a dictionary to hold the infrequent categories for each feature
+    infrequent_categories_dict = {
+        categorical_columns[i]: list(infrequent_categories[i])
+        for i in range(len(categorical_columns))
+    }
+
+    # Save the infrequent categories to a JSON file
+    with open('infrequent_categories.json', 'w') as f:
+        json.dump(infrequent_categories_dict, f)
+
+    print("Infrequent categories saved to infrequent_categories.json.")
+
+    print("Extracting labs encoded feature names.")
+
+    # Get feature names from the encoder
+    labs_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+
+    # Process the feature names to remove the prefix
+    labs_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in labs_encoded_feature_names]
+
+    # Ensure encoded_feature_names is a list
+    labs_encoded_feature_names = list(labs_encoded_feature_names)
 
     print("Combining diagnoses encoded splits into a single sparse matrix.")
 

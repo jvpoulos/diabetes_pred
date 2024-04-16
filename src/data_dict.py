@@ -40,10 +40,31 @@ prc_columns = {
 'CodeWithType': 'object'
 }
 
-# Select columns to read in each dataset
+labs_columns = {
+'EMPI': 'int32',
+'Date': 'object', 
+'Code': 'object', 
+'Result': 'float32', 
+'ValType': 'object',
+'Source': 'object',
+'dtype': 'object'
+}
+
+# Select columns to read in each dataset (temporal analyses)
 
 outcomes_columns_select = ['studyID','EMPI', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
 
-dia_columns_select = ['EMPI', 'CodeWithType']
+dia_columns_select = ['EMPI', 'Date', 'CodeWithType']
 
-prc_columns_select = ['EMPI', 'CodeWithType']
+prc_columns_select = ['EMPI', 'Date', 'CodeWithType']
+
+labs_columns_select = ['EMPI', 'Date', 'Code', 'Result']
+
+
+# static analyses
+
+dia_columns_select_static = ['EMPI', 'CodeWithType']
+
+prc_columns_select_static = ['EMPI', 'CodeWithType']
+
+labs_columns_select_static = ['EMPI', 'Code', 'Result']

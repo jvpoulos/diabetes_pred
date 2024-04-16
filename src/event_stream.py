@@ -24,6 +24,8 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
+from typing import Any
+import polars as pl
 
 from EventStream.data.config import (
     DatasetConfig,
@@ -38,20 +40,35 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, dask_df_to_tensor, preprocess_data
-from rdpr_dict import outcomes_columns, dia_columns, prc_columns, outcomes_columns_select, dia_columns_select, prc_columns_select
-from scripts.build_dataset import add_to_container
+from data_utils import read_file
+from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
+from collections import defaultdict
+
+def add_to_container(key: str, val: Any, cont: dict[str, Any]):
+    if key in cont:
+        if cont[key] == val:
+            print(f"WARNING: {key} is specified twice with value {val}.")
+        else:
+            raise ValueError(f"{key} is specified twice ({val} v. {cont[key]})")
+    else:
+        cont[key] = val
 
 def main(use_dask=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
+    labs_file_path = 'data/Labs.txt'
 
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
+    df_labs = read_file(labs_file_path, labs_columns, labs_columns_select, chunk_size=700000)
 
-    df_dia, df_prc, df_outcomes = preprocess_data(df_dia, df_prc, df_outcomes)
+    # convert to polars DataFrames
+    df_outcomes = pl.from_pandas(df_outcomes)
+    df_dia = pl.from_pandas(df_dia)
+    df_prc = pl.from_pandas(df_prc)
+    df_labs = pl.from_pandas(df_labs)
 
     # Build measurement_configs and track input schemas
     subject_id_col = 'EMPI'
@@ -62,8 +79,12 @@ def main(use_dask=False):
             },
         },
         TemporalityType.DYNAMIC: {
-            DataModality.SINGLE_LABEL_CLASSIFICATION: {
-                'outcomes': ['A1cGreaterThan7']
+            DataModality.MULTI_LABEL_CLASSIFICATION: {
+                'diagnoses': ['CodeWithType'],
+                'procedures': ['CodeWithType'],
+            },
+            DataModality.UNIVARIATE_REGRESSION: {
+                'labs': ['Result']
             }
         }
     }
@@ -80,7 +101,7 @@ def main(use_dask=False):
             for source_name, measurements in measurements_by_source.items():
                 data_schema = schema_source[source_name]
 
-                if type(measurements) is str:
+                if isinstance(measurements, str):
                     measurements = [measurements]
                 for m in measurements:
                     measurement_config_kwargs = {
@@ -88,7 +109,7 @@ def main(use_dask=False):
                         "modality": modality,
                     }
                     
-                    if type(m) is dict:
+                    if isinstance(m, dict):
                         m_dict = m
                         measurement_config_kwargs["name"] = m_dict.pop("name")
                         if m.get("values_column", None):
@@ -102,7 +123,7 @@ def main(use_dask=False):
                     # Refactored code without match-case
                     if isinstance(m, str) and modality == DataModality.UNIVARIATE_REGRESSION:
                         add_to_container(m, InputDataType.FLOAT, data_schema)
-                    elif isinstance(m, list) and isinstance(m[0], str) and isinstance(m[1], str) and modality == DataModality.MULTIVARIATE_REGRESSION:
+                    elif isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and isinstance(m[1], str) and modality == DataModality.MULTIVARIATE_REGRESSION:
                         add_to_container(m[0], InputDataType.CATEGORICAL, data_schema)
                         add_to_container(m[1], InputDataType.FLOAT, data_schema)
                         measurement_config_kwargs["values_column"] = m[1]
@@ -174,7 +195,7 @@ def main(use_dask=False):
             cols = source_schema[cols_n]
             data_schema = {}
 
-            if type(cols) is dict:
+            if isinstance(cols, dict):
                 cols = [list(t) for t in cols.items()]
 
             for col in cols:
@@ -228,21 +249,10 @@ def main(use_dask=False):
         return InputDFSchema(**input_schema_kwargs, **extra_kwargs)
 
     inputs = {
-        'outcomes': {
-            'input_df': df_outcomes
-        },
-        'diagnoses': {
-            'input_df': df_dia,
-            'event_type': 'DIAGNOSIS',
-            'ts_col': 'Date',
-            'ts_format': '%Y-%m-%d %H:%M:%S'
-        },
-        'procedures': {
-            'input_df': df_prc,
-            'event_type': 'PROCEDURE',
-            'ts_col': 'Date',
-            'ts_format': '%Y-%m-%d %H:%M:%S'
-        }
+        'outcomes': {'input_df': df_outcomes},
+        'diagnoses': {'input_df': df_dia, 'event_type': 'DIAGNOSIS', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'},
+        'procedures': {'input_df': df_prc, 'event_type': 'PROCEDURE', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'},
+        'labs': {'input_df': df_labs, 'event_type': 'LAB', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'}
     }
 
     dataset_schema = DatasetSchema(
@@ -265,13 +275,15 @@ def main(use_dask=False):
     # Build Config
     split = (0.7, 0.2, 0.1)
     seed = 42
-    do_overwrite = False
+    do_overwrite = True
     DL_chunk_size = 20000
 
     config = DatasetConfig(measurement_configs=measurement_configs, save_dir="./data")
 
     if config.save_dir is not None:
-        dataset_schema.to_json_file(config.save_dir / "input_schema.json", do_overwrite=do_overwrite)
+        dataset_schema_dict = dataset_schema.to_dict()
+        with open(config.save_dir / "input_schema.json", "w") as f:
+            json.dump(dataset_schema_dict, f)
 
     ESD = Dataset(config=config, input_schema=dataset_schema)
     ESD.split(split, seed=seed)

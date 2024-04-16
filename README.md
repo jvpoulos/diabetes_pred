@@ -25,15 +25,17 @@ Both methods have been utilized in various models, including [SAINT](https://arx
 
 ## Requirements
 
-This code has been tested on Python 3.6.9 and Python 3.8.0 on Ubuntu 18.04.1.
+This code has been tested on Python 3.10 on Ubuntu 22.04.4 LTS.
 
-Requires PyTorch 1.8.1 compiled for CUDA 11.2.
+Requires PyTorch 2.0 compiled for CUDA 11.8 and cuDNN 8.7 ([Installation](https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba#file-cuda_11-8_installation_on_ubuntu_22-04)). Note: it is recommended to install PyTorch in a python virtual environment (see Getting started).
 
 ## Hardware
 
-NVIDIA Driver Version: 460.91.03
+NVIDIA Driver Version: 550.54.15
 
-GPU: GeForce RTX 2080
+CUDA Version: 12.4
+
+GPUs: GeForce RTX 2080 (2)
 
 ## Code Files in `src/`
 
@@ -78,20 +80,20 @@ $ python3 get-pip.py
 
 2. Install virtual environment first & then activate:
 ```bash
-$ cd <project-directory>
 $ python3 -m pip install --user virtualenv #Install virtualenv if not installed in your system
-$ python3 -m virtualenv env #Create virtualenv for your project
-$ source env/bin/activate #Activate virtualenv for linux/MacOS
+$ python3 -m virtualenv env10 #Create virtualenv for your project
+$ source env10/bin/activate #Activate virtualenv for linux/MacOS
 ```
 
 3. Install PyTorch via pip by running following command:
 ```bash
-$ pip3 install torch==1.8.1+cu111 -f https://download.pytorch.org/whl/torch_stable.html
+$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
-4. Install other dependencies from `requirements.txt` file:
+4. Clone project repo and install other dependencies from `requirements.txt` file:
 ```bash
-$ pip3 install -r requirements.txt
+$ git clone https://github.com/jvpoulos/diabetes_pred.git
+$ pip3 install -r diabetes_pred/requirements.txt
 ```
 
 5. Install git repo [TabTransformer](https://github.com/jvpoulos/TabTransformer), forked from [tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch):
@@ -99,33 +101,36 @@ $ pip3 install -r requirements.txt
 $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
 
-6. Clone git repo [EventStreamGPT](https://github.com/jvpoulos/EventStreamGPT), forked from https://github.com/mmcdermott/EventStreamGPT outside of project directory:
+6. Clone forked version of git repo [EventStreamGPT](https://github.com/mmcdermott/EventStreamGPT), outside of project directory:
 ```bash
-$ git clone ../https://github.com/jvpoulos/EventStreamGPT.git
-touch ../EventStreamGPT/__init__.py
-touch ../EventStreamGPT/EventStream/__init__.py
-touch ../EventStreamGPT/EventStream/data/__init__.py
+$ git clone https://github.com/jvpoulos/EventStreamGPT.git
+touch EventStreamGPT/__init__.py
+touch EventStreamGPT/EventStream/__init__.py
+touch EventStreamGPT/EventStream/data/__init__.py
 ```
 
 7. Install Dask for data_loader.py (optional):
 
 ```bash
-$ python3.8 -m pip install "dask[dataframe]" --upgrade
-$ python3.8 -m pip install "dask[distributed]" --upgrade
+$ python3.10 -m pip install "dask[dataframe]" --upgrade
+$ python3.10 -m pip install "dask[distributed]" --upgrade
 ```
 ## Run the code
 
-1. Load and merge data from .txt files. Split the dataset into training, validation, and test sets in a 70-20-10 ratio. Preprocess the data and convert the datasets to PyTorch Tensors:
+1. For static analyses, run:
 
 ```bash
-$ python3.8 src/data_loader.py # need Python 3.8 to run
+$ cd diabetes_pred 
+$ python3 src/data_loader.py
 ```
 
 For temporal analyses, run instead:
 ```bash
-$ export PYTHONPATH=$PYTHONPATH:/home/jvp/EventStreamGPT
+$ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
 $ python3 src/event_stream.py
 ```
+
+The following steps are for static analyses only. 
 
 2. (Optional) Create plots and summary statistics for the training dataset:
 
