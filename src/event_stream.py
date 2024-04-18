@@ -64,15 +64,6 @@ def main(use_dask=False):
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
     df_labs = read_file(labs_file_path, labs_columns, labs_columns_select, chunk_size=700000)
 
-    print(df_outcomes.columns)
-    print(df_outcomes.dtypes)
-    print(df_dia.columns)
-    print(df_dia.dtypes)
-    print(df_prc.columns)
-    print(df_prc.dtypes)
-    print(df_labs.columns)
-    print(df_labs.dtypes)
-
     # convert to polars DataFrames
     df_outcomes = pl.from_pandas(df_outcomes)
     df_dia = pl.from_pandas(df_dia)
@@ -331,21 +322,64 @@ def main(use_dask=False):
     dynamic_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
     dynamic_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
 
+    # Build DatasetSchema
     dataset_schema = DatasetSchema(
-        static=build_schema(
-            col_schema=static_sources['outcomes'],
-            source_schema=inputs['outcomes'],
-            subject_id_col=subject_id_col,
-            schema_name='outcomes',
+        static=InputDFSchema(
+            input_df=df_outcomes,
+            subject_id_col='EMPI',
+            data_schema={
+                'EMPI': InputDataType.CATEGORICAL,
+                'InitialA1c': InputDataType.FLOAT,
+                'A1cGreaterThan7': InputDataType.CATEGORICAL,
+                'Female': InputDataType.CATEGORICAL,
+                'Married': InputDataType.CATEGORICAL,
+                'GovIns': InputDataType.CATEGORICAL,
+                'English': InputDataType.CATEGORICAL,
+                'AgeYears': InputDataType.CATEGORICAL,
+                'SDI_score': InputDataType.FLOAT,
+                'Veteran': InputDataType.CATEGORICAL
+            },
+            type=InputDFType.STATIC
         ),
         dynamic=[
-            build_schema(
-                col_schema=dynamic_sources.get(dynamic_key, {}),
-                source_schema=source_schema,
-                schema_name=dynamic_key,
+            InputDFSchema(
+                input_df=df_dia,
+                subject_id_col=None,  # Set to None for dynamic input schemas
+                data_schema={
+                    'CodeWithType': InputDataType.CATEGORICAL,
+                    'Date': InputDataType.TIMESTAMP
+                },
+                event_type='DIAGNOSIS',
+                ts_col='Date',
+                ts_format='%Y-%m-%d %H:%M:%S',
+                type=InputDFType.EVENT
+            ),
+            InputDFSchema(
+                input_df=df_prc,
+                subject_id_col=None,  # Set to None for dynamic input schemas
+                data_schema={
+                    'CodeWithType': InputDataType.CATEGORICAL,
+                    'Date': InputDataType.TIMESTAMP
+                },
+                event_type='PROCEDURE',
+                ts_col='Date',
+                ts_format='%Y-%m-%d %H:%M:%S',
+                type=InputDFType.EVENT
+            ),
+            InputDFSchema(
+                input_df=df_labs,
+                subject_id_col=None,  # Set to None for dynamic input schemas
+                data_schema={
+                    'Code': InputDataType.CATEGORICAL,
+                    'Result': InputDataType.FLOAT,
+                    'Date': InputDataType.TIMESTAMP
+                },
+                event_type='LAB',
+                ts_col='Date',
+                ts_format='%Y-%m-%d %H:%M:%S',
+                type=InputDFType.EVENT
             )
-            for dynamic_key, source_schema in inputs.items() if dynamic_key != 'outcomes'
-        ],
+        ]
     )
 
     # Build Config

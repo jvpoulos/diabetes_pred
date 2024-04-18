@@ -49,7 +49,7 @@ def custom_one_hot_encoder(df, imputer=None, scaler=None, fit=True, chunk_size=1
         results = chunk['Result'].values
 
         # Initialize a sparse matrix to store the one-hot encoded features
-        encoded_features = csr_matrix((len(chunk), len(unique_codes_chunk)), dtype=float)
+        encoded_features = lil_matrix((len(chunk), len(unique_codes_chunk)), dtype=float)
 
         # Loop over each unique code in the chunk
         for i, code in enumerate(unique_codes_chunk):
@@ -75,8 +75,15 @@ def custom_one_hot_encoder(df, imputer=None, scaler=None, fit=True, chunk_size=1
                 else:
                     code_results = scaler.transform(code_results.reshape(-1, 1)).ravel()
 
+            # Broadcast the 'Result' values to the length of the chunk
+            broadcasted_results = np.zeros(len(chunk), dtype=float)
+            broadcasted_results[mask] = code_results
+
             # Update the sparse matrix with the one-hot encoded and processed results
-            encoded_features[:, i] = code_results * mask.astype(float)
+            encoded_features[:, i] = broadcasted_results
+
+        # Convert the lil_matrix to a csr_matrix before yielding
+        encoded_features = encoded_features.tocsr()
 
         # Yield the encoded chunk
         yield chunk[['EMPI', 'Code', 'Result']], encoded_features

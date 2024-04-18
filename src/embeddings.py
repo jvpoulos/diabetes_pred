@@ -4,7 +4,6 @@ from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 import torch.nn.utils.prune as prune
-from torch.quantization import quantize_dynamic
 import seaborn as sns
 import pandas as pd
 from tab_transformer_pytorch import TabTransformer, FTTransformer
@@ -19,6 +18,7 @@ import torch.distributed as dist
 import torch.cuda.amp as amp
 from torch.utils.checkpoint import checkpoint
 from torch.cuda.amp import autocast
+import bitsandbytes as bnb
 scaler = amp.GradScaler()
 
 class CustomDataset(Dataset):
@@ -127,6 +127,9 @@ def main(gpu, args):
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
         model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+    elif args.quantization and os.path.exists(args.model_path + '_quantized'):
+        print("Loading quantized model...")
+        model = load_model(args.model_type, args.model_path + '_quantized', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
     else:
         print("Loading model...")
         model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
@@ -149,18 +152,20 @@ def main(gpu, args):
                 pruned_model_path =  args.model_path + '_pruned'
                 torch.save(model.state_dict(), pruned_model_path)
 
-        if args.quantization is not None:
-            print(f"Quantizing model to {args.quantization} bits.")
-            model = model.to('cpu')  # Move the model to CPU
-            model = quantize_dynamic(model, {nn.Linear, nn.Embedding}, dtype=torch.qint8)
-            model = model.to(device)  # Move the quantized model back to the original device
+        if args.quantization:
+            print(f"Quantizing model to 8 bits.")
+            # Create a bitsandbytes quantization configuration
+            qconfig = bnb.QuantizationConfig(bits=8)
+            model = bnb.quantize(model, qconfig)
 
-        if args.pruning or args.quantization is not None:
+        if args.pruning or args.quantization:
             # Save the pruned and/or quantized model
             if args.model_path is not None:
-                model_path_ext = '_pruned' if args.pruning else ''
-                model_path_ext += f'_quantized_{args.quantization}' if args.quantization is not None else ''
-                torch.save(model.state_dict(), args.model_path + model_path_ext)
+                model_path_base, model_path_ext = os.path.splitext(args.model_path)
+                model_path_ext_pruned = '_pruned' if args.pruning else ''
+                model_path_ext_quantized = '_quantized' if args.quantization else ''
+                model_path = f"{model_path_base}{model_path_ext_pruned}{model_path_ext_quantized}{model_path_ext}"
+                torch.save(model.state_dict(), model_path)
 
     model = model.to(gpu)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=False)
@@ -201,7 +206,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--gpus', default=2, type=int, help='Number of gpus per node')
     parser.add_argument('-nr', '--nr', default=0, type=int, help='Ranking within the nodes')
     parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
-    parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
+    parser.add_argument('--quantization', action='store_true', help='Quantization with bit width 8')
 
     args = parser.parse_args()
     args.world_size = args.gpus * args.nodes

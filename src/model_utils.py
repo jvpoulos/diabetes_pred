@@ -23,6 +23,7 @@ import math
 from einops import rearrange, repeat
 from torch import Tensor
 import typing as ty
+import bitsandbytes as bnb
 
 def train_model(model, train_loader, criterion, optimizer, device, model_type, use_cutmix, cutmix_prob, cutmix_alpha, use_mixup, mixup_alpha, binary_feature_indices, numerical_feature_indices, clipping, max_norm, use_batch_accumulation, accum_iter=4):
     model.train()
@@ -222,7 +223,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu'):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu', quantized=False):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -270,21 +271,26 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
         raise ValueError("Invalid model type. Choose 'TabTransformer', 'FTTransformer', or 'ResNet'.")
 
     if model_path is not None:
-        # Load the model weights on the CPU first
-        state_dict = torch.load(model_path, map_location='cpu')
+        if quantized:
+            # Load the quantized model using bitsandbytes
+            model = bnb.load(model_path)
+        else:
+            # Load the model weights on the CPU first
+            state_dict = torch.load(model_path, map_location='cpu')
+            
+            # Remove unexpected keys from the state dictionary
+            unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict", "module.scheduler_state_dict",
+                               "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
+            for key in unexpected_keys:
+                if key in state_dict:
+                    del state_dict[key]
 
-        # Remove unexpected keys from the state dictionary
-        unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict", "module.scheduler_state_dict",
-                           "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
-        for key in unexpected_keys:
-            if key in state_dict:
-                del state_dict[key]
-
-        # Load the state dictionary while ignoring missing keys
-        model.load_state_dict(state_dict, strict=False)
+            # Load the state dictionary while ignoring missing keys
+            model.load_state_dict(state_dict, strict=False)
 
     model.to(device)
     model.eval()
+
     return model
 
 def plot_auroc(train_aurocs, val_aurocs, hyperparameters, plot_dir='auroc_plots'):

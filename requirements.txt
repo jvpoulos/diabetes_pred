@@ -23,5 +23,6 @@ mixins==0.1.4
 ml-mixins==0.0.5
 plotly==5.20.0
 inflect==7.2.0
+bitsandbytes==0.43.1
 
 

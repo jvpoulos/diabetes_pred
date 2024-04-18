@@ -5,8 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 import json
 import numpy as np
+import bitsandbytes as bnb
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-import logging
 from model_utils import load_model, CustomDataset, evaluate_model
 
 def main(args):
@@ -62,6 +62,9 @@ def main(args):
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
         model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+    elif args.quantization and os.path.exists(args.model_path + '_quantized'):
+        print("Loading quantized model...")
+        model = load_model(args.model_type, args.model_path + '_quantized', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
     else:
         print("Loading model...")
         model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
@@ -84,16 +87,20 @@ def main(args):
                 pruned_model_path =  args.model_path + '_pruned'
                 torch.save(model.state_dict(), pruned_model_path)
 
-        if args.quantization is not None and device.type == 'cpu':
-            print(f"Quantizing model to {args.quantization} bits.")
-            model = quantize_dynamic(model, {nn.Linear, nn.Embedding}, dtype=torch.qint8)
+        if args.quantization:
+            print(f"Quantizing model to 8 bits.")
+            # Create a bitsandbytes quantization configuration
+            qconfig = bnb.QuantizationConfig(bits=8)
+            model = bnb.quantize(model, qconfig)
 
-        if args.pruning or (args.quantization is not None and device.type == 'cpu'):
+        if args.pruning or args.quantization:
             # Save the pruned and/or quantized model
             if args.model_path is not None:
-                model_path_ext = '_pruned' if args.pruning else ''
-                model_path_ext += f'_quantized_{args.quantization}' if args.quantization is not None else ''
-                torch.save(model.state_dict(), args.model_path + model_path_ext)
+                model_path_base, model_path_ext = os.path.splitext(args.model_path)
+                model_path_ext_pruned = '_pruned' if args.pruning else ''
+                model_path_ext_quantized = '_quantized' if args.quantization else ''
+                model_path = f"{model_path_base}{model_path_ext_pruned}{model_path_ext_quantized}{model_path_ext}"
+                torch.save(model.state_dict(), model_path)
 
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
@@ -120,7 +127,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None,
                         help='Oath to the saved model file to load.')
         parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
-    parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
+    parser.add_argument('--quantization', action='store_true', help='Quantization with bit width 8')
     args = parser.parse_args()
 
     # Conditional defaults based on model_type
