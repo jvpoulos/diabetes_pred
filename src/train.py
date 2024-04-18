@@ -20,7 +20,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction, MLPPrediction
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, train_model, validate_model, ResNetPrediction
 
 def main(args):
     # Set random seed for reproducibility
@@ -135,12 +135,13 @@ def main(args):
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout
             ff_dropout=args.ff_dropout,                                 # feed forward dropout
-            mlp_hidden_mults=(1,1),                                     # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
+            mlp_hidden_mults=(4,2),                                     # relative multiples of each hidden dimension of the last mlp to logits; paper recommends (4, 2)
             mlp_act=nn.ReLU(),                                          # activation for final mlp, defaults to relu, but could be anything else (selu etc)
-            dim_head = 8,                                              # default is 16
+            dim_head = 16,                                              # default is 16
             shared_categ_dim_divisor = 8,                               # in paper, they reserve dimension / 8 for category shared embedding
             use_shared_categ_embed = True,                              # default is True
-            checkpoint_grads=False                                      # enable gradient checkpointing
+            checkpoint_grads=False,                                     # enable gradient checkpointing
+            use_flash_attn=True                                         # use PyTorch 2.0 flash attention instead of standard softmax attention
         ).to(device)
     elif args.model_type == 'FTTransformer':
         model = FTTransformer(
@@ -153,38 +154,8 @@ def main(args):
             heads=args.heads,                                           # heads, paper recommends 8
             attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
             ff_dropout=args.ff_dropout,                                 # feed forward dropout, paper recommends 0.1
-            checkpoint_grads=False                                      # enable gradient checkpointing
-        ).to(device)
-    elif args.model_type == 'FTTransformerOG':
-        model = FTTransformerOG(
-            d_numerical=len(numerical_feature_indices),
-            categories=categories,
-            token_bias=True,
-            n_layers=args.depth,
-            d_token=args.dim,
-            n_heads=args.heads,
-            d_ffn_factor=1.0,
-            attention_dropout=args.attn_dropout,
-            ffn_dropout=args.ff_dropout,
-            residual_dropout=0.0,
-            activation='reglu',
-            prenormalization=True,
-            initialization='kaiming',
-            kv_compression=None,
-            kv_compression_sharing=None,
-            d_out=1
-        ).to(device)
-    elif args.model_type == 'Transformer':
-        model = TransformerWithInputProjection(
-            categories=categories,
-            num_continuous=len(numerical_feature_indices),
-            d_model=args.dim,
-            nhead=args.heads,
-            num_encoder_layers=args.num_encoder_layers,
-            dim_feedforward=args.dim_feedforward,
-            dropout=args.dropout,
-            activation='geglu',
-            device=device
+            checkpoint_grads=False,                                     # enable gradient checkpointing
+            use_flash_attn=True                                         # use PyTorch 2.0 flash attention instead of standard softmax attention
         ).to(device)
     elif args.model_type == 'ResNet':
         input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
@@ -196,18 +167,6 @@ def main(args):
             dropout=args.dropout,
             normalization=args.normalization,
             activation=args.activation
-        ).to(device)
-    elif args.model_type == 'MLP':
-        model = MLPPrediction(
-            d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices) * args.d_embedding,
-            d_layers=args.d_layers,
-            dropout=args.dropout,
-            d_out=1,
-            categories=[2] * len(binary_feature_indices),
-            d_embedding=args.d_embedding,
-            numerical_feature_indices=numerical_feature_indices,
-            binary_feature_indices=binary_feature_indices
         ).to(device)
     else:
         raise ValueError(f"Invalid model type: {args.model_type}")
@@ -332,12 +291,8 @@ def main(args):
         if (epoch + 1) % 10 == 0:
             if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
                 model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
-            elif args.model_type=='Transformer':
-                model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
             elif args.model_type=='ResNet':
                 model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
-            elif args.model_type == 'MLP': 
-                model_filename = f"{args.model_type}_dl{'-'.join(map(str, args.d_layers))}_de{args.d_embedding}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}.pth"
 
             model_filepath = os.path.join(model_weights_dir, model_filename)
             
@@ -377,12 +332,8 @@ def main(args):
     if not args.disable_early_stopping and patience_counter >= args.early_stopping_patience:
         if args.model_type=='FTTransformer' or args.model_type=='TabTransformer':
             best_model_filename = f"{args.model_type}_dim{args.dim}_dep{args.depth}_heads{args.heads}_fdr{args.ff_dropout}_adr{args.attn_dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
-        elif args.model_type=='Transformer':
-            best_model_filename = f"{args.model_type}_dep{args.depth}_heads{args.heads}_el{args.num_encoder_layers}_ffdim{args.dim_feedforward}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
         elif args.model_type=='ResNet':
             best_model_filename = f"{args.model_type}_dep{args.depth}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
-        elif args.model_type == 'MLP': 
-            best_model_filename = f"{args.model_type}_dl{'-'.join(map(str, args.d_layers))}_de{args.d_embedding}_dr{args.dropout}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_ep{epoch + 1}_es{args.disable_early_stopping}_esp{args.early_stopping_patience}_rs{args.random_seed}_cmp{args.cutmix_prob}_cml{args.cutmix_alpha}_um{'true' if args.use_mixup else 'false'}_ma{args.mixup_alpha}_mn{args.max_norm}_uc{'true' if args.use_cutmix else 'false'}_cl{'true' if args.clipping else 'false'}_ba{'true' if args.use_batch_accumulation else 'false'}_sch{'true' if args.scheduler else 'false'}_best.pth"
 
         best_model_filepath = os.path.join(model_weights_dir, best_model_filename)
         
@@ -430,15 +381,13 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train an attention network.')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['Transformer','TabTransformer', 'FTTransformer', 'FTTransformerOG', 'ResNet', 'MLP'],
+                        choices=['Transformer','TabTransformer', 'FTTransformer', 'FTTransformerOG', 'ResNet'],
                         help='Type of the model to train')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
     parser.add_argument('--heads', type=int, help='Number of attention heads.')
     parser.add_argument('--ff_dropout', type=float, help='Feed forward dropout rate.')
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
-    parser.add_argument('--num_encoder_layers', type=float, default=6, help='Number of sub-encoder-layers in the encoder')
-    parser.add_argument('--dim_feedforward', type=float, default=2048, help='Dimension of the feedforward network model ')
     parser.add_argument('--dropout', type=float, default=None, help='Dropout rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for optimization')
@@ -466,8 +415,6 @@ if __name__ == "__main__":
     parser.add_argument('--d_hidden_factor', type=float, default=2.0, help='Hidden dimension factor for the ResNet model')
     parser.add_argument('--normalization', type=str, default='layernorm', choices=['batchnorm', 'layernorm'], help='Normalization type for the ResNet model')
     parser.add_argument('--activation', type=str, default='relu', help='Activation function for the ResNet model')
-    parser.add_argument('--d_layers', type=int, nargs='+', default=[256, 128], help='Hidden layer dimensions for the MLP model')
-    parser.add_argument('--d_embedding', type=int, default=256, help='Embedding dimension for categorical features in the MLP model')
 
     args = parser.parse_args()
 
@@ -480,7 +427,7 @@ if __name__ == "__main__":
         args.depth = args.depth if args.depth is not None else 6
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
-    elif args.model_type == 'FTTransformer' or args.model_type == 'FTTransformerOG':
+    elif args.model_type == 'FTTransformer':
         if args.dim is None:
             args.dim = 192  # Default for FTTransformer
         if args.attn_dropout is None:
@@ -488,16 +435,6 @@ if __name__ == "__main__":
         args.depth = args.depth if args.depth is not None else 3
         args.heads = args.heads if args.heads is not None else 8
         args.ff_dropout = args.ff_dropout if args.ff_dropout is not None else 0.1
-    elif args.model_type == 'Transformer':
-        if args.heads is None:
-            raise ValueError("The 'heads' argument must be provided when using the 'Transformer' model type.")
-        if args.dtype is None:
-            args.dtype = torch.float32  # Set a default value for dtype
-        if args.dim is None:
-            args.dim = 512
-        args.heads = args.heads if args.heads is not None else 8  # Set a default value of 8 if args.heads is None
-        if args.dim is None:
-            args.dropout = 0.1
     elif args.model_type == 'ResNet':
         if args.dim is None:
             args.dim = 256

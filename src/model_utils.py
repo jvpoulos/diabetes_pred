@@ -60,18 +60,11 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
             augmented_num = numerical_features
 
         # Forward pass through the model and calculate the loss
-        if model_type == 'Transformer':
-            outputs = model(augmented_cat, augmented_num)
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a.squeeze()) + (1 - lam) * criterion(outputs, labels_b.squeeze())
-            else:
-                loss = criterion(outputs, labels.squeeze())
+        outputs = model(augmented_cat, augmented_num).squeeze()
+        if use_mixup or use_cutmix:
+            loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
         else:
-            outputs = model(augmented_cat, augmented_num).squeeze()
-            if use_mixup or use_cutmix:
-                loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
-            else:
-                loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels)
 
         # Normalize loss to account for batch accumulation if enabled
         if use_batch_accumulation:
@@ -109,6 +102,33 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
     return average_loss, train_auroc
 
+def evaluate_model(model, test_loader):
+    model.eval()
+
+    true_labels = []
+    predictions = []
+
+    # Wrap the test loader with tqdm for a progress bar
+    with torch.no_grad():
+        for batch_idx, (features, labels) in tqdm(enumerate(test_loader), total=len(test_loader), desc="Testing"):
+            categorical_features = features[:, binary_feature_indices].to(device)
+            categorical_features = categorical_features.long()
+            numerical_features = features[:, numerical_feature_indices].to(device)
+            labels = labels.squeeze()  # Adjust labels shape if necessary
+            labels = labels.to(device)  # Move labels to the device
+
+            outputs = model(categorical_features, numerical_features)
+            outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
+
+            # Accumulate true labels and predictions for AUROC calculation
+            true_labels.extend(labels.cpu().squeeze().numpy())
+            predictions.extend(outputs.detach().cpu().squeeze().numpy())
+
+    auroc = roc_auc_score(true_labels, predictions)
+    print(f'Test AUROC: {auroc:.4f}')
+
+    return auroc
+
 def validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices):
     model.eval()
     total_loss = 0
@@ -123,12 +143,8 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             categorical_features = features[:, binary_feature_indices].to(device).long()  # Categorical features (convert to long data type)
             labels = labels.to(device)  # Move labels to the device
 
-            if model_type == 'Transformer':
-                outputs = model(categorical_features, numerical_features)
-                loss = criterion(outputs, labels.squeeze())
-            else:
-                outputs = model(categorical_features, numerical_features).squeeze()
-                loss = criterion(outputs, labels)
+            outputs = model(categorical_features, numerical_features).squeeze()
+            loss = criterion(outputs, labels)
             total_loss += loss.item()
 
             # Accumulate true labels and predictions for AUROC calculation
@@ -141,118 +157,6 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
     auroc = roc_auc_score(true_labels, predictions)
     print(f'Validation AUROC: {auroc:.4f}')
     return average_loss, auroc
-
-class GEGLU(nn.Module):
-    def forward(self, x):
-        x, gates = x.chunk(2, dim=-1)
-        return x * F.gelu(gates)
-        
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="gelu"):
-        super().__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.activation = nn.GELU() if activation == "gelu" else nn.ReLU()
-
-    def forward(self, src, src_mask=None, src_key_padding_mask=None):
-        src2 = self.self_attn(src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)[0]
-        src = src + self.dropout1(src2)
-        src = self.norm1(src)
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)
-        src = self.norm2(src)
-        return src
-
-class TransformerWithInputProjection(nn.Module):
-    def __init__(self, categories, num_continuous, d_model, nhead, num_encoder_layers, dim_feedforward=2048, dropout=0.1, activation="gelu", device=None):
-        super().__init__()
-        self.num_categories = len(categories)
-        self.num_unique_categories = sum(categories)
-        self.d_model = d_model
-        self.device = device
-
-        self.categorical_embedder = nn.Embedding(self.num_unique_categories, d_model) if self.num_unique_categories > 0 else None
-        self.numerical_embedder = nn.Linear(num_continuous, d_model) if num_continuous > 0 else None
-        self.categorical_layer_norm = nn.LayerNorm(d_model)
-        self.numerical_layer_norm = nn.LayerNorm(d_model)
-        self.position_embedding = nn.Embedding(512, d_model)  # Adjust the maximum sequence length as needed
-        self.dropout = nn.Dropout(dropout)
-
-        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
-
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
-        self.output_projection = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, dim_feedforward),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, 1)
-        )
-
-    def forward(self, categorical_features, numerical_features):
-        batch_size = categorical_features.size(0)
-        
-        if self.categorical_embedder:
-            categorical_embeddings = self.categorical_embedder(categorical_features)
-            categorical_embeddings = self.categorical_layer_norm(categorical_embeddings)
-        else:
-            categorical_embeddings = torch.zeros(batch_size, categorical_features.size(1), self.d_model, device=self.device)
-
-        if self.numerical_embedder:
-            numerical_embeddings = self.numerical_embedder(numerical_features)
-            numerical_embeddings = numerical_embeddings.unsqueeze(1)  # Add an extra dimension for sequence length
-            numerical_embeddings = self.numerical_layer_norm(numerical_embeddings)
-        else:
-            numerical_embeddings = torch.zeros(batch_size, numerical_features.size(1), self.d_model, device=self.device)
-
-        src = torch.cat([categorical_embeddings, numerical_embeddings], dim=1)
-
-        # Add CLS token
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        src = torch.cat([cls_tokens, src], dim=1)
-
-        seq_length = src.size(1)
-
-        # Add position embeddings
-        position_ids = torch.arange(seq_length, dtype=torch.long, device=self.device).unsqueeze(0).expand(batch_size, -1)
-        position_embeddings = self.position_embedding(position_ids)
-        src = src + position_embeddings
-
-        src = self.dropout(src)
-        src = src.transpose(0, 1)  # Shape: (seq_length, batch_size, d_model)
-
-        output = self.transformer_encoder(src)
-
-        cls_output = output[0]  # Extract the CLS token representation
-
-        output = self.output_projection(cls_output)
-        return torch.sigmoid(output.squeeze(-1))
 
 def get_activation_fn(activation):
     if activation == 'relu':
@@ -294,66 +198,6 @@ class ResNetPrediction(nn.Module):
         x = self.head(x)
         return x.squeeze(-1)
 
-class MLPBlock(nn.Module):
-    def __init__(self, d_in: int, d_out: int, dropout: float):
-        super().__init__()
-        self.linear = nn.Linear(d_in, d_out)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.ReLU()
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.dropout(self.activation(self.linear(x)))
-
-class MLPPrediction(nn.Module):
-    def __init__(self, d_in_num: int, d_in_cat: int, d_layers: ty.List[int], dropout: float, d_out: int, categories: ty.Optional[ty.List[int]], d_embedding: int, numerical_feature_indices: ty.List[int], binary_feature_indices: ty.List[int]):
-        super().__init__()
-        self.d_embedding = d_embedding
-        self.category_embeddings = None
-
-        if categories is not None:
-            self.category_embeddings = nn.ModuleList([nn.Embedding(cat_size, d_embedding) for cat_size in categories])
-            for embedding in self.category_embeddings:
-                nn.init.kaiming_uniform_(embedding.weight, a=math.sqrt(5))
-            d_in_cat = len(categories) * d_embedding  # Calculate the total embedding size
-
-        d_in = d_in_num + d_in_cat
-        layers = []
-
-        # Add an input layer to match the dimension of d_in with the first hidden layer
-        if d_layers:
-            layers.append(nn.Linear(d_in, d_layers[0]))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-            d_in = d_layers[0]
-        else:
-            layers.append(nn.Flatten())  # Add a flatten layer if no input layer is needed
-        
-        for i in range(1, len(d_layers)):  # Iterate over the hidden layers
-            layers.append(MLPBlock(d_layers[i-1], d_layers[i], dropout))
-        self.layers = nn.Sequential(*layers)
-        self.head = nn.Linear(d_layers[-1] if d_layers else d_in, d_out)  # Adjust the dimension of the head layer
-
-    def forward(self, x_num: Tensor, x_cat: ty.Optional[Tensor]) -> Tensor:
-        x = []
-        if x_num is not None:
-            x_num = x_num.view(x_num.size(0), -1)  # Flatten numerical features
-            x.append(x_num)
-        if x_cat is not None and self.category_embeddings is not None:
-            x_cat = x_cat.long()  # Convert x_cat to long data type
-            x_cat_split = torch.split(x_cat, 1, dim=1)  # Split x_cat along the second dimension
-            x_cat_emb = [embedding(split.squeeze(1)) for split, embedding in zip(x_cat_split, self.category_embeddings)]
-            x_cat_emb = torch.cat(x_cat_emb, dim=1)  # Concatenate the embeddings
-            x.append(x_cat_emb)
-
-        x = torch.cat(x, dim=-1)
-
-        for idx, layer in enumerate(self.layers):
-            x = layer(x)
-
-        x = self.head(x)
-        x = x.squeeze(-1)
-        return x
-        
 def worker_init_fn(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -378,7 +222,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, normalization='layernorm', activation='relu', d_hidden_factor=2.0, d_layers=None, d_embedding=None):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu'):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -389,11 +233,13 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             heads=heads,
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
-            mlp_hidden_mults=(2, 1),
+            mlp_hidden_mults=(4, 2),
             mlp_act=nn.ReLU(),
             dim_head = 16,                                              
-            shared_categ_dim_divisor = 16,                               
-            use_shared_categ_embed = True                                 
+            shared_categ_dim_divisor = 8,                               
+            use_shared_categ_embed = True,
+            checkpoint_grads=False,
+            use_flash_attn=True                                 
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
@@ -405,38 +251,9 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             depth=depth,
             heads=heads,
             attn_dropout=attn_dropout,
-            ff_dropout=ff_dropout
-        )
-    elif model_type == 'FTTransformerOG':
-        model = FTTransformerOG(
-            d_numerical=num_continuous,
-            categories=categories,
-            token_bias=True,
-            n_layers=depth,
-            d_token=dim,
-            n_heads=heads,
-            d_ffn_factor=1.0,
-            attention_dropout=attn_dropout,
-            ffn_dropout=ff_dropout,
-            residual_dropout=0.0,
-            activation='reglu',
-            prenormalization=True,
-            initialization='kaiming',
-            kv_compression=None,
-            kv_compression_sharing=None,
-            d_out=1
-        )
-    elif model_type == 'Transformer':
-        model = TransformerWithInputProjection(
-            categories=categories,
-            num_continuous=len(numerical_feature_indices),
-            d_model=dim,
-            nhead=heads,
-            num_encoder_layers=num_encoder_layers,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation='geglu',
-            device=device
+            ff_dropout=ff_dropout,
+            checkpoint_grads=False,
+            use_flash_attn=True  
         )
     elif model_type == 'ResNet':
         input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
@@ -449,20 +266,8 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             normalization=normalization,
             activation=activation
         )
-    elif model_type == 'MLP':
-        model = MLPPrediction(
-            d_in_num=len(numerical_feature_indices),
-            d_in_cat=len(binary_feature_indices) * args.d_embedding,
-            d_layers=args.d_layers,
-            dropout=args.dropout,
-            d_out=1,
-            categories=[2] * len(binary_feature_indices),
-            d_embedding=args.d_embedding,
-            numerical_feature_indices=numerical_feature_indices,
-            binary_feature_indices=binary_feature_indices
-        )
     else:
-        raise ValueError("Invalid model type. Choose 'Transformer', 'TabTransformer', 'FTTransformer', 'ResNet', or 'MLP'.")
+        raise ValueError("Invalid model type. Choose 'TabTransformer', 'FTTransformer', or 'ResNet'.")
 
     if model_path is not None:
         # Load the model weights on the CPU first

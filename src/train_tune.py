@@ -12,7 +12,7 @@ import random
 import numpy as np
 from tqdm import tqdm
 import pickle
-from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, TransformerWithInputProjection, train_model, validate_model, ResNetPrediction, MLPPrediction
+from model_utils import load_model_weights, extract_epoch, load_performance_history, apply_cutmix_numerical, apply_mixup_numerical, CustomDataset, worker_init_fn, plot_auroc, plot_losses, train_model, validate_model, ResNetPrediction
 from ray import tune
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune import ExperimentAnalysis
@@ -64,16 +64,6 @@ def hyperparameter_optimization(model_type, epochs):
             "batch_size": tune.choice([8]),
             "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
         })
-    elif model_type == 'Transformer':
-        search_space.update({
-            "heads": tune.choice([4, 8, 16]),
-            "dim": tune.choice([128, 256, 512]),
-            "num_encoder_layers": tune.choice([2, 4, 6]),
-            "dim_feedforward": tune.choice([512, 1024, 2048]),
-            "dropout": tune.choice([0.0, 0.1, 0.2]),
-            "batch_size": tune.choice([8,16,32]),
-            "learning_rate": tune.choice([0.0001, 0.001, 0.01]),
-        })
     elif model_type == 'ResNet':
         search_space.update({
             "dim": tune.choice([128, 256, 512]),
@@ -83,18 +73,6 @@ def hyperparameter_optimization(model_type, epochs):
             "batch_size": tune.choice([32, 64, 128]),
             "normalization": tune.choice(['batchnorm', 'layernorm']),
             "learning_rate": tune.choice([0.001, 0.01, 0.1]),
-        })
-    elif model_type == 'MLP':
-        search_space.update({
-            "d_layers": tune.choice([
-                [512, 256],
-                [1024, 512, 256, 128, 128],
-                [1024, 512, 256, 256, 256, 128, 128, 128]
-            ]),
-            "dropout": tune.choice([0.2, 0.5, 0.7]),
-            "batch_size": tune.choice([32, 64, 128]),
-            "learning_rate": tune.choice([0.001, 0.01, 0.1]),
-            "d_embedding": tune.choice([16]),
         })
 
     ASHA_scheduler = ASHAScheduler(
@@ -146,30 +124,20 @@ def tune_model(config, model_type, epochs):
         depth = config["depth"]
         attn_dropout = config["attn_dropout"]
         ff_dropout = config["ff_dropout"]
-    elif model_type == 'Transformer':
-        dim = config["dim"] 
-        heads = config["heads"]
-        num_encoder_layers = config["num_encoder_layers"]
-        dim_feedforward = config["dim_feedforward"]
-        dropout = config["dropout"]
     elif model_type == 'ResNet':
         dim = config["dim"] 
         d_hidden_factor = config["d_hidden_factor"]
         depth = config["depth"]
         dropout = config["dropout"]
         normalization=config["normalization"]
-    elif model_type == 'MLP':
-        dropout = config["dropout"]
-        d_layers=config["d_layers"]
-        d_embedding=config["d_embedding"]
 
     # Provide the absolute path to the train_dataset.pt file
-    train_dataset_path = '/home/jvp/diabetes_pred/train_dataset.pt'
-    validation_dataset_path = '/home/jvp/diabetes_pred/validation_dataset.pt'
+    train_dataset_path = 'train_dataset.pt'
+    validation_dataset_path = 'validation_dataset.pt'
 
-    column_names_path = '/home/jvp/diabetes_pred/column_names.json'
-    binary_feature_indices_path = '/home/jvp/diabetes_pred/binary_feature_indices.json'
-    numerical_feature_indices_path = '/home/jvp/diabetes_pred/numerical_feature_indices.json'
+    column_names_path = 'column_names.json'
+    binary_feature_indices_path = 'binary_feature_indices.json'
+    numerical_feature_indices_path = 'numerical_feature_indices.json'
 
     excluded_columns = ["A1cGreaterThan7", "studyID"]
     
@@ -230,7 +198,8 @@ def tune_model(config, model_type, epochs):
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
             mlp_hidden_mults=(4, 2),
-            mlp_act=nn.ReLU()
+            mlp_act=nn.ReLU(),
+            use_flash_attn=True 
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
@@ -241,18 +210,8 @@ def tune_model(config, model_type, epochs):
             depth=depth,
             heads=heads,
             attn_dropout=attn_dropout,
-            ff_dropout=ff_dropout
-        )
-    elif model_type == 'Transformer':
-        input_size = len(binary_feature_indices) + len(numerical_feature_indices)
-        model = TransformerWithInputProjection(
-            input_size=input_size, 
-            d_model=dim,
-            nhead=heads,
-            num_encoder_layers=num_encoder_layers,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation='relu'
+            ff_dropout=ff_dropout,
+            use_flash_attn=True
         )
     elif model_type == 'ResNet':
         input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension
@@ -265,18 +224,6 @@ def tune_model(config, model_type, epochs):
             normalization=normalization,
             activation='relu'
         )
-    elif model_type == 'MLP':
-        model = MLPPrediction(
-                d_in_num=len(numerical_feature_indices),
-                d_in_cat=len(binary_feature_indices) * d_embedding,
-                d_layers=d_layers,
-                dropout=dropout,
-                d_out=1,
-                categories=[2] * len(binary_feature_indices),
-                d_embedding=d_embedding,
-                numerical_feature_indices=numerical_feature_indices,
-                binary_feature_indices=binary_feature_indices
-            )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.device_count() > 1:
@@ -342,7 +289,7 @@ def tune_model(config, model_type, epochs):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization using Ray Tune')
-    parser.add_argument('--model_type', type=str, required=True, choices=['TabTransformer', 'FTTransformer', 'Transformer','ResNet','MLP'],
+    parser.add_argument('--model_type', type=str, required=True, choices=['TabTransformer', 'FTTransformer', 'ResNet'],
                         help='Type of the model to train')
     parser.add_argument('--epochs', type=int, default=25, help='Number of epochs to train')
     args = parser.parse_args()

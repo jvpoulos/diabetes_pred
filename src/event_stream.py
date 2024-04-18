@@ -64,6 +64,15 @@ def main(use_dask=False):
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
     df_labs = read_file(labs_file_path, labs_columns, labs_columns_select, chunk_size=700000)
 
+    print(df_outcomes.columns)
+    print(df_outcomes.dtypes)
+    print(df_dia.columns)
+    print(df_dia.dtypes)
+    print(df_prc.columns)
+    print(df_prc.dtypes)
+    print(df_labs.columns)
+    print(df_labs.dtypes)
+
     # convert to polars DataFrames
     df_outcomes = pl.from_pandas(df_outcomes)
     df_dia = pl.from_pandas(df_dia)
@@ -108,7 +117,7 @@ def main(use_dask=False):
                         "temporality": temporality,
                         "modality": modality,
                     }
-                    
+
                     if isinstance(m, dict):
                         m_dict = m
                         measurement_config_kwargs["name"] = m_dict.pop("name")
@@ -144,6 +153,18 @@ def main(use_dask=False):
                     else:
                         measurement_configs[m] = MeasurementConfig(**measurement_config_kwargs)
 
+    # Add the columns to the 'col_schema' dictionary for the 'outcomes' input schema
+    static_sources['outcomes']['EMPI'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['InitialA1c'] = InputDataType.FLOAT
+    static_sources['outcomes']['A1cGreaterThan7'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['Female'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['Married'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['GovIns'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['English'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['AgeYears'] = InputDataType.CATEGORICAL
+    static_sources['outcomes']['SDI_score'] = InputDataType.FLOAT
+    static_sources['outcomes']['Veteran'] = InputDataType.CATEGORICAL
+
     # Build DatasetSchema
     connection_uri = None
     
@@ -156,7 +177,16 @@ def main(use_dask=False):
         input_schema_kwargs = {}
 
         if "input_df" in source_schema:
-            input_schema_kwargs["input_df"] = source_schema["input_df"]
+            if schema_name == 'outcomes':
+                input_schema_kwargs["input_df"] = df_outcomes
+            elif schema_name == 'diagnoses':
+                input_schema_kwargs["input_df"] = df_dia
+            elif schema_name == 'procedures':
+                input_schema_kwargs["input_df"] = df_prc
+            elif schema_name == 'labs':
+                input_schema_kwargs["input_df"] = df_labs
+            else:
+                raise ValueError(f"Unknown schema name: {schema_name}")
         else:
             raise ValueError("Must specify an input dataframe!")
 
@@ -195,25 +225,19 @@ def main(use_dask=False):
             cols = source_schema[cols_n]
             data_schema = {}
 
-            if isinstance(cols, dict):
-                cols = [list(t) for t in cols.items()]
-
-            for col in cols:
-                if isinstance(col, list) and len(col) == 2 and isinstance(col[0], str) and isinstance(col[1], str) and col[1] in col_schema:
-                    in_name, out_name = col
-                    schema_key = in_name
-                    schema_val = (out_name, col_schema[out_name])
-                    # Continue processing for this case
-                elif isinstance(col, str) and col in col_schema:
-                    col_name = col
-                    schema_key = col_name
-                    schema_val = (col_name, col_schema[col_name])
-                    # Continue processing for this case
+            for col in cols.items():
+                in_name, out_val = col
+                if isinstance(out_val, tuple):
+                    out_name, out_type = out_val
                 else:
-                    raise ValueError(f"{col} unprocessable! Col schema: {col_schema}")
+                    out_name, out_type = out_val, col_schema.get(out_val)
 
-                cols_covered.append(schema_val[0])
-                add_to_container(schema_key, schema_val, data_schema)
+                if out_type is None:
+                    raise ValueError(f"Column {out_val} not found in col_schema: {col_schema}")
+
+                cols_covered.append(out_name)
+                add_to_container(in_name, (out_name, out_type), data_schema)
+
             input_schema_kwargs[n] = data_schema
             any_schemas_present = True
 
@@ -249,11 +273,63 @@ def main(use_dask=False):
         return InputDFSchema(**input_schema_kwargs, **extra_kwargs)
 
     inputs = {
-        'outcomes': {'input_df': df_outcomes},
-        'diagnoses': {'input_df': df_dia, 'event_type': 'DIAGNOSIS', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'},
-        'procedures': {'input_df': df_prc, 'event_type': 'PROCEDURE', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'},
-        'labs': {'input_df': df_labs, 'event_type': 'LAB', 'ts_col': 'Date', 'ts_format': '%Y-%m-%d %H:%M:%S'}
+        'outcomes': {
+            'input_df': outcomes_file_path,
+            'columns': {
+                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'InitialA1c': ('InitialA1c', InputDataType.FLOAT),
+                'A1cGreaterThan7': ('A1cGreaterThan7', InputDataType.BOOLEAN),
+                'Female': ('Female', InputDataType.CATEGORICAL),
+                'Married': ('Married', InputDataType.CATEGORICAL),
+                'GovIns': ('GovIns', InputDataType.CATEGORICAL),
+                'English': ('English', InputDataType.CATEGORICAL),
+                'AgeYears': ('AgeYears', InputDataType.CATEGORICAL),
+                'SDI_score': ('SDI_score', InputDataType.FLOAT),
+                'Veteran': ('Veteran', InputDataType.CATEGORICAL)
+            }
+        },
+        'diagnoses': {
+            'input_df': diagnoses_file_path,
+            'event_type': 'DIAGNOSIS',
+            'ts_col': 'Date',
+            'ts_format': '%Y-%m-%d %H:%M:%S',
+            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL), 'Date': ('Date', InputDataType.TIMESTAMP)}
+        },
+        'procedures': {
+            'input_df': procedures_file_path,
+            'event_type': 'PROCEDURE',
+            'ts_col': 'Date',
+            'ts_format': '%Y-%m-%d %H:%M:%S',
+            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL), 'Date': ('Date', InputDataType.TIMESTAMP)}
+        },
+        'labs': {
+            'input_df': labs_file_path,
+            'event_type': 'LAB',
+            'ts_col': 'Date',
+            'ts_format': '%Y-%m-%d %H:%M:%S',
+            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'Code': ('Code', InputDataType.CATEGORICAL), 'Result': ('Result', InputDataType.FLOAT), 'Date': ('Date', InputDataType.TIMESTAMP)}
+        }
     }
+
+    # Add the 'EMPI' column to the 'col_schema' dictionary for all dynamic input schemas
+    dynamic_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
+    dynamic_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
+    dynamic_sources['labs']['EMPI'] = InputDataType.CATEGORICAL
+
+    # Add the 'Date' column to the 'col_schema' dictionary for all dynamic input schemas
+    dynamic_sources['diagnoses']['Date'] = InputDataType.TIMESTAMP
+    dynamic_sources['procedures']['Date'] = InputDataType.TIMESTAMP
+    dynamic_sources['labs']['Date'] = InputDataType.TIMESTAMP
+
+    # Add the 'Result' column to the 'col_schema' dictionary for the 'labs' input schema
+    dynamic_sources['labs']['Result'] = InputDataType.FLOAT
+
+    # Add the 'Code' column to the 'col_schema' dictionary for the 'labs' input schema
+    dynamic_sources['labs']['Code'] = InputDataType.CATEGORICAL
+
+    # Add the 'CodeWithType' column to the 'col_schema' dictionary for the 'diagnoses' and 'procedures' input schemas
+    dynamic_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
+    dynamic_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
 
     dataset_schema = DatasetSchema(
         static=build_schema(

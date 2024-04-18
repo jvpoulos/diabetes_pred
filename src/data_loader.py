@@ -24,8 +24,9 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
-from data_utils import read_file, dask_df_to_tensor
+from data_utils import read_file, dask_df_to_tensor, custom_one_hot_encoder
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select_static, prc_columns_select_static, labs_columns_select_static
+from itertools import zip_longest
 
 # Define the column types for each file type
 
@@ -70,26 +71,20 @@ def main(use_dask=False):
     validation_empi.to_csv('validation_empi.csv', index=False)
     test_empi.to_csv('test_empi.csv', index=False)
 
-    # List of columns with known missing values
-    columns_with_missing_values = ['SDI_score']
-
-    with open('columns_with_missing_values.json', 'w') as file:
-        json.dump(columns_with_missing_values, file)
-
-    print("Replacing missing values in ", columns_with_missing_values)
+    print("Replacing missing values in ", 'SDI_score')
 
     # Create the imputer object
     imputer = SimpleImputer(strategy='constant', fill_value=0)
 
     # Fit the imputer on the training data and transform the training data
-    train_df[columns_with_missing_values] = imputer.fit_transform(train_df[columns_with_missing_values])
+    train_df[['SDI_score']] = imputer.fit_transform(train_df[['SDI_score']])
 
     # Apply the same imputation to validation and test datasets without fitting again
-    validation_df[columns_with_missing_values] = imputer.transform(validation_df[columns_with_missing_values])
-    test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
+    validation_df[['SDI_score']] = imputer.transform(validation_df[['SDI_score']])
+    test_df[['SDI_score']] = imputer.transform(test_df[['SDI_score']])
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
-    columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score', 'Result']
+    columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score']
 
     print("Normalizing numeric colums: ", columns_to_normalize)
 
@@ -107,21 +102,13 @@ def main(use_dask=False):
 
     print("Preprocessing diagnoses data")
 
-    # Handle categorical columns
-    categorical_columns = ['CodeWithType', 'Code']
-
-    # Save the list of categorical columns to a JSON file
-    with open('categorical_columns.json', 'w') as file:
-        json.dump(categorical_columns, file)
-
     print("Converting categorical columns to string and handling missing values.")
 
-    for col in categorical_columns:
-        # Convert to string, fill missing values, then convert back to categorical if needed
-        df_dia[col] = df_dia[col].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
+    # Convert to string, fill missing values, then convert back to categorical if needed
+    df_dia['CodeWithType'] = df_dia['CodeWithType'].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
      
     # Verify no NaN values exist
-    assert not df_dia[categorical_columns] .isnull().any().any(), "NaN values found in the diagnoses categorical columns"
+    assert not df_dia['CodeWithType'] .isnull().any().any(), "NaN values found in the diagnoses categorical columns"
 
     print("Initializing one-hot encoder for diagnoses data.")
 
@@ -139,20 +126,20 @@ def main(use_dask=False):
     print(f"Unique values in training set 'CodeWithType': {train_rows_dia['CodeWithType'].unique()}")
 
     # Initialize OneHotEncoder with limited categories and sparse output
-    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=ceil(37908*0.01))
+    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=ceil(train_df.shape[0]*0.01))
 
     # Fit the encoder on the training subset
-    one_hot_encoder.fit(train_rows_dia[categorical_columns].dropna().astype(str))
+    one_hot_encoder.fit(train_rows_dia[['CodeWithType']].dropna().astype(str))
 
     # Apply the encoding to the validation and test subsets
-    train_encoded_dia = one_hot_encoder.transform(train_rows_dia[categorical_columns].astype(str))
-    validation_encoded_dia = one_hot_encoder.transform(validation_rows_dia[categorical_columns].astype(str))
-    test_encoded_dia = one_hot_encoder.transform(test_rows_dia[categorical_columns].astype(str))
+    train_encoded_dia = one_hot_encoder.transform(train_rows_dia[['CodeWithType']].astype(str))
+    validation_encoded_dia = one_hot_encoder.transform(validation_rows_dia[['CodeWithType']].astype(str))
+    test_encoded_dia = one_hot_encoder.transform(test_rows_dia[['CodeWithType']].astype(str))
 
     print("Extracting diagnoses encoded feature names.")
 
     # Get feature names from the encoder
-    dia_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+    dia_encoded_feature_names = one_hot_encoder.get_feature_names_out()
 
     # Process the feature names to remove the prefix
     dia_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in dia_encoded_feature_names]
@@ -164,12 +151,11 @@ def main(use_dask=False):
 
     print("Converting categorical columns to string and handling missing values.")
 
-    for col in categorical_columns:
-        # Convert to string, fill missing values, then convert back to categorical if needed
-        df_prc[col] = df_prc[col].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
+    # Convert to string, fill missing values, then convert back to categorical if needed
+    df_prc['CodeWithType'] = df_prc['CodeWithType'].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
      
     # Verify no NaN values exist
-    assert not df_prc[categorical_columns] .isnull().any().any(), "NaN values found in the procedures categorical columns"
+    assert not df_prc['CodeWithType'] .isnull().any().any(), "NaN values found in the procedures categorical columns"
 
     print("Initializing one-hot encoder for procedures data.")
 
@@ -187,33 +173,17 @@ def main(use_dask=False):
     print(f"Unique values in training set 'CodeWithType': {train_rows_prc['CodeWithType'].unique()}")
 
     # Fit the encoder on the training subset
-    one_hot_encoder.fit(train_rows_prc[categorical_columns].dropna().astype(str))
+    one_hot_encoder.fit(train_rows_prc[['CodeWithType']].dropna().astype(str))
 
     # Apply the encoding to the validation and test subsets
-    train_encoded_prc = one_hot_encoder.transform(train_rows_prc[categorical_columns].astype(str))
-    validation_encoded_prc = one_hot_encoder.transform(validation_rows_prc[categorical_columns].astype(str))
-    test_encoded_prc = one_hot_encoder.transform(test_rows_prc[categorical_columns].astype(str))
-
-    print("Extracting infrequent categories.")
-
-    infrequent_categories = one_hot_encoder.infrequent_categories_
-
-    # Prepare a dictionary to hold the infrequent categories for each feature
-    infrequent_categories_dict = {
-        categorical_columns[i]: list(infrequent_categories[i])
-        for i in range(len(categorical_columns))
-    }
-
-    # Save the infrequent categories to a JSON file
-    with open('infrequent_categories.json', 'w') as f:
-        json.dump(infrequent_categories_dict, f)
-
-    print("Infrequent categories saved to infrequent_categories.json.")
+    train_encoded_prc = one_hot_encoder.transform(train_rows_prc[['CodeWithType']].astype(str))
+    validation_encoded_prc = one_hot_encoder.transform(validation_rows_prc[['CodeWithType']].astype(str))
+    test_encoded_prc = one_hot_encoder.transform(test_rows_prc[['CodeWithType']].astype(str))
 
     print("Extracting procedures encoded feature names.")
 
     # Get feature names from the encoder
-    prc_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+    prc_encoded_feature_names = one_hot_encoder.get_feature_names_out()
 
     # Process the feature names to remove the prefix
     prc_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in prc_encoded_feature_names]
@@ -225,12 +195,11 @@ def main(use_dask=False):
 
     print("Converting categorical columns to string and handling missing values.")
 
-    for col in categorical_columns:
-        # Convert to string, fill missing values, then convert back to categorical if needed
-        df_labs[col] = df_labs[col].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
+    # Convert to string, fill missing values, then convert back to categorical if needed
+    df_labs['Code'] = df_labs['Code'].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
      
     # Verify no NaN values exist
-    assert not df_labs[categorical_columns] .isnull().any().any(), "NaN values found in the labs categorical columns"
+    assert not df_labs['Code'] .isnull().any().any(), "NaN values found in the labs categorical columns"
 
     print("Initializing one-hot encoder for labs data.")
 
@@ -245,62 +214,48 @@ def main(use_dask=False):
     test_rows_labs['order'] = test_rows_labs.index
 
     # Verify the unique values in the 'Code' column
-    print(f"Unique values in training set 'Code': {train_rows_labs['Code'].unique()}")
+    print(f"Unique values in training set 'Code': {train_rows_labs[['Code']].nunique()}")
 
-    # Fit the encoder on the training subset
-    one_hot_encoder.fit(train_rows_labs[categorical_columns].dropna().astype(str))
+    print("Impute and standardize results and one-hot encode codes for labs data.")
 
-    # Apply the encoding to the validation and test subsets
-    train_encoded_labs = one_hot_encoder.transform(train_rows_labs[categorical_columns].astype(str))
-    validation_encoded_labs = one_hot_encoder.transform(validation_rows_labs[categorical_columns].astype(str))
-    test_encoded_labs = one_hot_encoder.transform(test_rows_labs[categorical_columns].astype(str))
+    # Initialize lists to store the encoded chunks
+    train_encoded_labs_chunks = []
+    validation_encoded_labs_chunks = []
+    test_encoded_labs_chunks = []
 
-    ## impute and standardize results
+    # Iterate over the encoded chunks for the training data
+    for chunk, encoded_features in custom_one_hot_encoder(train_rows_labs, imputer, scaler, fit=True, chunk_size=10000):
+        # Fit the imputer and scaler on the current chunk
+        imputer.fit(chunk['Result'].values.reshape(-1, 1))
+        scaler.fit(chunk['Result'].values.reshape(-1, 1))
 
-    # # Fit the imputer on the training data and transform the training data
-    # train_df[columns_with_missing_values] = imputer.fit_transform(train_df[columns_with_missing_values])
+        # Concatenate the original chunk with the encoded features
+        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+        train_encoded_labs_chunks.append(encoded_chunk)
 
-    # # Apply the same imputation to validation and test datasets without fitting again
-    # validation_df[columns_with_missing_values] = imputer.transform(validation_df[columns_with_missing_values])
-    # test_df[columns_with_missing_values] = imputer.transform(test_df[columns_with_missing_values])
+    # Concatenate the encoded chunks into a single DataFrame
+    train_encoded_labs = pd.concat(train_encoded_labs_chunks, ignore_index=True)
 
-    # # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
-    # columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score', 'Result']
+    # Iterate over the encoded chunks for the validation data
+    for chunk, encoded_features in custom_one_hot_encoder(validation_rows_labs, imputer, scaler, fit=False, chunk_size=10000):
+        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+        validation_encoded_labs_chunks.append(encoded_chunk)
 
-    # print("Normalizing numeric colums: ", columns_to_normalize)
+    # Concatenate the encoded chunks into a single DataFrame
+    validation_encoded_labs = pd.concat(validation_encoded_labs_chunks, ignore_index=True)
 
-    # with open('columns_to_normalize.json', 'w') as file:
-    #     json.dump(columns_to_normalize, file)
+    # Iterate over the encoded chunks for the test data
+    for chunk, encoded_features in custom_one_hot_encoder(test_rows_labs, imputer, scaler, fit=False, chunk_size=10000):
+        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+        test_encoded_labs_chunks.append(encoded_chunk)
 
-    # scaler = MaxAbsScaler()
-
-    # # Fit on training data
-    # train_df[columns_to_normalize] = scaler.fit_transform(train_df[columns_to_normalize])
-
-    # # Transform validation and test data
-    # validation_df[columns_to_normalize] = scaler.transform(validation_df[columns_to_normalize])
-    # test_df[columns_to_normalize] = scaler.transform(test_df[columns_to_normalize])
-
-    print("Extracting infrequent categories.")
-
-    infrequent_categories = one_hot_encoder.infrequent_categories_
-
-    # Prepare a dictionary to hold the infrequent categories for each feature
-    infrequent_categories_dict = {
-        categorical_columns[i]: list(infrequent_categories[i])
-        for i in range(len(categorical_columns))
-    }
-
-    # Save the infrequent categories to a JSON file
-    with open('infrequent_categories.json', 'w') as f:
-        json.dump(infrequent_categories_dict, f)
-
-    print("Infrequent categories saved to infrequent_categories.json.")
+    # Concatenate the encoded chunks into a single DataFrame
+    test_encoded_labs = pd.concat(test_encoded_labs_chunks, ignore_index=True)
 
     print("Extracting labs encoded feature names.")
 
     # Get feature names from the encoder
-    labs_encoded_feature_names = one_hot_encoder.get_feature_names_out(categorical_columns)
+    labs_encoded_feature_names = custom_one_hot_encoder.get_feature_names_out()
 
     # Process the feature names to remove the prefix
     labs_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in labs_encoded_feature_names]
@@ -351,12 +306,34 @@ def main(use_dask=False):
     # Drop the infrequent columns from encoded_df
     encoded_df_prc = encoded_df_prc.drop(columns=infrequent_sklearn_columns)
 
+    print("Combining labs features splits into a single sparse matrix.")
+
+    # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
+    encoded_data_labs = vstack([train_features_labs, validation_features_labs, test_features_labs]) # one-hot encoded x result
+
+    encoded_df_labs = pd.DataFrame.sparse.from_spmatrix(encoded_data_labs, columns=labs_encoded_feature_names)
+
+    # Concatenate the 'order' column to encoded_df to preserve original row order
+    orders_labs = pd.concat([train_rows_labs['order'], validation_rows_labs['order'], test_rows_labs['order']])
+    encoded_df_labs['order'] = orders_labs.values
+
+    # Sort encoded_df by 'order' to match the original df_dia row order and reset the index
+    encoded_df_labs.sort_values(by='order', inplace=True)
+    encoded_df_labs.reset_index(drop=True, inplace=True)
+
+    # Drop the 'order' column if it's no longer needed
+    encoded_df_labs.drop(columns=['order'], inplace=True)
+
+    # Drop the infrequent columns from encoded_df
+    encoded_df_labs = encoded_df_labs.drop(columns=infrequent_sklearn_columns)
+
     print("Combining and updating encoded feature names.")
 
     dia_encoded_feature_names = [col for col in dia_encoded_feature_names if col not in infrequent_sklearn_columns]
     prc_encoded_feature_names = [col for col in prc_encoded_feature_names if col not in infrequent_sklearn_columns]
+    labs_encoded_feature_names = [col for col in labs_encoded_feature_names if col not in infrequent_sklearn_columns]
 
-    encoded_feature_names = dia_encoded_feature_names + prc_encoded_feature_names
+    encoded_feature_names = dia_encoded_feature_names + prc_encoded_feature_names + labs_encoded_feature_names
     with open('encoded_feature_names.json', 'w') as file:
         json.dump(encoded_feature_names, file)
 
@@ -364,8 +341,10 @@ def main(use_dask=False):
 
     print("Number of one-hot encoded diagnoses:", len(encoded_df_dia)) 
     print("Number of one-hot encoded procedures:", len(encoded_df_prc)) 
+    print("Number of one-hot encoded labs:", len(encoded_df_labs)) 
     print("Number of diagnoses prior to concatenatation:", len(df_dia)) 
     print("Number of procedures prior to concatenatation:", len(df_prc)) 
+    print("Number of labs prior to concatenatation:", len(df_prc)) 
 
     # Reset the index of all DataFrames to ensure alignment
     df_dia = df_dia.reset_index(drop=True)
@@ -376,40 +355,50 @@ def main(use_dask=False):
     # Verify that the number of rows matches to ensure a logical one-to-one row correspondence across all DataFrames
     assert len(df_dia) == len(encoded_df_dia), "Diagnoses row counts do not match."
     assert len(df_prc) == len(encoded_df_prc), "Procedures row counts do not match."
+    assert len(df_labs) == len(encoded_df_labs), "Procedures row counts do not match."
 
     # Check if the indexes are aligned
-    assert df_dia.index.equals(encoded_df_dia.index), "Diagnoses indexes are not aligned."
-    assert df_prc.index.equals(encoded_df_prc.index), "Procedures indexes are not aligned."
+    assert df_dia.index.equals(encoded_df_dia.index), "Diagnoses indices are not aligned."
+    assert df_prc.index.equals(encoded_df_prc.index), "Procedures indices are not aligned."
+    assert df_labs.index.equals(encoded_df_labs.index), "Labs indices are not aligned."
 
     # Concatenate the DataFrames side-by-side
     df_dia = pd.concat([df_dia, encoded_df_dia], axis=1, sort=False)
     df_prc = pd.concat([df_prc, encoded_df_prc], axis=1, sort=False)
+    df_labs = pd.concat([df_labs, encoded_df_labs], axis=1, sort=False)
 
     print("Number of diagnoses after concatenatation:", len(df_dia))
     # Verify row counts match expected transformations
     assert len(df_dia) == len(encoded_df_dia), f"Unexpected row count. Expected: {len(encoded_df_dia)}, Found: {len(df_dia)}"
 
-    print("Number of diagnoses after concatenatation:", len(df_prc))
-    # Verify row counts match expected transformations
+    print("Number of procedures after concatenatation:", len(df_prc))
     assert len(df_prc) == len(encoded_df_prc), f"Unexpected row count. Expected: {len(encoded_df_prc)}, Found: {len(df_prc)}"
+
+    print("Number of labs after concatenatation:", len(df_labs))
+    assert len(df_labs) == len(encoded_df_labs), f"Unexpected row count. Expected: {len(encoded_df_labs)}, Found: {len(df_labs)}"
  
-    print("Dropping the original categorical columns ", categorical_columns)
-    df_dia.drop(categorical_columns, axis=1, inplace=True)
-    df_prc.drop(categorical_columns, axis=1, inplace=True)
+    print("Dropping the original categorical columns")
+    df_dia.drop('CodeWithType', axis=1, inplace=True)
+    df_prc.drop('CodeWithType', axis=1, inplace=True)
+    df_labs.drop('Code', axis=1, inplace=True)
 
     print("Starting aggregation by EMPI.")
 
     agg_dict_dia = {col: 'max' for col in dia_encoded_feature_names}
     agg_dict_prc = {col: 'max' for col in prc_encoded_feature_names}
+    agg_dict_labs = {col: 'max' for col in labs_encoded_feature_names}
+
     if use_dask:
         print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
         print("Converting diagnoses to Dask DataFrame.")
         df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
         df_prc = dd.from_pandas(df_prc, npartitions=npartitions)
+        df_labs = dd.from_pandas(df_labs, npartitions=npartitions)
 
         print("Perform the groupby and aggregation in parallel.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
         df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
+        df_labs_agg = df_prc.groupby('EMPI').agg(agg_dict_labs)
 
         print("Convert splits to Dask DataFrame.")
         train_df = dd.from_pandas(train_df, npartitions=npartitions)
@@ -419,9 +408,11 @@ def main(use_dask=False):
         print("Perform groupby and aggregation using pandas.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
         df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
+        df_labs_agg = df_labs.groupby('EMPI').agg(agg_dict_labs)
 
     print("Number of diagnoses before or on Index, after aggregation:", len(df_dia_agg))
     print("Number of procedures before or on Index, after aggregation:", len(df_prc_agg))
+    print("Number of labs before or on Index, after aggregation:", len(df_labs_agg))
 
     print("Merge outcomes splits with aggregated diagnoses.")
     merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')

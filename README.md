@@ -137,11 +137,10 @@ The following steps are for static analyses only.
 ```bash
 $ python3 src/data_analysis.py
 ``` 
-3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('Transformer', 'TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
+3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
 $ export CUDA_VISIBLE_DEVICES="0,1" 
-$ export 'PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512'
 $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 ```
 
@@ -163,22 +162,17 @@ $ python3 src/train.py --model_type MLP  --dropout 0.2 --batch_size 32 --epochs 
 
 5. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:
 ```bash
-$ python3 src/attention.py --dataset_type 'validation' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning
+$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning
 ```
 
-6. (Optional) Generate HTML representations for the head view, model view, and neuron view using the BertViz package (model_type = Transformer only).
+6. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning` `--quantization`:
+
 ```bash
-$ python3 src/visualize_attn.py --dataset_type 'validation' --model_type Transformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 
+$ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning
 ```
 
-7. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning` `--quantization`:
+7. Evaluate trained model on test set. Arguments: `--dataset_type` `--model_type` `--model_path` `--batch_size` `--pruning` `--quantization`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type 'validation' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning
-```
-
-8. Evaluate trained model on test set. Arguments: `--model_type` `--model_path` `--batch_size`:
-
-```bash
-$ python3 src/test.py --model_type FTTransformer --dim 32 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim32_dep1_heads4_fdr0.2_adr0.2_bs32_lr0.001_wd0.01_ep21_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2
+$ python3 src/test.py  --dataset_type 'test' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2
 ```

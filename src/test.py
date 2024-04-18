@@ -7,39 +7,17 @@ import json
 import numpy as np
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
 import logging
-from model_utils import load_model, CustomDataset
-
-def evaluate_model(model, test_loader):
-    model.eval()
-
-    true_labels = []
-    predictions = []
-
-    # Wrap the test loader with tqdm for a progress bar
-    with torch.no_grad():
-        for batch_idx, (features, labels) in tqdm(enumerate(test_loader), total=len(test_loader), desc="Testing"):
-            categorical_features = features[:, binary_feature_indices].to(device)
-            categorical_features = categorical_features.long()
-            numerical_features = features[:, numerical_feature_indices].to(device)
-            labels = labels.squeeze()  # Adjust labels shape if necessary
-            labels = labels.to(device)  # Move labels to the device
-            if model_type == 'Transformer':
-                src = torch.cat((categorical_features, numerical_features), dim=-1)
-                outputs = model(src)
-            else:
-                outputs = model(categorical_features, numerical_features)
-                outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
-
-            # Accumulate true labels and predictions for AUROC calculation
-            true_labels.extend(labels.cpu().squeeze().numpy())
-            predictions.extend(outputs.detach().cpu().squeeze().numpy())
-
-    auroc = roc_auc_score(true_labels, predictions)
-    print(f'Test AUROC: {auroc:.4f}')
-
-    return auroc
+from model_utils import load_model, CustomDataset, evaluate_model
 
 def main(args):
+    print("Loading dataset...")
+    if args.dataset_type == 'test':
+        features = torch.load('test_features.pt')
+        labels = torch.load('test_labels.pt')
+    elif args.dataset_type == 'validation':
+        features = torch.load('validation_features.pt')
+        labels = torch.load('validation_labels.pt')
+
     # Load the test dataset
     test_dataset = torch.load('test_dataset.pt')
 
@@ -53,70 +31,79 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7",  "studyID"]
+    excluded_columns = ["A1cGreaterThan7", "studyID"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
-    # Find indices of excluded columns
-    excluded_columns_indices = [column_names.index(col) for col in excluded_columns]
-
-    # Filter out excluded columns
     column_names_filtered = [col for col in column_names if col not in excluded_columns]
     encoded_feature_names_filtered = [name for name in encoded_feature_names if name in column_names_filtered]
 
-    # Combine and deduplicate encoded and additional binary variables
     binary_features_combined = list(set(encoded_feature_names_filtered + additional_binary_vars))
 
-    # Calculate binary feature indices, ensuring they're within the valid range
     binary_feature_indices = [column_names_filtered.index(col) for col in binary_features_combined if col in column_names_filtered]
 
-    # Find indices of the continuous features
     numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
 
-    # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
-    dataset_tensor = test_dataset.tensors[0]  # This gets the tensor from the dataset
-
-    print(f"Original dataset tensor shape: {dataset_tensor.shape}")
-
-    # Extracting indices for features and label
-    feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
-
-    label_index = column_names.index('A1cGreaterThan7')
-
-    # Assuming test_dataset is a tensor, use torch.index_select
-    test_features = dataset_tensor[:, feature_indices]
-    test_labels = dataset_tensor[:, label_index]
-
-    # Create custom datasets
-    test_data = CustomDataset(test_features, test_labels)
-
-    test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
-
     categories = [2] * len(binary_feature_indices)
-    print("Categories length:", len(categories))
-    print("Features length:", len(feature_indices))
+    print("Categories:", len(categories))
 
-    num_continuous =len(numerical_feature_indices)
-    print("Continuous length:", len(num_continuous))
+    num_continuous = len(numerical_feature_indices)
+    print("Continuous:", num_continuous)
 
-    # Load the model
-    model = load_model(args.model_type, args.model_path)
+    x_categ = features[:, binary_feature_indices]
+    x_cont = features[:, numerical_feature_indices]
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    model.to(device)
+    dataset = CustomDataset(x_categ, x_cont, labels)
 
-    # Using multiple GPUs if available
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    data_loader = DataLoader(dataset, batch_size=args.batch_size // 2, shuffle=False, pin_memory=True, num_workers=4)
+
+    # Initialize device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    if args.pruning and os.path.exists(args.model_path + '_pruned'):
+        print("Loading pruned model...")
+        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+    else:
+        print("Loading model...")
+        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+
+        if args.pruning:
+            print("Model pruning.")
+            # Specify the pruning percentage
+            pruning_percentage = 0.4
+
+            # Perform global magnitude-based pruning
+            parameters_to_prune = [(module, 'weight') for module in model.modules() if isinstance(module, (nn.Linear, nn.Embedding))]
+            prune.global_unstructured(parameters_to_prune, pruning_method=prune.L1Unstructured, amount=pruning_percentage)
+
+            # Remove the pruning reparameterization
+            for module, _ in parameters_to_prune:
+                prune.remove(module, 'weight')
+            
+            # Save the pruned model
+            if args.model_path is not None:
+                pruned_model_path =  args.model_path + '_pruned'
+                torch.save(model.state_dict(), pruned_model_path)
+
+        if args.quantization is not None and device.type == 'cpu':
+            print(f"Quantizing model to {args.quantization} bits.")
+            model = quantize_dynamic(model, {nn.Linear, nn.Embedding}, dtype=torch.qint8)
+
+        if args.pruning or (args.quantization is not None and device.type == 'cpu'):
+            # Save the pruned and/or quantized model
+            if args.model_path is not None:
+                model_path_ext = '_pruned' if args.pruning else ''
+                model_path_ext += f'_quantized_{args.quantization}' if args.quantization is not None else ''
+                torch.save(model.state_dict(), args.model_path + model_path_ext)
+
+    if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
-        model = torch.nn.DataParallel(model)
+        model = nn.DataParallel(model)
 
-    # Evaluate the model
-    print("Loading model...")
-    model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     print("Model loaded.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate an attention network on the test set.')
+    parser.add_argument('--dataset_type', type=str, choices=['test','validation'], required=True, help='Specify dataset type for evaluation')
     parser.add_argument('--model_type', type=str, required=True,
                         choices=['Transformer','TabTransformer', 'FTTransformer'],
                         help='Type of the model to train: TabTransformer or FTTransformer')
@@ -131,7 +118,9 @@ if __name__ == "__main__":
     parser.add_argument('--attn_dropout', type=float, default=None, help='Attention dropout rate')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None,
-                    help='Optional path to the saved model file to load before training')
+                        help='Oath to the saved model file to load.')
+        parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
+    parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
     args = parser.parse_args()
 
     # Conditional defaults based on model_type

@@ -25,6 +25,66 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 
+def custom_one_hot_encoder(df, imputer=None, scaler=None, fit=True, chunk_size=10000):
+    """
+    One-hot encodes the 'Code' column, while imputing and scaling the 'Result' column.
+    The processing is done in chunks to avoid OOM errors.
+    """
+    # Initialize the fitted imputer and scaler
+    fitted_imputer = None
+    fitted_scaler = None
+
+    # Iterate over chunks of the DataFrame
+    for start in range(0, len(df), chunk_size):
+        end = start + chunk_size
+        chunk = df.iloc[start:end].copy()  # Make a copy to avoid SettingWithCopyWarning
+
+        # Convert 'Code' to string type to handle missing values
+        chunk['Code'] = chunk['Code'].astype(str)
+
+        # Get the unique codes in the current chunk
+        unique_codes_chunk = chunk['Code'].unique()
+
+        # Convert 'Result' to a NumPy array
+        results = chunk['Result'].values
+
+        # Initialize a sparse matrix to store the one-hot encoded features
+        encoded_features = csr_matrix((len(chunk), len(unique_codes_chunk)), dtype=float)
+
+        # Loop over each unique code in the chunk
+        for i, code in enumerate(unique_codes_chunk):
+            # Create a boolean mask for the current code
+            mask = (chunk['Code'] == code)
+
+            # Extract the 'Result' values for the current code
+            code_results = results[mask]
+
+            # Impute missing values if imputer is provided
+            if imputer is not None:
+                if fit:
+                    fitted_imputer = imputer.fit(code_results.reshape(-1, 1))
+                    code_results = fitted_imputer.transform(code_results.reshape(-1, 1)).ravel()
+                else:
+                    code_results = imputer.transform(code_results.reshape(-1, 1)).ravel()
+
+            # Scale the results if scaler is provided
+            if scaler is not None:
+                if fit:
+                    fitted_scaler = scaler.fit(code_results.reshape(-1, 1))
+                    code_results = fitted_scaler.transform(code_results.reshape(-1, 1)).ravel()
+                else:
+                    code_results = scaler.transform(code_results.reshape(-1, 1)).ravel()
+
+            # Update the sparse matrix with the one-hot encoded and processed results
+            encoded_features[:, i] = code_results * mask.astype(float)
+
+        # Yield the encoded chunk
+        yield chunk[['EMPI', 'Code', 'Result']], encoded_features
+
+    # Return the fitted imputer and scaler if fit=True
+    if fit:
+        return fitted_imputer, fitted_scaler
+
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """
     Reads a CSV file with a progress bar, selecting specific columns.

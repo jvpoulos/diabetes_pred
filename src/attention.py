@@ -295,7 +295,7 @@ def main():
     parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
     parser.add_argument('--quantization', type=int, default=None, help='Quantization bit width (8)')
     parser.add_argument('--model_path', type=str, default=None,
-                        help='Optional path to the saved model file to load before training')
+                        help='Oath to the saved model file to load.')
 
     # Parse known arguments and ignore unknown arguments (like --local_rank)
     args, _ = parser.parse_known_args()
