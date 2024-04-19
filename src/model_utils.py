@@ -61,7 +61,7 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
             augmented_num = numerical_features
 
         # Forward pass through the model and calculate the loss
-        outputs = model(augmented_cat, augmented_num).squeeze()
+        outputs = model(augmented_cat, augmented_num, device).squeeze()
         if use_mixup or use_cutmix:
             loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
         else:
@@ -118,7 +118,7 @@ def evaluate_model(model, test_loader):
             labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
 
-            outputs = model(categorical_features, numerical_features)
+            outputs = model(categorical_features, numerical_features, device)
             outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
 
             # Accumulate true labels and predictions for AUROC calculation
@@ -144,7 +144,7 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             categorical_features = features[:, binary_feature_indices].to(device).long()  # Categorical features (convert to long data type)
             labels = labels.to(device)  # Move labels to the device
 
-            outputs = model(categorical_features, numerical_features).squeeze()
+            outputs = model(categorical_features, numerical_features, device).squeeze()
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -239,8 +239,8 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             dim_head = 16,                                              
             shared_categ_dim_divisor = 8,                               
             use_shared_categ_embed = True,
-            checkpoint_grads=False,
-            use_flash_attn=True                                 
+            checkpoint_grads=True,
+            use_flash_attn=False                                 
         )
     elif model_type == 'FTTransformer':
         model = FTTransformer(
@@ -254,7 +254,7 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
             checkpoint_grads=False,
-            use_flash_attn=True  
+            use_flash_attn=False 
         )
     elif model_type == 'ResNet':
         input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension

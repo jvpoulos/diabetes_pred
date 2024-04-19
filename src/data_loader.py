@@ -31,6 +31,7 @@ from itertools import zip_longest
 # Define the column types for each file type
 
 def main(use_dask=False):
+
     # Define file path and selected columns
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
@@ -74,14 +75,14 @@ def main(use_dask=False):
     print("Replacing missing values in ", 'SDI_score')
 
     # Create the imputer object
-    imputer = SimpleImputer(strategy='constant', fill_value=0)
+    outcomes_imputer = SimpleImputer(strategy='constant', fill_value=0)
 
     # Fit the imputer on the training data and transform the training data
-    train_df[['SDI_score']] = imputer.fit_transform(train_df[['SDI_score']])
+    train_df[['SDI_score']] = outcomes_imputer.fit_transform(train_df[['SDI_score']])
 
     # Apply the same imputation to validation and test datasets without fitting again
-    validation_df[['SDI_score']] = imputer.transform(validation_df[['SDI_score']])
-    test_df[['SDI_score']] = imputer.transform(test_df[['SDI_score']])
+    validation_df[['SDI_score']] = outcomes_imputer.transform(validation_df[['SDI_score']])
+    test_df[['SDI_score']] = outcomes_imputer.transform(test_df[['SDI_score']])
 
     # Normalize specified numeric columns in outcomes data using the Min-Max scaling approach. 
     columns_to_normalize = ['InitialA1c', 'AgeYears', 'SDI_score']
@@ -91,14 +92,14 @@ def main(use_dask=False):
     with open('columns_to_normalize.json', 'w') as file:
         json.dump(columns_to_normalize, file)
 
-    scaler = MaxAbsScaler()
+    outcomes_scaler = MaxAbsScaler()
 
     # Fit on training data
-    train_df[columns_to_normalize] = scaler.fit_transform(train_df[columns_to_normalize])
+    train_df[columns_to_normalize] = outcomes_scaler.fit_transform(train_df[columns_to_normalize])
 
     # Transform validation and test data
-    validation_df[columns_to_normalize] = scaler.transform(validation_df[columns_to_normalize])
-    test_df[columns_to_normalize] = scaler.transform(test_df[columns_to_normalize])
+    validation_df[columns_to_normalize] = outcomes_scaler.transform(validation_df[columns_to_normalize])
+    test_df[columns_to_normalize] = outcomes_scaler.transform(test_df[columns_to_normalize])
 
     print("Preprocessing diagnoses data")
 
@@ -218,39 +219,46 @@ def main(use_dask=False):
 
     print("Impute and standardize results and one-hot encode codes for labs data.")
 
-    # Initialize lists to store the encoded chunks
-    train_encoded_labs_chunks = []
-    validation_encoded_labs_chunks = []
-    test_encoded_labs_chunks = []
+    labs_scaler = MaxAbsScaler()
 
-    # Iterate over the encoded chunks for the training data
-    for chunk, encoded_features in custom_one_hot_encoder(train_rows_labs, imputer, scaler, fit=True, chunk_size=10000):
-        # Fit the imputer and scaler on the current chunk
-        imputer.fit(chunk['Result'].values.reshape(-1, 1))
-        scaler.fit(chunk['Result'].values.reshape(-1, 1))
+    if use_dask:
+        # Impute and standardize results and one-hot encode codes for labs data.
+        train_encoded_labs, labs_scaler = custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=True, chunk_size=10000)
+        validation_encoded_labs = custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000)
+        test_encoded_labs = custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000)
 
-        # Concatenate the original chunk with the encoded features
-        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-        train_encoded_labs_chunks.append(encoded_chunk)
+        # Convert the encoded Dask DataFrame to a Pandas DataFrame
+        train_encoded_labs = train_encoded_labs.compute()
+        validation_encoded_labs = validation_encoded_labs.compute()
+        test_encoded_labs = test_encoded_labs.compute()
+    else:
+        # Iterate over the encoded chunks for the training data
+        train_encoded_labs_chunks = []
+        for chunk, encoded_features in custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=False, chunk_size=10000):
+            # Concatenate the original chunk with the encoded features
+            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+            train_encoded_labs_chunks.append(encoded_chunk)
 
-    # Concatenate the encoded chunks into a single DataFrame
-    train_encoded_labs = pd.concat(train_encoded_labs_chunks, ignore_index=True)
+        # Concatenate the encoded chunks into a single DataFrame
+        train_encoded_labs = pd.concat(train_encoded_labs_chunks, ignore_index=True)
 
-    # Iterate over the encoded chunks for the validation data
-    for chunk, encoded_features in custom_one_hot_encoder(validation_rows_labs, imputer, scaler, fit=False, chunk_size=10000):
-        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-        validation_encoded_labs_chunks.append(encoded_chunk)
+        # Iterate over the encoded chunks for the validation data
+        validation_encoded_labs_chunks = []
+        for chunk, encoded_features in custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000):
+            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+            validation_encoded_labs_chunks.append(encoded_chunk)
 
-    # Concatenate the encoded chunks into a single DataFrame
-    validation_encoded_labs = pd.concat(validation_encoded_labs_chunks, ignore_index=True)
+        # Concatenate the encoded chunks into a single DataFrame
+        validation_encoded_labs = pd.concat(validation_encoded_labs_chunks, ignore_index=True)
 
-    # Iterate over the encoded chunks for the test data
-    for chunk, encoded_features in custom_one_hot_encoder(test_rows_labs, imputer, scaler, fit=False, chunk_size=10000):
-        encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-        test_encoded_labs_chunks.append(encoded_chunk)
+        # Iterate over the encoded chunks for the test data
+        test_encoded_labs_chunks = []
+        for chunk, encoded_features in custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000):
+            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+            test_encoded_labs_chunks.append(encoded_chunk)
 
-    # Concatenate the encoded chunks into a single DataFrame
-    test_encoded_labs = pd.concat(test_encoded_labs_chunks, ignore_index=True)
+        # Concatenate the encoded chunks into a single DataFrame
+        test_encoded_labs = pd.concat(test_encoded_labs_chunks, ignore_index=True)
 
     print("Extracting labs encoded feature names.")
 
@@ -404,6 +412,7 @@ def main(use_dask=False):
         train_df = dd.from_pandas(train_df, npartitions=npartitions)
         validation_df = dd.from_pandas(validation_df, npartitions=npartitions)
         test_df = dd.from_pandas(test_df, npartitions=npartitions)
+        client.close()
     else:
         print("Perform groupby and aggregation using pandas.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
@@ -468,7 +477,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.use_dask:
         # Adjust timeout settings
-        dask.config.set({'distributed.comm.timeouts.connect': '120s'})
+        dask.config.set({"distributed.comm.timeouts.connect": "60s"})
+        dask.config.set({"distributed.comm.timeouts.tcp": "300s"})
 
         # Determine the total number of available cores
         total_cores = multiprocessing.cpu_count()
@@ -478,5 +488,5 @@ if __name__ == '__main__':
 
         npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
 
-        client = Client(processes=True)  # Use processes instead of threads for potentially better CPU utilization
+        client = Client(processes=True, memory_limit='8GB')  # Use processes instead of threads for potentially better CPU utilization
     main(use_dask=args.use_dask)

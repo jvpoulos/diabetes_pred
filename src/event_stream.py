@@ -60,16 +60,36 @@ def main(use_dask=False):
     labs_file_path = 'data/Labs.txt'
 
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
+    print(f"Outcomes DataFrame shape: {df_outcomes.shape}")
+
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select)
+    print(f"Diagnoses DataFrame shape: {df_dia.shape}")
+
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select)
+    print(f"Procedures DataFrame shape: {df_prc.shape}")
+
     df_labs = read_file(labs_file_path, labs_columns, labs_columns_select, chunk_size=700000)
+    print(f"Labs DataFrame shape: {df_labs.shape}")
 
     # convert to polars DataFrames
     df_outcomes = pl.from_pandas(df_outcomes)
-    df_dia = pl.from_pandas(df_dia)
-    df_prc = pl.from_pandas(df_prc)
-    df_labs = pl.from_pandas(df_labs)
+    print(f"Outcomes Polars DataFrame shape: {df_outcomes.shape}")
 
+    df_dia = pl.from_pandas(df_dia)
+    print(f"Diagnoses Polars DataFrame shape: {df_dia.shape}")
+
+    df_prc = pl.from_pandas(df_prc)
+    print(f"Procedures Polars DataFrame shape: {df_prc.shape}")
+
+    df_labs = pl.from_pandas(df_labs)
+    print(f"Labs Polars DataFrame shape: {df_labs.shape}")
+
+    if df_outcomes.is_empty():
+        raise ValueError("Outcomes DataFrame is empty.")
+
+    if df_dia.is_empty() and df_prc.is_empty() and df_labs.is_empty():
+        raise ValueError("All dynamic input DataFrames are empty.")
+        
     # Build measurement_configs and track input schemas
     subject_id_col = 'EMPI'
     measurements_by_temporality = {
@@ -323,25 +343,10 @@ def main(use_dask=False):
     dynamic_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
 
     # Build DatasetSchema
-    dataset_schema = DatasetSchema(
-        static=InputDFSchema(
-            input_df=df_outcomes,
-            subject_id_col='EMPI',
-            data_schema={
-                'EMPI': InputDataType.CATEGORICAL,
-                'InitialA1c': InputDataType.FLOAT,
-                'A1cGreaterThan7': InputDataType.CATEGORICAL,
-                'Female': InputDataType.CATEGORICAL,
-                'Married': InputDataType.CATEGORICAL,
-                'GovIns': InputDataType.CATEGORICAL,
-                'English': InputDataType.CATEGORICAL,
-                'AgeYears': InputDataType.CATEGORICAL,
-                'SDI_score': InputDataType.FLOAT,
-                'Veteran': InputDataType.CATEGORICAL
-            },
-            type=InputDFType.STATIC
-        ),
-        dynamic=[
+    dynamic_input_schemas = []
+
+    if not df_dia.is_empty():
+        dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_dia,
                 subject_id_col=None,  # Set to None for dynamic input schemas
@@ -353,7 +358,11 @@ def main(use_dask=False):
                 ts_col='Date',
                 ts_format='%Y-%m-%d %H:%M:%S',
                 type=InputDFType.EVENT
-            ),
+            )
+        )
+
+    if not df_prc.is_empty():
+        dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_prc,
                 subject_id_col=None,  # Set to None for dynamic input schemas
@@ -365,7 +374,11 @@ def main(use_dask=False):
                 ts_col='Date',
                 ts_format='%Y-%m-%d %H:%M:%S',
                 type=InputDFType.EVENT
-            ),
+            )
+        )
+
+    if not df_labs.is_empty():
+        dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_labs,
                 subject_id_col=None,  # Set to None for dynamic input schemas
@@ -379,8 +392,33 @@ def main(use_dask=False):
                 ts_format='%Y-%m-%d %H:%M:%S',
                 type=InputDFType.EVENT
             )
-        ]
+        )
+
+    if not dynamic_input_schemas:
+        raise ValueError("All dynamic input DataFrames are empty.")
+
+    dataset_schema = DatasetSchema(
+        static=InputDFSchema(
+            input_df=df_outcomes,
+            subject_id_col='EMPI',
+            data_schema={
+                'InitialA1c': InputDataType.FLOAT,
+                'A1cGreaterThan7': InputDataType.CATEGORICAL,
+                'Female': InputDataType.CATEGORICAL,
+                'Married': InputDataType.CATEGORICAL,
+                'GovIns': InputDataType.CATEGORICAL,
+                'English': InputDataType.CATEGORICAL,
+                'AgeYears': InputDataType.CATEGORICAL,
+                'SDI_score': InputDataType.FLOAT,
+                'Veteran': InputDataType.CATEGORICAL
+            },
+            type=InputDFType.STATIC
+        ),
+        dynamic=dynamic_input_schemas
     )
+
+    print(f"Dataset schema: {dataset_schema}")
+    print(f"Measurement configs: {measurement_configs}")
 
     # Build Config
     split = (0.7, 0.2, 0.1)

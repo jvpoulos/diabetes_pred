@@ -140,8 +140,8 @@ def main(args):
             dim_head = 16,                                              # default is 16
             shared_categ_dim_divisor = 8,                               # in paper, they reserve dimension / 8 for category shared embedding
             use_shared_categ_embed = True,                              # default is True
-            checkpoint_grads=False,                                     # enable gradient checkpointing
-            use_flash_attn=True                                         # use PyTorch 2.0 flash attention instead of standard softmax attention
+            checkpoint_grads=True,                                      # enable gradient checkpointing
+            use_flash_attn=False                                         # use flash attention instead of standard softmax attention
         ).to(device)
     elif args.model_type == 'FTTransformer':
         model = FTTransformer(
@@ -155,7 +155,7 @@ def main(args):
             attn_dropout=args.attn_dropout,                             # post-attention dropout, paper recommends 0.2
             ff_dropout=args.ff_dropout,                                 # feed forward dropout, paper recommends 0.1
             checkpoint_grads=False,                                     # enable gradient checkpointing
-            use_flash_attn=True                                         # use PyTorch 2.0 flash attention instead of standard softmax attention
+            use_flash_attn=False                                        # use flash attention instead of standard softmax attention
         ).to(device)
     elif args.model_type == 'ResNet':
         input_dim = len(binary_feature_indices) + len(numerical_feature_indices)  # Calculate the input dimension

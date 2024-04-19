@@ -13,7 +13,7 @@ from math import ceil
 import json
 import re
 import scipy.sparse as sp
-from scipy.sparse import csr_matrix, hstack, vstack
+from scipy.sparse import csr_matrix, hstack, vstack, lil_matrix
 from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_sparse
 from joblib import Parallel, delayed
 import multiprocessing
@@ -25,72 +25,101 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 
-def custom_one_hot_encoder(df, imputer=None, scaler=None, fit=True, chunk_size=10000):
+def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000):
     """
-    One-hot encodes the 'Code' column, while imputing and scaling the 'Result' column.
-    The processing is done in chunks to avoid OOM errors.
+    One-hot encodes the 'Code' column, while scaling the 'Result' column.
+    The processing can be done using Dask for parallel computation or in chunks to avoid OOM errors.
     """
-    # Initialize the fitted imputer and scaler
-    fitted_imputer = None
-    fitted_scaler = None
+    if use_dask:
+        # Convert the input DataFrame to a Dask DataFrame
+        ddf = dd.from_pandas(df, npartitions=len(df) // chunk_size + 1)
 
-    # Iterate over chunks of the DataFrame
-    for start in range(0, len(df), chunk_size):
-        end = start + chunk_size
-        chunk = df.iloc[start:end].copy()  # Make a copy to avoid SettingWithCopyWarning
+        # Create a Dask Series for 'Code' and 'Result' columns
+        code_series = ddf['Code'].astype(str)
+        result_series = ddf['Result']
 
-        # Convert 'Code' to string type to handle missing values
-        chunk['Code'] = chunk['Code'].astype(str)
+        # Replace NaN values in 'Result' column with the mean of non-NaN values
+        result_series = result_series.fillna(result_series.mean())
 
-        # Get the unique codes in the current chunk
-        unique_codes_chunk = chunk['Code'].unique()
+        # Create a Dask DataFrame for the encoded features
+        encoded_features = code_series.map_partitions(
+            lambda x: pd.get_dummies(x, sparse=True),
+            meta=pd.DataFrame(columns=[], dtype=float),
+            token='encode'
+        )
 
-        # Convert 'Result' to a NumPy array
-        results = chunk['Result'].values
+        # Scale the 'Result' column if scaler is provided
+        if scaler is not None:
+            if fit:
+                fitted_scaler = scaler.fit(result_series.values.reshape(-1, 1))
+                result_series = dd.from_array(fitted_scaler.transform(result_series.values.reshape(-1, 1)))
+            else:
+                result_series = dd.from_array(scaler.transform(result_series.values.reshape(-1, 1)))
 
-        # Initialize a sparse matrix to store the one-hot encoded features
-        encoded_features = lil_matrix((len(chunk), len(unique_codes_chunk)), dtype=float)
+        # Multiply the encoded features with the scaled 'Result' column
+        encoded_features = encoded_features.multiply(result_series.values[:, None], axis=0)
 
-        # Loop over each unique code in the chunk
-        for i, code in enumerate(unique_codes_chunk):
-            # Create a boolean mask for the current code
-            mask = (chunk['Code'] == code)
+        # Concatenate the original DataFrame with the encoded features
+        encoded_df = dd.concat([ddf[['EMPI', 'Code', 'Result']], encoded_features], axis=1)
 
-            # Extract the 'Result' values for the current code
-            code_results = results[mask]
+        # Return the encoded Dask DataFrame and the fitted scaler if fit=True
+        if fit:
+            return encoded_df, fitted_scaler
+        else:
+            return encoded_df
+    else:
+        # Initialize the fitted scaler
+        fitted_scaler = None
 
-            # Impute missing values if imputer is provided
-            if imputer is not None:
-                if fit:
-                    fitted_imputer = imputer.fit(code_results.reshape(-1, 1))
-                    code_results = fitted_imputer.transform(code_results.reshape(-1, 1)).ravel()
-                else:
-                    code_results = imputer.transform(code_results.reshape(-1, 1)).ravel()
+        # Iterate over chunks of the DataFrame
+        for start in range(0, len(df), chunk_size):
+            end = start + chunk_size
+            chunk = df.iloc[start:end].copy()  # Make a copy to avoid SettingWithCopyWarning
 
-            # Scale the results if scaler is provided
-            if scaler is not None:
-                if fit:
-                    fitted_scaler = scaler.fit(code_results.reshape(-1, 1))
-                    code_results = fitted_scaler.transform(code_results.reshape(-1, 1)).ravel()
-                else:
-                    code_results = scaler.transform(code_results.reshape(-1, 1)).ravel()
+            # Convert 'Code' to string type to handle missing values
+            chunk['Code'] = chunk['Code'].astype(str)
 
-            # Broadcast the 'Result' values to the length of the chunk
-            broadcasted_results = np.zeros(len(chunk), dtype=float)
-            broadcasted_results[mask] = code_results
+            # Get the unique codes in the current chunk
+            unique_codes_chunk = chunk['Code'].unique()
 
-            # Update the sparse matrix with the one-hot encoded and processed results
-            encoded_features[:, i] = broadcasted_results
+            # Convert 'Result' to a NumPy array
+            results = chunk['Result'].values
 
-        # Convert the lil_matrix to a csr_matrix before yielding
-        encoded_features = encoded_features.tocsr()
+            # Initialize a sparse matrix to store the one-hot encoded features
+            encoded_features = lil_matrix((len(chunk), len(unique_codes_chunk)), dtype=float)
 
-        # Yield the encoded chunk
-        yield chunk[['EMPI', 'Code', 'Result']], encoded_features
+            # Loop over each unique code in the chunk
+            for i, code in enumerate(unique_codes_chunk):
+                # Create a boolean mask for the current code
+                mask = (chunk['Code'] == code)
 
-    # Return the fitted imputer and scaler if fit=True
-    if fit:
-        return fitted_imputer, fitted_scaler
+                # Extract the 'Result' values for the current code
+                code_results = results[mask]
+
+                # Scale the results if scaler is provided
+                if scaler is not None:
+                    if fit:
+                        fitted_scaler = scaler.fit(code_results.reshape(-1, 1))
+                        code_results = fitted_scaler.transform(code_results.reshape(-1, 1)).ravel()
+                    else:
+                        code_results = scaler.transform(code_results.reshape(-1, 1)).ravel()
+
+                # Broadcast the 'Result' values to the length of the chunk
+                broadcasted_results = np.zeros(len(chunk), dtype=float)
+                broadcasted_results[mask] = code_results
+
+                # Update the sparse matrix with the one-hot encoded and processed results
+                encoded_features[:, i] = broadcasted_results
+
+            # Convert the lil_matrix to a csr_matrix before yielding
+            encoded_features = encoded_features.tocsr()
+
+            # Yield the encoded chunk
+            yield chunk[['EMPI', 'Code', 'Result']], encoded_features
+
+        # Return the fitted scaler if fit=True
+        if fit:
+            return fitted_scaler
 
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """

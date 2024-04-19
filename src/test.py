@@ -62,9 +62,9 @@ def main(args):
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
         model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
-    elif args.quantization and os.path.exists(args.model_path + '_quantized'):
+    elif args.quantization and os.path.exists(args.model_path + '_quantized.pth'):
         print("Loading quantized model...")
-        model = load_model(args.model_type, args.model_path + '_quantized', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
+        model = load_model(args.model_type, args.model_path + '_quantized.pth', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
     else:
         print("Loading model...")
         model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)

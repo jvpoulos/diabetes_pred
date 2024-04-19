@@ -27,13 +27,15 @@ Both methods have been utilized in various models, including [SAINT](https://arx
 
 This code has been tested on Python 3.10 on Ubuntu 22.04.4 LTS.
 
-Requires PyTorch 2.0 compiled for CUDA 11.8 and cuDNN 8.7 ([Installation](https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba#file-cuda_11-8_installation_on_ubuntu_22-04)). Note: it is recommended to install PyTorch in a python virtual environment (see Getting started).
+Requires PyTorch 2.2.1 compiled for CUDA 12.1 and cuDNN 8.9.7 ([Instructions for Pytorch 2 and CUDA 11.8](https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba#file-cuda_11-8_installation_on_ubuntu_22-04)) ([CUDA 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=deb_network)) ([cuDNN v8.9.7](https://developer.nvidia.com/rdp/cudnn-archive)) ([cuDNN instructions](https://docs.nvidia.com/deeplearning/cudnn/archives/cudnn-897/install-guide/index.html)). 
+
+Note: it is recommended to install PyTorch in a python virtual environment (see Getting started).
 
 ## Hardware
 
 NVIDIA Driver Version: 550.54.15
 
-CUDA Version: 12.4
+CUDA Version: 12.1
 
 GPUs: GeForce RTX 2080 (2)
 
@@ -87,7 +89,8 @@ $ source env10/bin/activate #Activate virtualenv for linux/MacOS
 
 3. Install PyTorch via pip by running following command:
 ```bash
-$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1
+$ pip3 install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu121
 ```
 
 4. Clone project repo and install other dependencies from `requirements.txt` file:
@@ -100,6 +103,7 @@ $ pip3 install -r diabetes_pred/requirements.txt
 ```bash
 $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
+Additionally, follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
 6. Clone forked version of git repo [EventStreamGPT](https://github.com/mmcdermott/EventStreamGPT), outside of project directory:
 ```bash
@@ -109,19 +113,18 @@ touch EventStreamGPT/EventStream/__init__.py
 touch EventStreamGPT/EventStream/data/__init__.py
 ```
 
-7. Install Dask for data_loader.py (optional):
+7. Install Dask for data_loader.py:
 
 ```bash
-$ python3.10 -m pip install "dask[dataframe]" --upgrade
-$ python3.10 -m pip install "dask[distributed]" --upgrade
+$ python3 -m pip install "dask[complete]" --upgrade
 ```
 ## Run the code
 
-1. For static analyses, run:
+1. For static analyses, run Arguments: `--use_dask` 
 
 ```bash
 $ cd diabetes_pred 
-$ python3 src/data_loader.py
+$ python3 src/data_loader.py --use_dask
 ```
 
 For temporal analyses, run instead:
@@ -162,13 +165,13 @@ $ python3 src/train.py --model_type MLP  --dropout 0.2 --batch_size 32 --epochs 
 
 5. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:
 ```bash
-$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning
+$ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning --quantization
 ```
 
 6. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning` `--quantization`:
 
 ```bash
-$ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning
+$ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning --quantization
 ```
 
 7. Evaluate trained model on test set. Arguments: `--dataset_type` `--model_type` `--model_path` `--batch_size` `--pruning` `--quantization`:
