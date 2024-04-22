@@ -25,7 +25,7 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 
-def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000):
+def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000, min_frequency=None):
     """
     One-hot encodes the 'Code' column, while scaling the 'Result' column.
     The processing can be done using Dask for parallel computation or in chunks to avoid OOM errors.
@@ -39,7 +39,19 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         result_series = ddf['Result']
 
         # Replace NaN values in 'Result' column with the mean of non-NaN values
-        result_series = result_series.fillna(result_series.mean())
+        result_mean = result_series.mean()
+        result_series = result_series.fillna(result_mean)
+
+        # Compute the category frequencies
+        category_counts = code_series.value_counts().compute()
+
+        # Determine the infrequent categories based on min_frequency
+        if min_frequency is not None:
+            if isinstance(min_frequency, int):
+                infrequent_categories = category_counts[category_counts < min_frequency].index
+            else:
+                infrequent_categories = category_counts[category_counts < min_frequency * len(df)].index
+            code_series = code_series.map_partitions(lambda x: x.where(~x.isin(infrequent_categories), 'infrequent_sklearn'))
 
         # Create a Dask DataFrame for the encoded features
         encoded_features = code_series.map_partitions(
@@ -51,7 +63,7 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         # Scale the 'Result' column if scaler is provided
         if scaler is not None:
             if fit:
-                fitted_scaler = scaler.fit(result_series.values.reshape(-1, 1))
+                fitted_scaler = scaler.fit(result_series.values.reshape(-1, 1).compute())
                 result_series = dd.from_array(fitted_scaler.transform(result_series.values.reshape(-1, 1)))
             else:
                 result_series = dd.from_array(scaler.transform(result_series.values.reshape(-1, 1)))
@@ -71,6 +83,18 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         # Initialize the fitted scaler
         fitted_scaler = None
 
+        # Compute the category frequencies
+        category_counts = df['Code'].value_counts()
+
+        # Determine the infrequent categories based on min_frequency
+        if min_frequency is not None:
+            if isinstance(min_frequency, int):
+                infrequent_categories = category_counts[category_counts < min_frequency].index
+            else:
+                infrequent_categories = category_counts[category_counts < min_frequency * len(df)].index
+        else:
+            infrequent_categories = []
+
         # Iterate over chunks of the DataFrame
         for start in range(0, len(df), chunk_size):
             end = start + chunk_size
@@ -78,6 +102,9 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
 
             # Convert 'Code' to string type to handle missing values
             chunk['Code'] = chunk['Code'].astype(str)
+
+            # Replace infrequent categories with 'infrequent_sklearn'
+            chunk['Code'] = chunk['Code'].where(~chunk['Code'].isin(infrequent_categories), 'infrequent_sklearn')
 
             # Get the unique codes in the current chunk
             unique_codes_chunk = chunk['Code'].unique()
@@ -104,18 +131,15 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
                     else:
                         code_results = scaler.transform(code_results.reshape(-1, 1)).ravel()
 
-                # Broadcast the 'Result' values to the length of the chunk
-                broadcasted_results = np.zeros(len(chunk), dtype=float)
-                broadcasted_results[mask] = code_results
+                # Update the sparse matrix with the scaled 'Result' values
+                encoded_features[mask, i] = code_results
 
-                # Update the sparse matrix with the one-hot encoded and processed results
-                encoded_features[:, i] = broadcasted_results
-
-            # Convert the lil_matrix to a csr_matrix before yielding
+            # Convert the lil_matrix to a csr_matrix for efficient row slicing
             encoded_features = encoded_features.tocsr()
 
-            # Yield the encoded chunk
-            yield chunk[['EMPI', 'Code', 'Result']], encoded_features
+            # Yield the encoded features row by row
+            for row in range(len(chunk)):
+                yield chunk.iloc[[row], :][['EMPI', 'Code', 'Result']], encoded_features[row, :]
 
         # Return the fitted scaler if fit=True
         if fit:

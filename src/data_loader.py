@@ -223,9 +223,9 @@ def main(use_dask=False):
 
     if use_dask:
         # Impute and standardize results and one-hot encode codes for labs data.
-        train_encoded_labs, labs_scaler = custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=True, chunk_size=10000)
-        validation_encoded_labs = custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000)
-        test_encoded_labs = custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000)
+        train_encoded_labs, labs_scaler = custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=True, chunk_size=10000, min_frequency=0.04)
+        validation_encoded_labs = custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
+        test_encoded_labs = custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
 
         # Convert the encoded Dask DataFrame to a Pandas DataFrame
         train_encoded_labs = train_encoded_labs.compute()
@@ -234,7 +234,7 @@ def main(use_dask=False):
     else:
         # Iterate over the encoded chunks for the training data
         train_encoded_labs_chunks = []
-        for chunk, encoded_features in custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=False, chunk_size=10000):
+        for chunk, encoded_features in custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=False, chunk_size=10000, min_frequency=0.04):
             # Concatenate the original chunk with the encoded features
             encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
             train_encoded_labs_chunks.append(encoded_chunk)
@@ -244,7 +244,7 @@ def main(use_dask=False):
 
         # Iterate over the encoded chunks for the validation data
         validation_encoded_labs_chunks = []
-        for chunk, encoded_features in custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000):
+        for chunk, encoded_features in custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
             encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
             validation_encoded_labs_chunks.append(encoded_chunk)
 
@@ -253,7 +253,7 @@ def main(use_dask=False):
 
         # Iterate over the encoded chunks for the test data
         test_encoded_labs_chunks = []
-        for chunk, encoded_features in custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000):
+        for chunk, encoded_features in custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
             encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
             test_encoded_labs_chunks.append(encoded_chunk)
 

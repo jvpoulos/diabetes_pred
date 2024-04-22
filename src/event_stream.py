@@ -84,6 +84,66 @@ def main(use_dask=False):
     df_labs = pl.from_pandas(df_labs)
     print(f"Labs Polars DataFrame shape: {df_labs.shape}")
 
+    print("Preprocess diagnoses data")
+    print(f"Original Diagnoses DataFrame shape: {df_dia.shape}")
+
+    # Drop rows with missing/null values in Date or CodeWithType
+    df_dia = df_dia.drop_nulls(subset=['Date', 'CodeWithType'])
+
+    # Count the occurrences of each CodeWithType
+    code_counts = df_dia.select('CodeWithType').group_by('CodeWithType').count().sort('count', descending=True)
+
+    # Calculate the 1% threshold
+    total_count = code_counts['count'].sum()
+    threshold = total_count * 0.01
+
+    # Filter out CodeWithType that appear less than 1% of the time
+    frequent_codes = code_counts.filter(pl.col('count') >= threshold)['CodeWithType'].to_list()
+    df_dia = df_dia.filter(pl.col('CodeWithType').is_in(frequent_codes))
+
+    print(f"Reduced Diagnoses DataFrame shape: {df_dia.shape}")
+
+    print("Preprocess procedures data")
+    print(f"Original Procedures DataFrame shape: {df_prc.shape}")
+
+    # Drop rows with missing/null values in Date or CodeWithType
+    df_prc = df_prc.drop_nulls(subset=['Date', 'CodeWithType'])
+
+    # Count the occurrences of each CodeWithType
+    code_counts = df_prc.select('CodeWithType').group_by('CodeWithType').count().sort('count', descending=True)
+
+    # Calculate the 1% threshold
+    total_count = code_counts['count'].sum()
+    threshold = total_count * 0.01
+
+    # Filter out CodeWithType that appear less than 1% of the time
+    frequent_codes = code_counts.filter(pl.col('count') >= threshold)['CodeWithType'].to_list()
+    df_prc = df_prc.filter(pl.col('CodeWithType').is_in(frequent_codes))
+
+    print(f"Reduced Procedures DataFrame shape: {df_prc.shape}")
+
+    print("Preprocess labs data")
+    print(f"Original Labs DataFrame shape: {df_labs.shape}")
+
+    # Drop rows with missing/null values in Date, Code, or Result
+    df_labs = df_labs.drop_nulls(subset=['Date', 'Code', 'Result'])
+
+    # Group by EMPI, Date, and Code, and take the average of Result
+    df_labs = df_labs.group_by(['EMPI', 'Date', 'Code']).agg(pl.col('Result').mean().alias('Result'))
+
+    # Count the occurrences of each Code
+    code_counts = df_labs.select('Code').group_by('Code').count().sort('count', descending=True)
+
+    # Calculate the % threshold
+    total_count = code_counts['count'].sum()
+    threshold = total_count * 0.04
+
+    # Filter out Codes that appear less than 4% of the time
+    frequent_codes = code_counts.filter(pl.col('count') >= threshold)['Code'].to_list()
+    df_labs = df_labs.filter(pl.col('Code').is_in(frequent_codes))
+
+    print(f"Reduced Labs DataFrame shape: {df_labs.shape}")
+
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
@@ -95,14 +155,12 @@ def main(use_dask=False):
     measurements_by_temporality = {
         TemporalityType.STATIC: {
             DataModality.SINGLE_LABEL_CLASSIFICATION: {
-                'outcomes': ['A1cGreaterThan7']
+                'outcomes': ['A1cGreaterThan7'],
+                'diagnoses': ['CodeWithType'],
+                'procedures': ['CodeWithType']
             },
         },
         TemporalityType.DYNAMIC: {
-            DataModality.MULTI_LABEL_CLASSIFICATION: {
-                'diagnoses': ['CodeWithType'],
-                'procedures': ['CodeWithType'],
-            },
             DataModality.UNIVARIATE_REGRESSION: {
                 'labs': ['Result']
             }
@@ -175,6 +233,12 @@ def main(use_dask=False):
     static_sources['outcomes']['AgeYears'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['SDI_score'] = InputDataType.FLOAT
     static_sources['outcomes']['Veteran'] = InputDataType.CATEGORICAL
+
+    static_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
+    static_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
+
+    static_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
+    static_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
 
     # Build DatasetSchema
     connection_uri = None
@@ -301,24 +365,29 @@ def main(use_dask=False):
         },
         'diagnoses': {
             'input_df': diagnoses_file_path,
-            'event_type': 'DIAGNOSIS',
-            'ts_col': 'Date',
-            'ts_format': '%Y-%m-%d %H:%M:%S',
-            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL), 'Date': ('Date', InputDataType.TIMESTAMP)}
+            'columns': {
+                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
+            }
         },
         'procedures': {
             'input_df': procedures_file_path,
-            'event_type': 'PROCEDURE',
-            'ts_col': 'Date',
-            'ts_format': '%Y-%m-%d %H:%M:%S',
-            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL), 'Date': ('Date', InputDataType.TIMESTAMP)}
+            'columns': {
+                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
+            }
         },
         'labs': {
             'input_df': labs_file_path,
             'event_type': 'LAB',
             'ts_col': 'Date',
             'ts_format': '%Y-%m-%d %H:%M:%S',
-            'columns': {'EMPI': ('EMPI', InputDataType.CATEGORICAL), 'Code': ('Code', InputDataType.CATEGORICAL), 'Result': ('Result', InputDataType.FLOAT), 'Date': ('Date', InputDataType.TIMESTAMP)}
+            'columns': {
+                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'Code': ('Code', InputDataType.CATEGORICAL),
+                'Result': ('Result', InputDataType.FLOAT),
+                'Date': ('Date', InputDataType.TIMESTAMP)
+            }
         }
     }
 
@@ -338,20 +407,18 @@ def main(use_dask=False):
     # Add the 'Code' column to the 'col_schema' dictionary for the 'labs' input schema
     dynamic_sources['labs']['Code'] = InputDataType.CATEGORICAL
 
-    # Add the 'CodeWithType' column to the 'col_schema' dictionary for the 'diagnoses' and 'procedures' input schemas
-    dynamic_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
-    dynamic_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
-
     # Build DatasetSchema
     dynamic_input_schemas = []
+    events_dfs = []
 
-    if not df_dia.is_empty():
+    if df_dia.is_empty():
+        raise ValueError("Diagnoses DataFrame is empty.")
+    else:
         dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_dia,
                 subject_id_col=None,  # Set to None for dynamic input schemas
                 data_schema={
-                    'CodeWithType': InputDataType.CATEGORICAL,
                     'Date': InputDataType.TIMESTAMP
                 },
                 event_type='DIAGNOSIS',
@@ -360,14 +427,22 @@ def main(use_dask=False):
                 type=InputDFType.EVENT
             )
         )
+        events_dfs.append(df_dia.select('EMPI', 'Date').rename({'EMPI': 'subject_id'}))
+
+    if not df_dia.is_empty():
+        events_dfs.append(df_dia.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
 
     if not df_prc.is_empty():
+        events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
+
+    if df_prc.is_empty():
+        raise ValueError("Procedures DataFrame is empty.")
+    else:
         dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_prc,
                 subject_id_col=None,  # Set to None for dynamic input schemas
                 data_schema={
-                    'CodeWithType': InputDataType.CATEGORICAL,
                     'Date': InputDataType.TIMESTAMP
                 },
                 event_type='PROCEDURE',
@@ -376,8 +451,11 @@ def main(use_dask=False):
                 type=InputDFType.EVENT
             )
         )
+        events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id'}))
 
-    if not df_labs.is_empty():
+    if df_labs.is_empty():
+        raise ValueError("Labs DataFrame is empty.")
+    else:
         dynamic_input_schemas.append(
             InputDFSchema(
                 input_df=df_labs,
@@ -394,13 +472,50 @@ def main(use_dask=False):
             )
         )
 
-    if not dynamic_input_schemas:
-        raise ValueError("All dynamic input DataFrames are empty.")
+
+    if not df_dia.is_empty():
+        df_dia = df_dia.lazy().with_columns(pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S').alias('Date'))
+
+    if not df_prc.is_empty():
+        df_prc = df_prc.lazy().with_columns(pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S').alias('Date'))
+
+    if not df_labs.is_empty():
+        df_labs = df_labs.lazy().with_columns(
+            pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f').alias('timestamp')
+        )
+
+    # Collect the 'EMPI' column from the lazy DataFrames
+    df_dia_empi = df_dia.select('EMPI').collect()['EMPI']
+    df_prc_empi = df_prc.select('EMPI').collect()['EMPI']
+    df_labs_empi = df_labs.select('EMPI').collect()['EMPI']
+
+    # Process events and measurements data in a streaming fashion
+    events_df = pl.concat(events_dfs, how='diagonal').lazy()
+    events_df = events_df.with_columns(
+        pl.col('subject_id').cast(pl.UInt32),
+        pl.col('timestamp').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f').alias('timestamp'),
+        pl.when(pl.col('subject_id').is_in(df_dia_empi))
+        .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
+        .when(pl.col('subject_id').is_in(df_prc_empi))
+        .then(pl.lit('PROCEDURE').cast(pl.Categorical))
+        .when(pl.col('subject_id').is_in(df_labs_empi))
+        .then(pl.lit('LAB').cast(pl.Categorical))
+        .otherwise(pl.lit('UNKNOWN').cast(pl.Categorical))
+        .alias('event_type')
+    )
+
+    # Add the 'event_id' column to the 'events_df' DataFrame
+    events_df = events_df.with_row_index(name='event_id')
+
+    df_outcomes = df_outcomes.lazy().with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
+
+    # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
+    dynamic_measurements_df = df_labs.join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left').collect()
 
     dataset_schema = DatasetSchema(
         static=InputDFSchema(
-            input_df=df_outcomes,
-            subject_id_col='EMPI',
+            input_df=df_outcomes.collect(),  # Convert LazyFrame to DataFrame
+            subject_id_col='subject_id',
             data_schema={
                 'InitialA1c': InputDataType.FLOAT,
                 'A1cGreaterThan7': InputDataType.CATEGORICAL,
@@ -417,9 +532,6 @@ def main(use_dask=False):
         dynamic=dynamic_input_schemas
     )
 
-    print(f"Dataset schema: {dataset_schema}")
-    print(f"Measurement configs: {measurement_configs}")
-
     # Build Config
     split = (0.7, 0.2, 0.1)
     seed = 42
@@ -433,11 +545,64 @@ def main(use_dask=False):
         with open(config.save_dir / "input_schema.json", "w") as f:
             json.dump(dataset_schema_dict, f)
 
-    ESD = Dataset(config=config, input_schema=dataset_schema)
-    ESD.split(split, seed=seed)
+    # Check if subjects_df is populated correctly
+    if df_outcomes.collect().is_empty():
+        raise ValueError("Outcomes DataFrame is empty.")
+    else:
+        print(f"Outcomes DataFrame shape: {df_outcomes.collect().shape}")
+        print(f"Outcomes DataFrame columns: {df_outcomes.collect().columns}")
+        
+    # Check if events_df is populated correctly
+    if events_df.collect().is_empty():
+        raise ValueError("Events DataFrame is empty.")
+    else:
+        print(f"Events DataFrame shape: {events_df.collect().shape}")
+        print(f"Events DataFrame columns: {events_df.collect().columns}")
+        
+    # Check if dynamic_measurements_df is populated correctly
+    if dynamic_measurements_df.is_empty():
+        raise ValueError("Dynamic Measurements DataFrame is empty.")
+    else:
+        print(f"Dynamic Measurements DataFrame shape: {dynamic_measurements_df.shape}")
+        print(f"Dynamic Measurements DataFrame columns: {dynamic_measurements_df.columns}")
+        
+    # Check if subjects_df contains the "subject_id" column
+    if "subject_id" not in df_outcomes.collect().columns:
+        raise ValueError("subjects_df does not contain the 'subject_id' column.")
+
+    # Check if events_df contains the "subject_id" column
+    if "subject_id" not in events_df.collect().columns:
+        raise ValueError("events_df does not contain the 'subject_id' column.")
+        
+    # Check if the subject IDs in events_df match the subject IDs in subjects_df
+    if not set(events_df.collect()["subject_id"]).issubset(set(df_outcomes.collect()["subject_id"])):
+        raise ValueError("Subject IDs in events_df do not match the subject IDs in subjects_df.")
+
+    print("Creating Dataset object...")
+    ESD = Dataset(
+        config=config,
+        subjects_df=df_outcomes.collect(),  # Convert LazyFrame to DataFrame
+        events_df=events_df.collect(),  # Convert LazyFrame to DataFrame
+        dynamic_measurements_df=dynamic_measurements_df
+    )
+
+    print("Dataset object created.")
+
+    print("Splitting dataset...")
+
+    ESD.split(split, split_names=["train", "tuning", "held_out"], seed=seed)
+    print("Dataset split.")
+    print("Preprocessing dataset...")
     ESD.preprocess()
+    print("Dataset preprocessed.")
+
+    print("Saving dataset...")
     ESD.save(do_overwrite=do_overwrite)
+    print("Dataset saved.")
+
+    print("Caching deep learning representation...")
     ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
+    print("Deep learning representation cached.")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

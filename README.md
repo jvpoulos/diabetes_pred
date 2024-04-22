@@ -133,13 +133,17 @@ $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
 $ python3 src/event_stream.py
 ```
 
-The following steps are for static analyses only. 
-
-2. (Optional) Create plots and summary statistics for the training dataset:
+2. (Optional) Create plots and summary statistics for the training dataset (static analyses):
 
 ```bash
 $ python3 src/data_analysis.py
 ``` 
+
+For temporal analyses, run instead:
+```bash
+$ python3 src/visualize_describe.py
+```
+
 3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
