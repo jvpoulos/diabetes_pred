@@ -24,6 +24,65 @@ import dask.dataframe as dd
 import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
+import polars as pl
+
+def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, threshold=None, use_threshold=False):
+    df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
+
+    print(f"{df_name} DataFrame shape: {df.shape}")
+
+    df = pl.from_pandas(df)
+    print(f"{df_name} Polars DataFrame shape: {df.shape}")
+
+    print(f"Preprocess {df_name.lower()} data")
+    print(f"Original {df_name} DataFrame shape: {df.shape}")
+
+    if df_name in ['Diagnoses', 'Procedures', 'Labs']:
+        # Parse the 'Date' column as datetime
+        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
+
+    if df_name in ['Diagnoses', 'Procedures']:
+        # Drop rows with missing/null values in Date or CodeWithType
+        df = df.drop_nulls(subset=['Date', 'CodeWithType'])
+
+        # Subset the data to unique rows by 'EMPI', 'Date', and 'CodeWithType'
+        df = df.unique(subset=['EMPI', 'Date', 'CodeWithType'])
+
+        if use_threshold:
+            # Count the occurrences of each CodeWithType
+            code_counts = df.select('CodeWithType').group_by('CodeWithType').count().sort('count', descending=True)
+
+            # Calculate the threshold
+            total_count = code_counts['count'].sum()
+            threshold = total_count * (0.01 if df_name == 'Diagnoses' else 0.01)
+
+            # Filter out CodeWithType that appear less than the threshold
+            frequent_codes = code_counts.filter(pl.col('count') >= threshold)['CodeWithType'].to_list()
+            df = df.filter(pl.col('CodeWithType').is_in(frequent_codes))
+
+    elif df_name == 'Labs':
+        # Drop rows with missing/null values in Date, Code, or Result
+        df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
+
+        # Group by EMPI, Date, and Code, and take the average of Result
+        df = df.group_by(['EMPI', 'Date', 'Code']).agg(pl.col('Result').mean().alias('Result'))
+
+        if use_threshold:
+            # Count the occurrences of each Code
+            code_counts = df.select('Code').group_by('Code').count().sort('count', descending=True)
+
+            # Calculate the threshold
+            total_count = code_counts['count'].sum()
+            threshold = total_count * 0.04
+
+            # Filter out Codes that appear less than the threshold
+            frequent_codes = code_counts.filter(pl.col('count') >= threshold)['Code'].to_list()
+            df = df.filter(pl.col('Code').is_in(frequent_codes))
+
+    if use_threshold:
+        print(f"Reduced {df_name} DataFrame shape: {df.shape}")
+
+    return df
 
 def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000, min_frequency=None):
     """
@@ -37,10 +96,6 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         # Create a Dask Series for 'Code' and 'Result' columns
         code_series = ddf['Code'].astype(str)
         result_series = ddf['Result']
-
-        # Replace NaN values in 'Result' column with the mean of non-NaN values
-        result_mean = result_series.mean()
-        result_series = result_series.fillna(result_mean)
 
         # Compute the category frequencies
         category_counts = code_series.value_counts().compute()
@@ -60,25 +115,49 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
             token='encode'
         )
 
+        # Get the feature names from the encoded columns
+        feature_names = encoded_features.columns.tolist()
+
         # Scale the 'Result' column if scaler is provided
         if scaler is not None:
             if fit:
-                fitted_scaler = scaler.fit(result_series.values.reshape(-1, 1).compute())
-                result_series = dd.from_array(fitted_scaler.transform(result_series.values.reshape(-1, 1)))
+                def fit_scaler(partition):
+                    result_values = partition.values
+                    result_values = np.nan_to_num(result_values)  # Replace NaN with 0
+                    scaler.fit(result_values.reshape(-1, 1))
+                    return scaler
+
+                fitted_scaler = result_series.map_partitions(fit_scaler).compute()
+
+                def transform_scaler(partition):
+                    result_values = partition.values
+                    result_values = np.nan_to_num(result_values)  # Replace NaN with 0
+                    return fitted_scaler.transform(result_values.reshape(-1, 1)).flatten()
+
+                result_series = result_series.map_partitions(transform_scaler, meta=float)
             else:
-                result_series = dd.from_array(scaler.transform(result_series.values.reshape(-1, 1)))
+                def transform_scaler(partition):
+                    result_values = partition.values
+                    result_values = np.nan_to_num(result_values)  # Replace NaN with 0
+                    return scaler.transform(result_values.reshape(-1, 1)).flatten()
+
+                result_series = result_series.map_partitions(transform_scaler, meta=float)
 
         # Multiply the encoded features with the scaled 'Result' column
-        encoded_features = encoded_features.multiply(result_series.values[:, None], axis=0)
+        def multiply_features(encoded_partition, result_partition):
+            encoded_partition = encoded_partition.multiply(result_partition.values[:, None], axis=0)
+            return encoded_partition
+
+        encoded_features = encoded_features.map_partitions(multiply_features, result_series, meta=encoded_features._meta)
 
         # Concatenate the original DataFrame with the encoded features
         encoded_df = dd.concat([ddf[['EMPI', 'Code', 'Result']], encoded_features], axis=1)
 
-        # Return the encoded Dask DataFrame and the fitted scaler if fit=True
+        # Return the encoded Dask DataFrame, the fitted scaler if fit=True, and the feature names
         if fit:
-            return encoded_df, fitted_scaler
+            return encoded_df, fitted_scaler, feature_names
         else:
-            return encoded_df
+            return encoded_df, feature_names
     else:
         # Initialize the fitted scaler
         fitted_scaler = None
@@ -95,6 +174,10 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         else:
             infrequent_categories = []
 
+        # Initialize an empty list to store the encoded chunks
+        encoded_chunks = []
+        feature_names = []
+
         # Iterate over chunks of the DataFrame
         for start in range(0, len(df), chunk_size):
             end = start + chunk_size
@@ -105,6 +188,9 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
 
             # Replace infrequent categories with 'infrequent_sklearn'
             chunk['Code'] = chunk['Code'].where(~chunk['Code'].isin(infrequent_categories), 'infrequent_sklearn')
+
+            # Replace NaN values in 'Result' column with 0
+            chunk['Result'] = chunk['Result'].fillna(0)
 
             # Get the unique codes in the current chunk
             unique_codes_chunk = chunk['Code'].unique()
@@ -137,13 +223,23 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
             # Convert the lil_matrix to a csr_matrix for efficient row slicing
             encoded_features = encoded_features.tocsr()
 
-            # Yield the encoded features row by row
-            for row in range(len(chunk)):
-                yield chunk.iloc[[row], :][['EMPI', 'Code', 'Result']], encoded_features[row, :]
+            # Concatenate the original chunk with the encoded features
+            encoded_chunk = pd.concat([chunk[['EMPI', 'Code', 'Result']], pd.DataFrame(encoded_features.toarray())], axis=1)
 
-        # Return the fitted scaler if fit=True
+            # Append the encoded chunk to the list
+            encoded_chunks.append(encoded_chunk)
+
+            # Update the feature names
+            feature_names.extend([f"Code_{code}" for code in unique_codes_chunk])
+
+        # Concatenate all the encoded chunks into a single DataFrame
+        encoded_df = pd.concat(encoded_chunks, ignore_index=True)
+
+        # Return the encoded DataFrame, the fitted scaler if fit=True, and the feature names
         if fit:
-            return fitted_scaler
+            return encoded_df, fitted_scaler, feature_names
+        else:
+            return encoded_df, feature_names
 
 def read_file(file_path, columns_type, columns_select, parse_dates=None, chunk_size=50000):
     """

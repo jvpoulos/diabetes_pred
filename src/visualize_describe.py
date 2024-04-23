@@ -28,7 +28,7 @@ os.makedirs("data_summaries", exist_ok=True)
 with open("data_summaries/dataset_description.txt", "w") as f:
     original_stdout = sys.stdout
     sys.stdout = f
-    ESD.describe(do_print_measurement_summaries=True, viz_config=None)
+    ESD.describe(do_print_measurement_summaries=True, viz_config=V)
     sys.stdout = original_stdout
 
 # Visualize the dataset and save the figures to image files

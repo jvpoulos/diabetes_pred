@@ -47,6 +47,15 @@ GPUs: GeForce RTX 2080 (2)
 - `data_loader.py`
 	- Loads and merges data from .txt files. Randomly splits the data into training (70%), validation (20%), and test (10%) sets. Preprocesses datasets, converts datasets into PyTorch Tensors, and saves them to file.
 
+- `event_stream.py`
+	- Preprocess and generate "Event Stream" dataset. Make sure to set the appropriate file paths and configurations within the script. The script will generate the necessary data files, including the outcomes, diagnoses, procedures, and labs data.
+
+- `event_stream.py`
+	- Define the specific task you want to perform. In this case, the task is predicting A1cGreaterThan7.
+
+- `labelers.py`
+	- Define a labeler class specific to your task. In this case, you can use the existing A1cGreaterThan7Labeler class.
+
 - `data_analysis.py`
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
@@ -130,7 +139,8 @@ $ python3 src/data_loader.py --use_dask
 For temporal analyses, run instead:
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
-$ python3 src/event_stream.py
+$ python3 src/event_stream.py # create data files
+$ python3 src/build_task.py # create the task-specific DataFrame (a1c_greater_than_7.parquet).
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset (static analyses):
@@ -147,8 +157,13 @@ $ python3 src/visualize_describe.py
 3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
-$ export CUDA_VISIBLE_DEVICES="0,1" 
 $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
+```
+
+For temporal analyses, run instead:
+```bash
+$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # launch the Weights and Biases sweep and manage the sweep process
+$ python3 src/hp_sweep.py #  perform the actual hyperparameter tuning by loading the dataset, creating the model, and training it
 ```
 
 4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.

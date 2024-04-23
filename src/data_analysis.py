@@ -243,3 +243,50 @@ plt.tight_layout()
 
 # Save the plot to a file
 plt.savefig("one_hot_encoded_features_sparsity_sampled_heatmap.png")
+
+# Assuming df_train, df_validation, and df_test are the DataFrames containing the loaded datasets
+print("Analyzing labs data")
+
+# Filter columns starting with "Code_" and "Result"
+code_columns = [col for col in df_train.columns if col.startswith("Code_")]
+result_columns = [col for col in df_train.columns if col.startswith("Result")]
+
+# Melt the DataFrame to convert code and result columns into rows
+melted_train_df = pd.melt(df_train, value_vars=code_columns + result_columns, var_name='Column', value_name='Value')
+
+# Extract code and result from the 'Column' column
+melted_train_df['Code'] = melted_train_df['Column'].apply(lambda x: x.split('_')[1] if x.startswith('Code_') else '')
+melted_train_df['Result'] = melted_train_df['Value'].where(melted_train_df['Column'].isin(result_columns), '')
+
+# Drop unnecessary columns
+melted_train_df = melted_train_df.drop(['Column', 'Value'], axis=1)
+
+# Remove rows with missing code or result
+melted_train_df = melted_train_df.dropna(subset=['Code', 'Result'])
+
+# Group by 'Code' and calculate mean and standard deviation of 'Result'
+labs_summary = melted_train_df.groupby('Code')['Result'].agg(['mean', 'std']).reset_index()
+
+# Sort by mean in descending order
+labs_summary_sorted = labs_summary.sort_values(by='mean', ascending=False)
+
+# Add a 'Description' column using the get_icd_description function
+labs_summary_sorted['Description'] = labs_summary_sorted['Code'].apply(lambda code: get_icd_description(code, 'CPT', icd9_df, icd10_df, icd9_txt_df, icd10_txt_df, cpt_codes_df, cpt_txt_df))
+
+# Save the sorted summary to a CSV file
+labs_summary_sorted.to_csv('labs_summary_sorted.csv', index=False)
+
+# Create an HTML table
+title = "Summary statistics of lab results"
+subtitle = f"(n={melted_train_df.shape[0]} lab results, {labs_summary_sorted.shape[0]} unique lab codes)"
+
+html_title = f"<h2>{title}</h2>"
+html_subtitle = f"<h3>{subtitle}</h3>"
+
+labs_summary_html = labs_summary_sorted.to_html(index=False)
+
+full_html = html_title + html_subtitle + labs_summary_html
+
+# Write the HTML table to a file
+with open('labs_summary_sorted.html', 'w') as f:
+    f.write(full_html)
