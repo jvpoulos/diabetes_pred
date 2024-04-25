@@ -30,26 +30,29 @@ from itertools import zip_longest
 
 # Define the column types for each file type
 
-def main(use_dask=False):
+def main(use_dask=False, use_labs=False):
 
     # Define file path and selected columns
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
-    labs_file_path = 'data/Labs.txt'
+    if use_labs:
+        labs_file_path = 'data/Labs.txt'
 
     # Read each file into a DataFrame
     df_outcomes = read_file(outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_dia = read_file(diagnoses_file_path, dia_columns, dia_columns_select_static)
     df_prc = read_file(procedures_file_path, prc_columns, prc_columns_select_static)
-    df_labs = read_file(labs_file_path, labs_columns, labs_columns_select_static, chunk_size=700000)
+    if use_labs:
+        df_labs = read_file(labs_file_path, labs_columns, labs_columns_select_static, chunk_size=700000)
 
     print("Number of patients:", len(df_outcomes))
     print("Total features (original):", df_outcomes.shape[1])
 
     print("Number of diagnoses before or on Index date:", len(df_dia))
     print("Number of procedures before or on Index date:", len(df_prc))
-    print("Number of labs before or on Index date:", len(df_labs))
+    if use_labs:
+        print("Number of labs before or on Index date:", len(df_labs))
 
     print("Splitting outcomes data")
     # Splitting the data into train, validation, and test sets
@@ -127,7 +130,7 @@ def main(use_dask=False):
     print(f"Unique values in training set 'CodeWithType': {train_rows_dia['CodeWithType'].unique()}")
 
     # Initialize OneHotEncoder with limited categories and sparse output
-    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=ceil(train_df.shape[0]*0.01))
+    one_hot_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore', min_frequency=ceil(37908*0.01))
 
     # Fit the encoder on the training subset
     one_hot_encoder.fit(train_rows_dia[['CodeWithType']].dropna().astype(str))
@@ -192,80 +195,81 @@ def main(use_dask=False):
     # Ensure encoded_feature_names is a list
     prc_encoded_feature_names = list(prc_encoded_feature_names)
 
-    print("Preprocessing labs data")
+    if use_labs:
+        print("Preprocessing labs data")
 
-    print("Converting categorical columns to string and handling missing values.")
+        print("Converting categorical columns to string and handling missing values.")
 
-    # Convert to string, fill missing values, then convert back to categorical if needed
-    df_labs['Code'] = df_labs['Code'].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
-     
-    # Verify no NaN values exist
-    assert not df_labs['Code'] .isnull().any().any(), "NaN values found in the labs categorical columns"
+        # Convert to string, fill missing values, then convert back to categorical if needed
+        df_labs['Code'] = df_labs['Code'].astype(str).fillna('missing').replace({'': 'missing'}).astype('category')
+         
+        # Verify no NaN values exist
+        assert not df_labs['Code'] .isnull().any().any(), "NaN values found in the labs categorical columns"
 
-    print("Initializing one-hot encoder for labs data.")
+        print("Initializing one-hot encoder for labs data.")
 
-    # Splitting the DataFrame while preserving the order
-    train_rows_labs = df_labs[df_labs['EMPI'].isin(train_empi)].copy()
-    validation_rows_labs = df_labs[df_labs['EMPI'].isin(validation_empi)].copy()
-    test_rows_labs = df_labs[df_labs['EMPI'].isin(test_empi)].copy()
+        # Splitting the DataFrame while preserving the order
+        train_rows_labs = df_labs[df_labs['EMPI'].isin(train_empi)].copy()
+        validation_rows_labs = df_labs[df_labs['EMPI'].isin(validation_empi)].copy()
+        test_rows_labs = df_labs[df_labs['EMPI'].isin(test_empi)].copy()
 
-    # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
-    train_rows_labs['order'] = train_rows_labs.index
-    validation_rows_labs['order'] = validation_rows_labs.index
-    test_rows_labs['order'] = test_rows_labs.index
+        # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
+        train_rows_labs['order'] = train_rows_labs.index
+        validation_rows_labs['order'] = validation_rows_labs.index
+        test_rows_labs['order'] = test_rows_labs.index
 
-    # Verify the unique values in the 'Code' column
-    print(f"Unique values in training set 'Code': {train_rows_labs[['Code']].nunique()}")
+        # Verify the unique values in the 'Code' column
+        print(f"Unique values in training set 'Code': {train_rows_labs[['Code']].nunique()}")
 
-    print("Impute and standardize results and one-hot encode codes for labs data.")
+        print("Impute and standardize results and one-hot encode codes for labs data.")
 
-    labs_scaler = MaxAbsScaler()
+        labs_scaler = MaxAbsScaler()
 
-    if use_dask:
-        # Impute and standardize results and one-hot encode codes for labs data.
-        train_encoded_labs, labs_scaler, labs_encoded_feature_names = custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=True, chunk_size=10000, min_frequency=0.04)
-        validation_encoded_labs, _ = custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
-        test_encoded_labs, _ = custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
+        if use_dask:
+            # Impute and standardize results and one-hot encode codes for labs data.
+            train_encoded_labs, labs_scaler, labs_encoded_feature_names = custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=True, chunk_size=10000, min_frequency=0.04)
+            validation_encoded_labs, _ = custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
+            test_encoded_labs, _ = custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=True, chunk_size=10000, min_frequency=0.04)
 
-        # Convert the encoded Dask DataFrame to a Pandas DataFrame
-        train_encoded_labs = train_encoded_labs.compute()
-        validation_encoded_labs = validation_encoded_labs.compute()
-        test_encoded_labs = test_encoded_labs.compute()
-    else:
-        # Iterate over the encoded chunks for the training data
-        train_encoded_labs_chunks = []
-        for chunk, encoded_features, feature_names in custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=False, chunk_size=10000, min_frequency=0.04):
-            # Concatenate the original chunk with the encoded features
-            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-            train_encoded_labs_chunks.append(encoded_chunk)
-            labs_encoded_feature_names = feature_names
+            # Convert the encoded Dask DataFrame to a Pandas DataFrame
+            train_encoded_labs = train_encoded_labs.compute()
+            validation_encoded_labs = validation_encoded_labs.compute()
+            test_encoded_labs = test_encoded_labs.compute()
+        else:
+            # Iterate over the encoded chunks for the training data
+            train_encoded_labs_chunks = []
+            for chunk, encoded_features, feature_names in custom_one_hot_encoder(train_rows_labs, labs_scaler, fit=True, use_dask=False, chunk_size=10000, min_frequency=0.04):
+                # Concatenate the original chunk with the encoded features
+                encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+                train_encoded_labs_chunks.append(encoded_chunk)
+                labs_encoded_feature_names = feature_names
 
-        # Concatenate the encoded chunks into a single DataFrame
-        train_encoded_labs = pd.concat(train_encoded_labs_chunks, ignore_index=True)
+            # Concatenate the encoded chunks into a single DataFrame
+            train_encoded_labs = pd.concat(train_encoded_labs_chunks, ignore_index=True)
 
-        # Iterate over the encoded chunks for the validation data
-        validation_encoded_labs_chunks = []
-        for chunk, encoded_features, _ in custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
-            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-            validation_encoded_labs_chunks.append(encoded_chunk)
+            # Iterate over the encoded chunks for the validation data
+            validation_encoded_labs_chunks = []
+            for chunk, encoded_features, _ in custom_one_hot_encoder(validation_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
+                encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+                validation_encoded_labs_chunks.append(encoded_chunk)
 
-        # Concatenate the encoded chunks into a single DataFrame
-        validation_encoded_labs = pd.concat(validation_encoded_labs_chunks, ignore_index=True)
+            # Concatenate the encoded chunks into a single DataFrame
+            validation_encoded_labs = pd.concat(validation_encoded_labs_chunks, ignore_index=True)
 
-        # Iterate over the encoded chunks for the test data
-        test_encoded_labs_chunks = []
-        for chunk, encoded_features, _ in custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
-            encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
-            test_encoded_labs_chunks.append(encoded_chunk)
+            # Iterate over the encoded chunks for the test data
+            test_encoded_labs_chunks = []
+            for chunk, encoded_features, _ in custom_one_hot_encoder(test_rows_labs, labs_scaler, fit=False, use_dask=False, chunk_size=10000, min_frequency=0.04):
+                encoded_chunk = pd.concat([chunk, pd.DataFrame.sparse.from_spmatrix(encoded_features)], axis=1)
+                test_encoded_labs_chunks.append(encoded_chunk)
 
-        # Concatenate the encoded chunks into a single DataFrame
-        test_encoded_labs = pd.concat(test_encoded_labs_chunks, ignore_index=True)
+            # Concatenate the encoded chunks into a single DataFrame
+            test_encoded_labs = pd.concat(test_encoded_labs_chunks, ignore_index=True)
 
-    # Process the feature names to remove the prefix
-    labs_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in labs_encoded_feature_names]
+        # Process the feature names to remove the prefix
+        labs_encoded_feature_names  = [name.split('_', 1)[1] if 'CodeWithType' in name else name for name in labs_encoded_feature_names]
 
-    # Ensure encoded_feature_names is a list
-    labs_encoded_feature_names = list(labs_encoded_feature_names)
+        # Ensure encoded_feature_names is a list
+        labs_encoded_feature_names = list(labs_encoded_feature_names)
 
     print("Combining diagnoses encoded splits into a single sparse matrix.")
 
@@ -310,32 +314,35 @@ def main(use_dask=False):
     # Drop the infrequent columns from encoded_df
     encoded_df_prc = encoded_df_prc.drop(columns=infrequent_sklearn_columns)
 
-    print("Combining labs features splits into a single sparse matrix.")
+    if use_labs:
+        print("Combining labs features splits into a single sparse matrix.")
 
-    # Convert the encoded DataFrames to sparse matrices
-    train_encoded_labs_matrix = sp.csr_matrix(train_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
-    validation_encoded_labs_matrix = sp.csr_matrix(validation_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
-    test_encoded_labs_matrix = sp.csr_matrix(test_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
+        # Convert the encoded DataFrames to sparse matrices
+        train_encoded_labs_matrix = sp.csr_matrix(train_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
+        validation_encoded_labs_matrix = sp.csr_matrix(validation_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
+        test_encoded_labs_matrix = sp.csr_matrix(test_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
 
-    # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
-    encoded_data_labs = sp.vstack([train_encoded_labs_matrix, validation_encoded_labs_matrix, test_encoded_labs_matrix], format='csr')
+        # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
+        encoded_data_labs = sp.vstack([train_encoded_labs_matrix, validation_encoded_labs_matrix, test_encoded_labs_matrix], format='csr')
 
-    # Create a new index for encoded_df_labs
-    new_index = pd.RangeIndex(start=0, stop=encoded_data_labs.shape[0], step=1)
+        # Create a new index for encoded_df_labs
+        new_index = pd.RangeIndex(start=0, stop=encoded_data_labs.shape[0], step=1)
 
-    # Create a new DataFrame from the sparse matrix
-    encoded_df_labs = pd.DataFrame.sparse.from_spmatrix(encoded_data_labs, columns=labs_encoded_feature_names, index=new_index)
+        # Create a new DataFrame from the sparse matrix
+        encoded_df_labs = pd.DataFrame.sparse.from_spmatrix(encoded_data_labs, columns=labs_encoded_feature_names, index=new_index)
 
-    # Concatenate the encoded DataFrame with the original DataFrame
-    encoded_df_labs = pd.concat([df_labs.reset_index(drop=True)[['EMPI', 'Code', 'Result']], encoded_df_labs], axis=1)
+        # Concatenate the encoded DataFrame with the original DataFrame
+        encoded_df_labs = pd.concat([df_labs.reset_index(drop=True)[['EMPI', 'Code', 'Result']], encoded_df_labs], axis=1)
 
     print("Combining and updating encoded feature names.")
 
     dia_encoded_feature_names = [col for col in dia_encoded_feature_names if col not in infrequent_sklearn_columns]
     prc_encoded_feature_names = [col for col in prc_encoded_feature_names if col not in infrequent_sklearn_columns]
-    labs_encoded_feature_names = [col for col in labs_encoded_feature_names if col not in infrequent_sklearn_columns]
+    if use_labs:
+        labs_encoded_feature_names = [col for col in labs_encoded_feature_names if col not in infrequent_sklearn_columns]
 
-    encoded_feature_names = dia_encoded_feature_names + prc_encoded_feature_names + labs_encoded_feature_names
+    encoded_feature_names = dia_encoded_feature_names + prc_encoded_feature_names + (labs_encoded_feature_names if use_labs else [])
+
     with open('encoded_feature_names.json', 'w') as file:
         json.dump(encoded_feature_names, file)
 
@@ -343,10 +350,11 @@ def main(use_dask=False):
 
     print("Number of one-hot encoded diagnoses:", len(encoded_df_dia)) 
     print("Number of one-hot encoded procedures:", len(encoded_df_prc)) 
-    print("Number of one-hot encoded labs:", len(encoded_df_labs)) 
     print("Number of diagnoses prior to concatenatation:", len(df_dia)) 
-    print("Number of procedures prior to concatenatation:", len(df_prc)) 
-    print("Number of labs prior to concatenatation:", len(df_labs)) 
+    print("Number of procedures prior to concatenatation:", len(df_prc))
+    if use_labs:
+        print("Number of labs prior to concatenatation:", len(df_labs))
+        print("Number of one-hot encoded labs:", len(encoded_df_labs)) 
 
     # Reset the index of all DataFrames to ensure alignment
     df_dia = df_dia.reset_index(drop=True)
@@ -357,17 +365,20 @@ def main(use_dask=False):
     # Verify that the number of rows matches to ensure a logical one-to-one row correspondence across all DataFrames
     assert len(df_dia) == len(encoded_df_dia), "Diagnoses row counts do not match."
     assert len(df_prc) == len(encoded_df_prc), "Procedures row counts do not match."
-    assert len(df_labs) == len(encoded_df_labs), "Labs row counts do not match."
+    if use_labs:
+        assert len(df_labs) == len(encoded_df_labs), "Labs row counts do not match."
 
     # Check if the indexes are aligned
     assert df_dia.index.equals(encoded_df_dia.index), "Diagnoses indices are not aligned."
     assert df_prc.index.equals(encoded_df_prc.index), "Procedures indices are not aligned."
-    assert df_labs.index.equals(encoded_df_labs.index), "Labs indices are not aligned."
+    if use_labs:
+        assert df_labs.index.equals(encoded_df_labs.index), "Labs indices are not aligned."
 
     # Concatenate the DataFrames side-by-side
     df_dia = pd.concat([df_dia, encoded_df_dia], axis=1, sort=False)
     df_prc = pd.concat([df_prc, encoded_df_prc], axis=1, sort=False)
-    df_labs = pd.concat([df_labs, encoded_df_labs], axis=1, sort=False)
+    if use_labs:
+        df_labs = pd.concat([df_labs, encoded_df_labs], axis=1, sort=False)
 
     print("Number of diagnoses after concatenatation:", len(df_dia))
     # Verify row counts match expected transformations
@@ -376,26 +387,30 @@ def main(use_dask=False):
     print("Number of procedures after concatenatation:", len(df_prc))
     assert len(df_prc) == len(encoded_df_prc), f"Unexpected row count. Expected: {len(encoded_df_prc)}, Found: {len(df_prc)}"
 
-    print("Number of labs after concatenatation:", len(df_labs))
-    assert len(df_labs) == len(encoded_df_labs), f"Unexpected row count. Expected: {len(encoded_df_labs)}, Found: {len(df_labs)}"
+    if use_labs:
+        print("Number of labs after concatenatation:", len(df_labs))
+        assert len(df_labs) == len(encoded_df_labs), f"Unexpected row count. Expected: {len(encoded_df_labs)}, Found: {len(df_labs)}"
  
     print("Dropping the original categorical columns")
     df_dia.drop('CodeWithType', axis=1, inplace=True)
     df_prc.drop('CodeWithType', axis=1, inplace=True)
-    df_labs.drop('Code', axis=1, inplace=True)
+    if use_labs:
+        df_labs.drop('Code', axis=1, inplace=True)
 
     print("Starting aggregation by EMPI.")
 
     agg_dict_dia = {col: 'max' for col in dia_encoded_feature_names}
     agg_dict_prc = {col: 'max' for col in prc_encoded_feature_names}
-    agg_dict_labs = {col: 'max' for col in labs_encoded_feature_names}
+    if use_labs:
+        agg_dict_labs = {col: 'max' for col in labs_encoded_feature_names}
 
     if use_dask:
         print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
         print("Converting diagnoses to Dask DataFrame.")
         df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
         df_prc = dd.from_pandas(df_prc, npartitions=npartitions)
-        df_labs = dd.from_pandas(df_labs, npartitions=npartitions)
+        if use_labs:
+            df_labs = dd.from_pandas(df_labs, npartitions=npartitions)
 
         print("Perform the groupby and aggregation in parallel.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
@@ -411,11 +426,13 @@ def main(use_dask=False):
         print("Perform groupby and aggregation using pandas.")
         df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
         df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
-        df_labs_agg = df_labs.groupby('EMPI').agg(agg_dict_labs)
+        if use_labs:
+            df_labs_agg = df_labs.groupby('EMPI').agg(agg_dict_labs)
 
     print("Number of diagnoses before or on Index, after aggregation:", len(df_dia_agg))
     print("Number of procedures before or on Index, after aggregation:", len(df_prc_agg))
-    print("Number of labs before or on Index, after aggregation:", len(df_labs_agg))
+    if use_labs:
+        print("Number of labs before or on Index, after aggregation:", len(df_labs_agg))
 
     print("Merge outcomes splits with aggregated diagnoses.")
     merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
@@ -468,6 +485,7 @@ def main(use_dask=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--use_dask', action='store_true', help='Use Dask for processing')
+    parser.add_argument('--use_labs', action='store_true', help='Use labs data')
     args = parser.parse_args()
     if args.use_dask:
         # Adjust timeout settings
@@ -483,4 +501,4 @@ if __name__ == '__main__':
         npartitions = int(n_jobs*7) # number of partitions for Dask - Aim for partitions with around 100 MB of data each.
 
         client = Client(processes=True, memory_limit='8GB')  # Use processes instead of threads for potentially better CPU utilization
-    main(use_dask=args.use_dask)
+    main(use_dask=args.use_dask, use_labs=args.use_labs)

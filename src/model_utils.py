@@ -61,7 +61,10 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
             augmented_num = numerical_features
 
         # Forward pass through the model and calculate the loss
-        outputs = model(augmented_cat, augmented_num, device).squeeze()
+        if model_type == 'ResNet':
+            outputs = model(augmented_cat, augmented_num).squeeze()
+        else:
+            outputs = model(augmented_cat, augmented_num, device).squeeze()
         if use_mixup or use_cutmix:
             loss = lam * criterion(outputs, labels_a) + (1 - lam) * criterion(outputs, labels_b)
         else:
@@ -103,7 +106,7 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
     return average_loss, train_auroc
 
-def evaluate_model(model, test_loader):
+def evaluate_model(model, test_loader, device, model_type, binary_feature_indices, numerical_feature_indices):
     model.eval()
 
     true_labels = []
@@ -115,15 +118,27 @@ def evaluate_model(model, test_loader):
             categorical_features = features[:, binary_feature_indices].to(device)
             categorical_features = categorical_features.long()
             numerical_features = features[:, numerical_feature_indices].to(device)
-            labels = labels.squeeze()  # Adjust labels shape if necessary
             labels = labels.to(device)  # Move labels to the device
 
-            outputs = model(categorical_features, numerical_features, device)
+            if model_type == 'ResNet':
+                outputs = model(categorical_features, numerical_features)
+            else:
+                outputs = model(categorical_features, numerical_features, device)
             outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
 
+            # Convert labels and outputs to NumPy arrays
+            labels_np = labels.cpu().detach().numpy()
+            outputs_np = outputs.cpu().detach().numpy()
+
+            # Reshape labels and outputs if necessary
+            if labels_np.ndim == 0:
+                labels_np = np.array([labels_np])
+            if outputs_np.ndim == 0:
+                outputs_np = np.array([outputs_np])
+
             # Accumulate true labels and predictions for AUROC calculation
-            true_labels.extend(labels.cpu().squeeze().numpy())
-            predictions.extend(outputs.detach().cpu().squeeze().numpy())
+            true_labels.extend(labels_np)
+            predictions.extend(outputs_np)
 
     auroc = roc_auc_score(true_labels, predictions)
     print(f'Test AUROC: {auroc:.4f}')
@@ -144,7 +159,10 @@ def validate_model(model, validation_loader, criterion, device, model_type, bina
             categorical_features = features[:, binary_feature_indices].to(device).long()  # Categorical features (convert to long data type)
             labels = labels.to(device)  # Move labels to the device
 
-            outputs = model(categorical_features, numerical_features, device).squeeze()
+            if model_type == 'ResNet':
+                outputs = model(categorical_features, numerical_features).squeeze()
+            else:
+                outputs = model(categorical_features, numerical_features, device).squeeze()
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
@@ -223,7 +241,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu', quantized=False):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu', quantized=False, binary_feature_indices=None, numerical_feature_indices=None):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,

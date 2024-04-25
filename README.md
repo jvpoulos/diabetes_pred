@@ -50,11 +50,14 @@ GPUs: GeForce RTX 2080 (2)
 - `event_stream.py`
 	- Preprocess and generate "Event Stream" dataset. Make sure to set the appropriate file paths and configurations within the script. The script will generate the necessary data files, including the outcomes, diagnoses, procedures, and labs data.
 
-- `event_stream.py`
+- `build_task.py`
 	- Define the specific task you want to perform. In this case, the task is predicting A1cGreaterThan7.
 
 - `labelers.py`
 	- Define a labeler class specific to your task. In this case, you can use the existing A1cGreaterThan7Labeler class.
+
+- `pretrain.py`
+	- Pre-trains a model from scratch. Utilizes the `pretrain_NA.yaml` config file to pre-train the model on the task of predicting A1cGreaterThan7 using the A1cGreaterThan7Labeler from labelers.py.
 
 - `data_analysis.py`
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
@@ -129,11 +132,11 @@ $ python3 -m pip install "dask[complete]" --upgrade
 ```
 ## Run the code
 
-1. For static analyses, run Arguments: `--use_dask` 
+1. For static analyses, run (arguments: `--use_dask`)
 
 ```bash
 $ cd diabetes_pred 
-$ python3 src/data_loader.py --use_dask
+$ python3 src/data_loader.py
 ```
 
 For temporal analyses, run instead:
@@ -169,17 +172,22 @@ $ python3 src/hp_sweep.py #  perform the actual hyperparameter tuning by loading
 4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
 
 ```bash
-$ python3 src/train.py --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --use_batch_accumulation --clipping --max_norm 5 --batch_size 10 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --use_batch_accumulation --clipping --max_norm 5 --batch_size 8 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
 ```
 
 or 
 ```bash
-$ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 64 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization batchnorm --use_mixup --weight_decay 0.1 --d_hidden_factor 2
+$ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 8 --epochs 200 --early_stopping_patience 10 --use_batch_accumulation --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization layernorm --use_mixup --use_cutmix --weight_decay 0.1 --d_hidden_factor 4
+```
+For temporal analyses:
+
+```bash
+$ python3 src/pretrain.py +config_name=pretrain_NA
 ```
 
-or 
+or
 ```bash
-$ python3 src/train.py --model_type MLP  --dropout 0.2 --batch_size 32 --epochs 200 --early_stopping_patience 10 --clipping --max_norm 5 --scheduler 'cosine' -use_batch_accumulation --use_mixup --use_cutmix --weight_decay 0.1
+$ python3 src/pretrain.py +config_name=pretrain_CI
 ```
 
 5. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:
@@ -196,5 +204,11 @@ $ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --
 7. Evaluate trained model on test set. Arguments: `--dataset_type` `--model_type` `--model_path` `--batch_size` `--pruning` `--quantization`:
 
 ```bash
-$ python3 src/test.py  --dataset_type 'test' --model_type FTTransformer --dim 16 --depth 1 --heads 4 --ff_dropout 0.2 --attn_dropout 0.2 --model_path 'model_weights/FTTransformer_dim16_dep1_heads4_fdr0.2_adr0.2_bs10_lr0.001_wd0.01_ep26_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2
+$ python3 src/test.py  --dataset_type 'validation' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_bs8_lr0.001_wd0.01_ep10_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue.pth' --batch_size 1
+```
+
+or
+
+```bash
+$ python3 src/test.py  --dataset_type 'validation' --model_type ResNet --dim 128 --depth 3 --dropout 0 --model_path 'model_weights/ResNet_dep3_dr0.2_bs8_lr0.01_wd0.1_ep16_esFalse_esp10_rs42_cmp0.3_cml10_umtrue_ma0.2_mn5.0_uctrue_cltrue_batrue_schtrue_best.pth' --batch_size 1
 ```

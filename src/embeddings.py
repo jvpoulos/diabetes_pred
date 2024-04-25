@@ -96,7 +96,7 @@ def main(gpu, args):
     with open('columns_to_normalize.json', 'r') as file:
         columns_to_normalize = json.load(file)
 
-    excluded_columns = ["A1cGreaterThan7", "studyID"]
+    excluded_columns = ["A1cGreaterThan7"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     column_names_filtered = [col for col in column_names if col not in excluded_columns]

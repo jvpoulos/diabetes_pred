@@ -5,11 +5,23 @@ from torch.utils.data import Dataset, DataLoader
 from tab_transformer_pytorch import TabTransformer, FTTransformer
 import json
 import numpy as np
+import random
 import bitsandbytes as bnb
 from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-from model_utils import load_model, CustomDataset, evaluate_model
+from model_utils import load_model, CustomDataset, evaluate_model, worker_init_fn
 
 def main(args):
+
+    # Set random seed for reproducibility
+    random.seed(args.random_seed)
+    np.random.seed(args.random_seed)
+    torch.manual_seed(args.random_seed)
+    torch.cuda.manual_seed_all(args.random_seed)
+
+    # Set deterministic and benchmark flags for PyTorch
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     print("Loading dataset...")
     if args.dataset_type == 'test':
         features = torch.load('test_features.pt')
@@ -31,7 +43,7 @@ def main(args):
         columns_to_normalize = json.load(file)
 
     # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7", "studyID"]
+    excluded_columns = ["A1cGreaterThan7"]
     additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
 
     column_names_filtered = [col for col in column_names if col not in excluded_columns]
@@ -52,23 +64,32 @@ def main(args):
     x_categ = features[:, binary_feature_indices]
     x_cont = features[:, numerical_feature_indices]
 
-    dataset = CustomDataset(x_categ, x_cont, labels)
+    features = torch.cat((x_categ, x_cont), dim=1)
+    dataset = CustomDataset(features, labels)
 
-    data_loader = DataLoader(dataset, batch_size=args.batch_size // 2, shuffle=False, pin_memory=True, num_workers=4)
+    test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, worker_init_fn=worker_init_fn)
 
     # Initialize device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
-        model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
+        if model_type=='ResNet':
+            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        else:
+            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     elif args.quantization and os.path.exists(args.model_path + '_quantized.pth'):
         print("Loading quantized model...")
-        model = load_model(args.model_type, args.model_path + '_quantized.pth', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
+        if model_type=='ResNet':
+            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        else:
+            model = load_model(args.model_type, args.model_path + '_quantized.pth', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
     else:
         print("Loading model...")
-        model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
-
+        if model_type=='ResNet':
+            model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        else:
+            model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
         if args.pruning:
             print("Model pruning.")
             # Specify the pruning percentage
@@ -102,18 +123,22 @@ def main(args):
                 model_path = f"{model_path_base}{model_path_ext_pruned}{model_path_ext_quantized}{model_path_ext}"
                 torch.save(model.state_dict(), model_path)
 
-    if torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        model = nn.DataParallel(model)
+    # if torch.cuda.device_count() > 1:
+    #     print(f"Using {torch.cuda.device_count()} GPUs!")
+    #     model = nn.DataParallel(model)
 
     print("Model loaded.")
+
+    print("Evaluating model...")
+    evaluate_model(model, test_loader, device, args.model_type, binary_feature_indices, numerical_feature_indices)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate an attention network on the test set.')
     parser.add_argument('--dataset_type', type=str, choices=['test','validation'], required=True, help='Specify dataset type for evaluation')
+    parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['Transformer','TabTransformer', 'FTTransformer'],
-                        help='Type of the model to train: TabTransformer or FTTransformer')
+                        choices=['TabTransformer', 'FTTransformer','ResNet'],
+                        help='Type of model: TabTransformer or FTTransformer')
     parser.add_argument('--dim', type=int, default=None, help='Dimension of the model')
     parser.add_argument('--depth', type=int, help='Depth of the model.')
     parser.add_argument('--heads', type=int, help='Number of attention heads.')
@@ -126,7 +151,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training and validation')
     parser.add_argument('--model_path', type=str, default=None,
                         help='Oath to the saved model file to load.')
-        parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
+    parser.add_argument('--pruning', action='store_true', help='Enable model pruning')
     parser.add_argument('--quantization', action='store_true', help='Quantization with bit width 8')
     args = parser.parse_args()
 
