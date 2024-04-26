@@ -106,44 +106,38 @@ def train_model(model, train_loader, criterion, optimizer, device, model_type, u
 
     return average_loss, train_auroc
 
-def evaluate_model(model, test_loader, device, model_type, binary_feature_indices, numerical_feature_indices):
+def evaluate_model(model, test_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices):
     model.eval()
-
+    total_loss = 0
     true_labels = []
     predictions = []
 
     # Wrap the test loader with tqdm for a progress bar
     with torch.no_grad():
         for batch_idx, (features, labels) in tqdm(enumerate(test_loader), total=len(test_loader), desc="Testing"):
-            categorical_features = features[:, binary_feature_indices].to(device)
-            categorical_features = categorical_features.long()
-            numerical_features = features[:, numerical_feature_indices].to(device)
+            numerical_features = features[:, numerical_feature_indices].to(device)  # Numerical features
+            categorical_features = features[:, binary_feature_indices].to(device).long()  # Categorical features (convert to long data type)
             labels = labels.to(device)  # Move labels to the device
 
             if model_type == 'ResNet':
-                outputs = model(categorical_features, numerical_features)
+                outputs = model(categorical_features, numerical_features).squeeze()
             else:
-                outputs = model(categorical_features, numerical_features, device)
-            outputs = outputs.squeeze()  # Squeeze the output tensor to remove the singleton dimension
+                outputs = model(categorical_features, numerical_features, device).squeeze()
 
-            # Convert labels and outputs to NumPy arrays
-            labels_np = labels.cpu().detach().numpy()
-            outputs_np = outputs.cpu().detach().numpy()
-
-            # Reshape labels and outputs if necessary
-            if labels_np.ndim == 0:
-                labels_np = np.array([labels_np])
-            if outputs_np.ndim == 0:
-                outputs_np = np.array([outputs_np])
+            loss = criterion(outputs, labels)
+            total_loss += loss.item()
 
             # Accumulate true labels and predictions for AUROC calculation
-            true_labels.extend(labels_np)
-            predictions.extend(outputs_np)
+            true_labels.extend(labels.cpu().squeeze().numpy())
+            predictions.extend(outputs.detach().cpu().squeeze().numpy())
+
+    average_loss = total_loss / len(test_loader)
+    print(f'Average Test Loss: {average_loss:.4f}')
 
     auroc = roc_auc_score(true_labels, predictions)
     print(f'Test AUROC: {auroc:.4f}')
 
-    return auroc
+    return average_loss, auroc
 
 def validate_model(model, validation_loader, criterion, device, model_type, binary_feature_indices, numerical_feature_indices):
     model.eval()
@@ -241,7 +235,7 @@ class CustomDataset(Dataset):
         # Since features and labels are already tensors, no conversion is needed
         return self.features[idx], self.labels[idx]
 
-def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.1, normalization='layernorm', activation='relu', quantized=False, binary_feature_indices=None, numerical_feature_indices=None):
+def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropout, categories, num_continuous, device, dropout=0.2, d_hidden_factor=4, normalization='layernorm', activation='relu', quantized=False, binary_feature_indices=None, numerical_feature_indices=None):
     if model_type == 'TabTransformer':
         model = TabTransformer(
             categories=categories,
@@ -294,16 +288,28 @@ def load_model(model_type, model_path, dim, depth, heads, attn_dropout, ff_dropo
             model = bnb.load(model_path)
         else:
             # Load the model weights on the CPU first
-            state_dict = torch.load(model_path, map_location='cpu')
-            
-            # Remove unexpected keys from the state dictionary
-            unexpected_keys = ["module.epoch", "module.model_state_dict", "module.optimizer_state_dict", "module.scheduler_state_dict",
-                               "module.train_losses", "module.train_aurocs", "module.val_losses", "module.val_aurocs"]
-            for key in unexpected_keys:
-                if key in state_dict:
-                    del state_dict[key]
+            checkpoint = torch.load(model_path, map_location='cpu')
 
-            # Load the state dictionary while ignoring missing keys
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+
+            # Remove the "module." prefix from the keys if present
+            state_dict = {k.replace('module.', '') if k.startswith('module.') else k: v for k, v in state_dict.items()}
+
+            # Extract the relevant keys from the loaded state dictionary
+            model_state_dict = model.state_dict()
+            relevant_keys = model_state_dict.keys()
+            state_dict = {k: v for k, v in state_dict.items() if k in relevant_keys}
+
+            # Check if the extracted state dictionary matches the model's state dictionary
+            if set(state_dict.keys()) != set(model_state_dict.keys()):
+                print("Warning: The extracted state dictionary does not match the model's state dictionary.")
+                print("Extracted keys:", set(state_dict.keys()))
+                print("Model keys:", set(model_state_dict.keys()))
+
+            # Load the state dictionary
             model.load_state_dict(state_dict, strict=False)
 
     model.to(device)

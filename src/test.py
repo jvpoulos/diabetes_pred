@@ -24,14 +24,10 @@ def main(args):
 
     print("Loading dataset...")
     if args.dataset_type == 'test':
-        features = torch.load('test_features.pt')
-        labels = torch.load('test_labels.pt')
+        # Load the test dataset
+        test_dataset = torch.load('test_dataset.pt')
     elif args.dataset_type == 'validation':
-        features = torch.load('validation_features.pt')
-        labels = torch.load('validation_labels.pt')
-
-    # Load the test dataset
-    test_dataset = torch.load('test_dataset.pt')
+        validation_dataset = torch.load('validation_dataset.pt')
 
     with open('column_names.json', 'r') as file:
         column_names = json.load(file)
@@ -42,24 +38,32 @@ def main(args):
     with open('columns_to_normalize.json', 'r') as file:
         columns_to_normalize = json.load(file)
 
-    # Define excluded columns and additional binary variables
-    excluded_columns = ["A1cGreaterThan7"]
-    additional_binary_vars = ["Female", "Married", "GovIns", "English", "Veteran"]
+    with open('binary_feature_indices.json', 'r') as file:
+        binary_feature_indices = json.load(file)
 
-    column_names_filtered = [col for col in column_names if col not in excluded_columns]
-    encoded_feature_names_filtered = [name for name in encoded_feature_names if name in column_names_filtered]
-
-    binary_features_combined = list(set(encoded_feature_names_filtered + additional_binary_vars))
-
-    binary_feature_indices = [column_names_filtered.index(col) for col in binary_features_combined if col in column_names_filtered]
-
-    numerical_feature_indices = [column_names.index(col) for col in columns_to_normalize if col not in excluded_columns]
+    with open('numerical_feature_indices.json', 'r') as file:
+        numerical_feature_indices = json.load(file)
 
     categories = [2] * len(binary_feature_indices)
     print("Categories:", len(categories))
 
     num_continuous = len(numerical_feature_indices)
     print("Continuous:", num_continuous)
+
+    # Assuming dataset is a TensorDataset containing a single tensor with both features and labels
+    dataset_tensor = test_dataset.tensors[0] if args.dataset_type == 'test' else validation_dataset.tensors[0]
+
+    print(f"Original dataset tensor shape: {dataset_tensor.shape}")
+
+    # Extracting indices for features and label
+    excluded_columns_indices = [column_names.index('A1cGreaterThan7')]
+    feature_indices = [i for i in range(dataset_tensor.size(1)) if i not in excluded_columns_indices]
+
+    label_index = column_names.index('A1cGreaterThan7')
+
+    # Selecting features and labels
+    features = dataset_tensor[:, feature_indices]
+    labels = dataset_tensor[:, label_index]
 
     x_categ = features[:, binary_feature_indices]
     x_cont = features[:, numerical_feature_indices]
@@ -74,20 +78,20 @@ def main(args):
     
     if args.pruning and os.path.exists(args.model_path + '_pruned'):
         print("Loading pruned model...")
-        if model_type=='ResNet':
-            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        if args.model_type=='ResNet':
+            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices=binary_feature_indices, numerical_feature_indices=numerical_feature_indices)
         else:
             model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
     elif args.quantization and os.path.exists(args.model_path + '_quantized.pth'):
         print("Loading quantized model...")
-        if model_type=='ResNet':
-            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        if args.model_type=='ResNet':
+            model = load_model(args.model_type, args.model_path + '_pruned', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices=binary_feature_indices, numerical_feature_indices=numerical_feature_indices)
         else:
             model = load_model(args.model_type, args.model_path + '_quantized.pth', args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, quantized=True)
     else:
         print("Loading model...")
-        if model_type=='ResNet':
-            model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices, numerical_feature_indices)
+        if args.model_type == 'ResNet':
+            model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device, binary_feature_indices=binary_feature_indices, numerical_feature_indices=numerical_feature_indices)
         else:
             model = load_model(args.model_type, args.model_path, args.dim, args.depth, args.heads, args.attn_dropout, args.ff_dropout, categories, num_continuous, device)
         if args.pruning:
@@ -130,7 +134,8 @@ def main(args):
     print("Model loaded.")
 
     print("Evaluating model...")
-    evaluate_model(model, test_loader, device, args.model_type, binary_feature_indices, numerical_feature_indices)
+    criterion = nn.BCEWithLogitsLoss()
+    evaluate_model(model, test_loader, criterion, device, args.model_type, binary_feature_indices, numerical_feature_indices)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate an attention network on the test set.')
@@ -155,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument('--quantization', action='store_true', help='Quantization with bit width 8')
     args = parser.parse_args()
 
-    # Conditional defaults based on model_type
+    # Conditional defaults based on args.model_type
     if args.model_type == 'TabTransformer':
         if args.dim is None:
             args.dim = 32  # Default for TabTransformer

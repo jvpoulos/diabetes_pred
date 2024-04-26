@@ -38,16 +38,22 @@ def main(cfg: PretrainConfig) -> None:
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         OmegaConf.save(cfg_dict, cfg_fp)
 
-    # Load the EventStream Dataset
-    ESD = Dataset.load(DATA_DIR)
+    # Create an instance of the Dataset class
+    dataset = Dataset()
 
-    # Create the PytorchDatasetConfig instance with the loaded dataset
-    data_config = cfg.data_config
-    data_config.dataset = ESD
+    # Load the EventStream Dataset
+    dataset.load(DATA_DIR)
+
+    # Serialize the Dataset
+    dataset_path = Path("path/to/serialized_dataset.pkl")
+    dataset.save(dataset_path)
+
+    # Update the PretrainConfig with the serialized dataset path
+    cfg.dataset_path = dataset_path
 
     # Create the PytorchDataset instances with the PytorchDatasetConfig
-    train_pyd = PytorchDataset(data_config, split="train")
-    tuning_pyd = PytorchDataset(data_config, split="tuning")
+    train_pyd = PytorchDataset(cfg.data_config, split="train")
+    tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
 
     train(cfg, train_pyd, tuning_pyd)
 
