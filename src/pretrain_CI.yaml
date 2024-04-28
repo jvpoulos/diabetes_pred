@@ -66,6 +66,8 @@ final_validation_metrics_config:
         AUROC:
         - WEIGHTED
         ACCURACY: true
+        AUPRC:
+        - WEIGHTED
 trainer_config:
   accelerator: cpu
   devices: auto

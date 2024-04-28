@@ -64,30 +64,20 @@ final_validation_metrics_config:
   include_metrics:
     TUNING:
       LOSS_PARTS: true
-      TTE:
-        MSE: true
-        MSLE: true
       CLASSIFICATION:
         AUROC:
-          - WEIGHTED
+        - WEIGHTED
         ACCURACY: true
         AUPRC:
-          - WEIGHTED
-      REGRESSION:
-        MSE: true
+        - WEIGHTED
     HELD_OUT:
       LOSS_PARTS: true
-      TTE:
-        MSE: true
-        MSLE: true
       CLASSIFICATION:
         AUROC:
-          - WEIGHTED
+        - WEIGHTED
         ACCURACY: true
-      REGRESSION:
-        MSE: true
-        EXPLAINED_VARIANCE: true
-        MSLE: true
+        AUPRC:
+        - WEIGHTED
 
 trainer_config:
   accelerator: auto
