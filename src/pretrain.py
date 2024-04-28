@@ -91,6 +91,12 @@ def main(cfg: PretrainConfig) -> None:
     # Load the EventStream Dataset
     dataset.load(DATA_DIR)
 
+    # Preprocess the dataset
+    dataset.preprocess()
+
+    # Save the preprocessed dataset
+    dataset.save(save_path=dataset_path, do_overwrite=True)
+
     # Serialize the Dataset
     dataset_path = Path("data/serialized_dataset.pkl")
     print("config object:", dataset.config)
