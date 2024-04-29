@@ -48,25 +48,48 @@ def main(cfg: PretrainConfig) -> None:
 
     # Create an instance of the Dataset class
     dataset_config = DatasetConfig(
-        measurement_configs = {
+        measurement_configs={
             'A1cGreaterThan7': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'InitialA1c': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'Female': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'Married': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'GovIns': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'English': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
             ),
             'AgeYears': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,  # Changed from UNIVARIATE_REGRESSION
-            ),
-            'event_type': MeasurementConfig(
-                temporality=TemporalityType.FUNCTIONAL_TIME_DEPENDENT,
                 modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
-                functor=TimeOfDayFunctor(),
             ),
-            'CodeWithType_diagnoses': MeasurementConfig(
+            'SDI_score': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'Veteran': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'CodeWithType': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
-            'CodeWithType_procedures': MeasurementConfig(
+            'CodeWithType': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
@@ -83,25 +106,25 @@ def main(cfg: PretrainConfig) -> None:
         min_unique_numerical_observations=10,  # Treat values as categorical if fewer than 10 unique values
         outlier_detector_config=None,  # No outlier detection
         normalizer_config={'cls': 'StandardScaler'},
-        save_dir="./data",  # Save directory for the dataset
+        save_dir=DATA_DIR,  # Save directory for the dataset
         agg_by_time_scale="1h",  # Aggregate events into 1-hour buckets
     )
     dataset = Dataset(config=dataset_config)
 
-    # Load the EventStream Dataset
-    dataset.load(DATA_DIR)
+    # Update the save_dir attribute
+    dataset.config.save_dir = DATA_DIR
+
+    # Split the dataset into train, validation, and test sets
+    dataset.split(split_fracs=[0.7, 0.2, 0.1])
 
     # Preprocess the dataset
     dataset.preprocess()
-
-    # Save the preprocessed dataset
-    dataset.save(save_path=dataset_path, do_overwrite=True)
+    print("Finished preprocessing the dataset.")
 
     # Serialize the Dataset
-    dataset_path = Path("data/serialized_dataset.pkl")
-    print("config object:", dataset.config)
-    print("config attributes:", vars(dataset.config))
+    dataset_path = DATA_DIR / "serialized_dataset.pkl"
     dataset.save(save_path=dataset_path, do_overwrite=True)
+    print("Saved the preprocessed dataset.")
 
     # Update the PretrainConfig with the serialized dataset path
     cfg.dataset_path = dataset_path

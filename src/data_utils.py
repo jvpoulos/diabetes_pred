@@ -45,9 +45,6 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
         # Drop rows with missing/null values in Date or CodeWithType
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
 
-        # Subset the data to unique rows by 'EMPI', 'Date', and 'CodeWithType'
-        df = df.unique(subset=['EMPI', 'Date', 'CodeWithType'])
-
         if use_threshold:
             # Count the occurrences of each CodeWithType
             code_counts = df.select('CodeWithType').group_by('CodeWithType').count().sort('count', descending=True)
@@ -63,9 +60,6 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
     elif df_name == 'Labs':
         # Drop rows with missing/null values in Date, Code, or Result
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
-
-        # Group by EMPI, Date, and Code, and take the average of Result
-        df = df.group_by(['EMPI', 'Date', 'Code']).agg(pl.col('Result').mean().alias('Result'))
 
         if use_threshold:
             # Count the occurrences of each Code

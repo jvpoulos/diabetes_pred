@@ -28,12 +28,15 @@ from typing import Any
 import polars as pl
 
 from EventStream.data.config import (
-    DatasetConfig,
-    DatasetSchema,
     InputDFSchema,
     MeasurementConfig,
 )
+from EventStream.data.dataset_config import DatasetConfig
+
+from EventStream.data.dataset_schema import DatasetSchema
+
 from EventStream.data.dataset_polars import Dataset
+
 from EventStream.data.types import (
     DataModality,
     InputDataType,
@@ -67,11 +70,11 @@ def main(use_dask=False, use_labs=False):
     if use_labs:
         labs_file_path = 'data/Labs.txt'
 
-    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select)
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select)
+    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, use_threshold=False)
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=False)
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=False)
     if use_labs:
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=False)
 
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
@@ -88,7 +91,7 @@ def main(use_dask=False, use_labs=False):
             },
         },
         TemporalityType.DYNAMIC: {
-            DataModality.MULTI_LABEL_CLASSIFICATION: {  # Change from SINGLE_LABEL_CLASSIFICATION to MULTI_LABEL_CLASSIFICATION
+            DataModality.MULTI_LABEL_CLASSIFICATION: {
                 'diagnoses': ['CodeWithType'],
                 'procedures': ['CodeWithType']
             },
@@ -165,11 +168,11 @@ def main(use_dask=False, use_labs=False):
     static_sources['outcomes']['SDI_score'] = InputDataType.FLOAT
     static_sources['outcomes']['Veteran'] = InputDataType.CATEGORICAL
 
-    static_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
     static_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
+    static_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
 
     static_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
-    static_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
+    static_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
 
     # Build DatasetSchema
     connection_uri = None
