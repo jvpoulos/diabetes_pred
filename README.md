@@ -143,7 +143,7 @@ For temporal analyses, run instead:
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
 $ python3 src/event_stream.py # create data files
-$ python3 src/build_task.py # create the task-specific DataFrame (a1c_greater_than_7.parquet).
+$ python3 src/build_task.py # create the task-specific DataFrame (data/task_dfs/a1c_greater_than_7.parquet).
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset (static analyses):

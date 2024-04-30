@@ -374,23 +374,26 @@ def main(use_dask=False, use_labs=False):
     if not df_prc.is_empty():
         events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
 
-    if df_prc.is_empty():
-        raise ValueError("Procedures DataFrame is empty.")
-    else:
-        dynamic_input_schemas.append(
-            InputDFSchema(
-                input_df=df_prc,
-                subject_id_col=None,  # Set to None for dynamic input schemas
-                data_schema={
-                    'Date': InputDataType.TIMESTAMP
-                },
-                event_type='PROCEDURE',
-                ts_col='Date',
-                ts_format='%Y-%m-%d %H:%M:%S',
-                type=InputDFType.EVENT
-            )
+    dynamic_input_schemas.extend([
+        InputDFSchema(
+            input_df=df_dia,
+            subject_id_col=None,
+            data_schema={'CodeWithType': InputDataType.CATEGORICAL, 'Date': InputDataType.TIMESTAMP},
+            event_type='DIAGNOSIS',
+            ts_col='Date',
+            ts_format='%Y-%m-%d %H:%M:%S',
+            type=InputDFType.EVENT
+        ),
+        InputDFSchema(
+            input_df=df_prc,
+            subject_id_col=None,
+            data_schema={'CodeWithType': InputDataType.CATEGORICAL, 'Date': InputDataType.TIMESTAMP},
+            event_type='PROCEDURE',
+            ts_col='Date',
+            ts_format='%Y-%m-%d %H:%M:%S',
+            type=InputDFType.EVENT
         )
-        events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id'}))
+    ])
 
     if use_labs:
         if df_labs.is_empty():
@@ -448,12 +451,21 @@ def main(use_dask=False, use_labs=False):
 
     # Add the 'event_id' column to the 'events_df' DataFrame
     events_df = events_df.with_row_index(name='event_id')
+    event_types_idxmap = {et: i for i, et in enumerate(events_df.select('event_type').collect()['event_type'].unique().to_list(), start=1)}
 
     df_outcomes = df_outcomes.lazy().with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
         dynamic_measurements_df = df_labs.join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left').collect()
+
+    if not use_labs:
+        dynamic_measurements_df = pl.concat([
+            df_dia.select('EMPI', 'CodeWithType', 'Date'),
+            df_prc.select('EMPI', 'CodeWithType', 'Date')
+        ], how='diagonal')
+        dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
+        dynamic_measurements_df = dynamic_measurements_df.join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left')
 
     dataset_schema = DatasetSchema(
         static=InputDFSchema(
@@ -481,7 +493,11 @@ def main(use_dask=False, use_labs=False):
     do_overwrite = True
     DL_chunk_size = 20000
 
-    config = DatasetConfig(measurement_configs=measurement_configs, save_dir="./data")
+    config = DatasetConfig(
+        measurement_configs=measurement_configs,
+        save_dir="./data"
+    )
+    config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
 
     if config.save_dir is not None:
         dataset_schema_dict = dataset_schema.to_dict()
@@ -534,7 +550,7 @@ def main(use_dask=False, use_labs=False):
 
     print("Splitting dataset...")
 
-    ESD.split(split, split_names=["train", "tuning", "held_out"], seed=seed)
+    ESD.split(split_fracs=split, split_names=["train", "tuning", "held_out"], seed=seed)
     print("Dataset split.")
     print("Preprocessing dataset...")
     ESD.preprocess()

@@ -105,7 +105,7 @@ def main(cfg: PretrainConfig) -> None:
         min_true_float_frequency=0.9,  # Treat values as floats if at least 90% of observations are float
         min_unique_numerical_observations=10,  # Treat values as categorical if fewer than 10 unique values
         outlier_detector_config=None,  # No outlier detection
-        normalizer_config={'cls': 'StandardScaler'},
+        normalizer_config={'cls': 'standard_scaler'},
         save_dir=DATA_DIR,  # Save directory for the dataset
         agg_by_time_scale="1h",  # Aggregate events into 1-hour buckets
     )

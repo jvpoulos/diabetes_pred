@@ -589,49 +589,59 @@ IF OBJECT_ID('dbo.Labs', 'U') IS NOT NULL DROP TABLE dbo.Labs;
 
 ;WITH CombinedLabs AS (
     SELECT
-        e.empi,
+        e.EMPI,
         e.LabDate AS Date,
-        e.StudyLabCode AS Code,
-        e.NVal AS Result,
+        e.ComponentCommonNM AS Code,
+        CASE WHEN e.NVal IS NOT NULL THEN e.NVal ELSE e.TVal END AS Result,
         e.ValType,
         'EPIC' AS Source
-    FROM dbo.labsEPIC e
+    FROM dbo.labsEpic e
     WHERE e.LabDate BETWEEN @minDate AND @maxDate
-      AND e.NVal IS NOT NULL
+          AND (e.NVal IS NOT NULL OR e.TVal IS NOT NULL)
     UNION ALL
     SELECT
         l.empi,
         l.LabDate,
         l.GroupCD AS Code,
-        CAST(l.NVal AS FLOAT) AS Result,
+        CASE WHEN l.NVal IS NOT NULL THEN CAST(l.NVal AS FLOAT) ELSE l.TVal END AS Result,
         l.ValType,
         'LMR' AS Source
     FROM dbo.labsLMR l
     WHERE l.LabDate BETWEEN @minDate AND @maxDate
-      AND l.NVal IS NOT NULL
+          AND (l.NVal IS NOT NULL OR l.TVal IS NOT NULL)
     UNION ALL
     SELECT
         a.EMPI,
         a.LabDate,
         a.GroupCD AS Code,
-        CAST(a.nval AS FLOAT) AS Result,
+        CASE WHEN a.nval IS NOT NULL THEN CAST(a.nval AS FLOAT) ELSE a.tval END AS Result,
         a.valtype,
         'Archive' AS Source
     FROM dbo.labsLMRArchive a
     WHERE a.LabDate BETWEEN @minDate AND @maxDate
-      AND a.nval IS NOT NULL
+          AND (a.nval IS NOT NULL OR a.tval IS NOT NULL)
+),
+FilteredLabs AS (
+    SELECT
+        c.EMPI,
+        c.Date,
+        c.Code,
+        AVG(c.Result) AS AvgResult,
+        c.ValType,
+        c.Source
+    FROM CombinedLabs c
+    INNER JOIN #tmp_indexDate idx ON c.EMPI = idx.EMPI AND c.Date <= idx.IndexDate
+    GROUP BY c.EMPI, c.Date, c.Code, c.ValType, c.Source
 )
 SELECT
-    cl.EMPI,
-    cl.Date,
-    cl.Code,
-    cl.Result,
-    cl.ValType,
-    cl.Source
+    EMPI,
+    Date,
+    Code,
+    AvgResult AS Result,
+    ValType,
+    Source
 INTO dbo.Labs
-FROM CombinedLabs cl
-INNER JOIN #tmp_indexDate idx ON cl.EMPI = idx.EMPI AND cl.Date <= idx.IndexDate
-WHERE cl.Result IS NOT NULL;
+FROM FilteredLabs;
 
 SELECT TOP 100 * FROM dbo.Labs;
 

@@ -25,6 +25,49 @@ import dask.array as da
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 import polars as pl
+import pandas as pd
+import plotly.express as px
+
+def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
+    """
+    Creates a scatter plot with gender-based coloring and saves it to a file.
+
+    Parameters:
+    - data: DataFrame with the data to plot.
+    - x_col: Column name to use for the x-axis.
+    - y_col: Column name to use for the y-axis.
+    - gender_col: Column name for gender representation.
+    - title: Title for the plot.
+    - y_label: Label for the y-axis.
+    - x_range: Tuple specifying the range of the x-axis (min, max).
+    - file_path: Path to save the plot as a PNG file.
+    """
+    # Map gender to "Female" or "Male"
+    data[gender_col] = data[gender_col].map({1: "Female", 0: "Male"})
+
+    # Create the scatter plot
+    fig = px.scatter(data, x=x_col, y=y_col, color=gender_col,
+                     title=title,
+                     labels={x_col: 'Age', y_col: y_label, gender_col: 'Gender'},
+                     range_x=x_range)
+
+    # Save to file
+    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
+    
+def print_covariate_metadata(covariates, ESD):
+    """
+    Prints the measurement metadata for each covariate in the given list.
+    
+    Parameters:
+    - covariates: List of covariates to print metadata for.
+    - ESD: An object or module that contains the measurement configs.
+    """
+    for covariate in covariates:
+        if covariate in ESD.measurement_configs:
+            metadata = ESD.measurement_configs[covariate].measurement_metadata
+            print(f"{covariate} Metadata:", metadata)
+        else:
+            print(f"{covariate} is not available in measurement configs.")
 
 def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, threshold=None, use_threshold=False):
     df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
@@ -36,6 +79,10 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
 
     print(f"Preprocess {df_name.lower()} data")
     print(f"Original {df_name} DataFrame shape: {df.shape}")
+
+    # Convert 'A1cGreaterThan7' to a float
+    if df_name == 'Outcomes':
+        df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float64))
 
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         # Parse the 'Date' column as datetime
