@@ -65,6 +65,9 @@ GPUs: GeForce RTX 2080 (2)
 - `train_tune.py`
 	- Hyperparameter optimization for transfomer models using Ray Tune.
 
+- `hp_sweep.py`
+	- Perform hyperparameter tuning for the temporal analyses by loading the dataset, creating the model, and training it.
+
 - `train.py`
 	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
 

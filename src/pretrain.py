@@ -47,6 +47,7 @@ def main(cfg: PretrainConfig) -> None:
         OmegaConf.save(cfg_dict, cfg_fp)
 
     # Create an instance of the Dataset class
+
     dataset_config = DatasetConfig(
         measurement_configs={
             'A1cGreaterThan7': MeasurementConfig(
@@ -55,7 +56,7 @@ def main(cfg: PretrainConfig) -> None:
             ),
             'InitialA1c': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                modality=DataModality.UNIVARIATE_REGRESSION,
             ),
             'Female': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
@@ -75,11 +76,11 @@ def main(cfg: PretrainConfig) -> None:
             ),
             'AgeYears': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                modality=DataModality.UNIVARIATE_REGRESSION,
             ),
             'SDI_score': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                modality=DataModality.UNIVARIATE_REGRESSION,
             ),
             'Veteran': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
@@ -89,16 +90,12 @@ def main(cfg: PretrainConfig) -> None:
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
-            'CodeWithType': MeasurementConfig(
-                temporality=TemporalityType.DYNAMIC,
-                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
-            ),
-            'Result': MeasurementConfig(
-                temporality=TemporalityType.DYNAMIC,
-                modality=DataModality.MULTIVARIATE_REGRESSION,
-                values_column='Result_value',
-                modifiers={'numerical_only': True},
-            ),
+            # 'Result': MeasurementConfig(
+            #     temporality=TemporalityType.DYNAMIC,
+            #     modality=DataModality.MULTIVARIATE_REGRESSION,
+            #     values_column='Result',
+            #     modifiers={'numerical_only': True},
+            # ),
         },
         min_valid_column_observations=0.01,  # Drop columns observed in less than 1% of events
         min_valid_vocab_element_observations=0.01,  # Drop vocabulary elements observed less than 1% of the time

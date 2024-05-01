@@ -71,32 +71,47 @@ def main(use_dask=False, use_labs=False):
         labs_file_path = 'data/Labs.txt'
 
     df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, use_threshold=False)
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=False)
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=False)
-    if use_labs:
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=False)
+    df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
 
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
-    if df_dia.is_empty() and df_prc.is_empty() and df_labs.is_empty():
-        raise ValueError("All dynamic input DataFrames are empty.")
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=False)
+    df_dia = df_dia if isinstance(df_dia, pl.DataFrame) else pl.from_pandas(df_dia)
+
+    if df_dia.is_empty():
+        raise ValueError("Diagnoses DataFrame is empty.")
+
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=False)
+    df_prc = df_prc if isinstance(df_prc, pl.DataFrame) else pl.from_pandas(df_prc)
+
+    if df_prc.is_empty():
+        raise ValueError("Procedures DataFrame is empty.")
+
+    if use_labs:
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=False)
+        df_labs = df_labs if isinstance(df_labs, pl.DataFrame) else pl.from_pandas(df_labs)
+
+        if df_labs.is_empty():
+            raise ValueError("Labs DataFrame is empty.")
         
     # Build measurement_configs and track input schemas
     subject_id_col = 'EMPI'
     measurements_by_temporality = {
         TemporalityType.STATIC: {
-            DataModality.SINGLE_LABEL_CLASSIFICATION: {
-                'outcomes': ['A1cGreaterThan7'],
-            },
+            'outcomes': {
+                DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7'],
+            }
         },
         TemporalityType.DYNAMIC: {
-            DataModality.MULTI_LABEL_CLASSIFICATION: {
-                'diagnoses': ['CodeWithType'],
-                'procedures': ['CodeWithType']
+            'diagnoses': {
+                DataModality.MULTI_LABEL_CLASSIFICATION: ['CodeWithType'],
             },
-            DataModality.UNIVARIATE_REGRESSION: {
-                'labs': ['Result'] if use_labs else []
+            'procedures': {
+                DataModality.MULTI_LABEL_CLASSIFICATION: ['CodeWithType'],
+            },
+            'labs': {
+                DataModality.UNIVARIATE_REGRESSION: ['Result'] if use_labs else []
             }
         }
     }
@@ -105,16 +120,13 @@ def main(use_dask=False, use_labs=False):
     dynamic_sources = defaultdict(dict)
     measurement_configs = {}
 
-    for temporality, measurements_by_modality in measurements_by_temporality.items():
+    for temporality, sources_by_modality in measurements_by_temporality.items():
         schema_source = static_sources if temporality == TemporalityType.STATIC else dynamic_sources
-        for modality, measurements_by_source in measurements_by_modality.items():
-            if not measurements_by_source:
-                continue
-            for source_name, measurements in measurements_by_source.items():
+        for source_name, modalities_by_measurement in sources_by_modality.items():
+            for modality, measurements in modalities_by_measurement.items():
+                if not measurements:
+                    continue
                 data_schema = schema_source[source_name]
-
-                if isinstance(measurements, str):
-                    measurements = [measurements]
                 for m in measurements:
                     measurement_config_kwargs = {
                         "temporality": temporality,
@@ -256,6 +268,11 @@ def main(use_dask=False, use_labs=False):
         for col, dt in col_schema.items():
             if col in cols_covered:
                 continue
+
+            if col == 'SDI_score':
+                col_schema[col] = InputDataType.FLOAT
+            else:
+                col_schema[col] = dt
 
             for schema in ("start_data_schema", "end_data_schema", "data_schema"):
                 if schema in input_schema_kwargs:

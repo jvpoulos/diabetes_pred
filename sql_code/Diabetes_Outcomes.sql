@@ -71,7 +71,7 @@ FROM (
     SELECT l.EMPI, CAST(l.LabDate AS DATE) AS A1cDate, l.nval AS 'A1c'
     FROM labsEPIC l
     INNER JOIN #tmp_PrimCarePatients pc ON l.EMPI = pc.EMPI
-    WHERE l.StudyLabCode LIKE '%A1c%' 
+    WHERE l.ComponentCommonNM LIKE '%A1c%' 
           AND ISNUMERIC(l.nval) > 0 
           AND l.nval >= @min_A1c AND l.nval <= @max_A1c
     UNION ALL
@@ -89,7 +89,7 @@ FROM (
           AND ISNUMERIC(la.nval) > 0 
           AND la.nval >= @min_A1c AND la.nval <= @max_A1c
 ) AS e
-GROUP BY e.EMPI, e.A1cDate; --n=1922522
+GROUP BY e.EMPI, e.A1cDate; --n=1958797
 --SELECT TOP 50 PERCENT * FROM #CleanedA1cAverages
 
 --HbA1c ≥ 7.0% during the study period
@@ -117,7 +117,7 @@ SELECT DISTINCT
 FROM #CleanedA1cAverages ca
 JOIN dem_2_pcp_combined p ON p.EMPI = ca.EMPI
 WHERE ca.A1c >= @min_A1c_inclusion
-  AND ca.A1cDate > @minEntryDate; --n=977412
+  AND ca.A1cDate > @minEntryDate; --n=997739
 --SELECT TOP 50 PERCENT * FROM #tmp_A1cElevated;
 
 -- Determine Eligible Periods and Index Date
@@ -159,7 +159,7 @@ SELECT
 INTO #A1cMeasurements
 FROM #tmp_A1cElevated a
 WHERE a.nval >= @min_A1c_inclusion AND a.A1cDate BETWEEN @minDate AND @maxEntryDate;
-CREATE INDEX idx_a1c ON #A1cMeasurements(EMPI, A1cDate); --n=888967
+CREATE INDEX idx_a1c ON #A1cMeasurements(EMPI, A1cDate); --n=889223
 --SELECT * FROM #A1cMeasurements; 
 
 -- Determine IndexDate, A1cValue, and A1cDate
@@ -205,7 +205,7 @@ SELECT
 INTO #tmp_indexDate
 FROM #PatientConditions pc
 LEFT JOIN A1cData ad ON pc.EMPI = ad.EMPI AND ad.rn = 1
-WHERE ad.A1cValue IS NOT NULL --n=76460
+WHERE ad.A1cValue IS NOT NULL --n=76455
 
 -- Delete 431 rows where IndexDate exceeds @maxEntryDate or LastEncounterDate
 DELETE FROM #tmp_indexDate
@@ -214,11 +214,6 @@ WHERE
     (IndexDate > LastEncounterDate)
 
 SELECT * FROM #tmp_indexDate --n =76029
---WHERE A1cDate = LatestDate --n = 3925
---WHERE A1cDate > LatestDate --n = 44223
---WHERE A1cDate < LatestDate --n = 27881
---WHERE A1cDate < IndexDate --n = 27881
---WHERE A1cDate = IndexDate --n = 48148
 
 --------------------------------------------------------------------------------------------------------
 --Identify hyperglycemic periods
@@ -251,7 +246,7 @@ A1c12MonthsLater AS (
     INNER JOIN #CleanedA1cAverages ca ON i.EMPI = ca.EMPI
     WHERE ca.A1cDate > i.InitialA1cDate
     AND ca.A1cDate <= DATEADD(MONTH, 15, i.InitialA1cDate)
-) --n=65327
+) --n=65315
 
 -- Final selection into a temporary table
 SELECT
@@ -266,7 +261,7 @@ INTO #A1c12MonthsLaterTable
 FROM A1c12MonthsLater a
 WHERE a.rn = 1;
 
-SELECT * FROM #A1c12MonthsLaterTable; --n=65327
+SELECT * FROM #A1c12MonthsLaterTable; --n=65315
 --------------------------------------------------------------------------------------------------------
 --Additional exclusion criteria
 --------------------------------------------------------------------------------------------------------
@@ -284,7 +279,7 @@ SELECT
 INTO #tmp_Under75
 FROM #tmp_indexDate id
 INNER JOIN dem_2_pcp_combined d ON id.EMPI = d.EMPI
-WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=64614
+WHERE DATEDIFF(YEAR, d.Date_of_Birth, id.IndexDate) BETWEEN 18 AND 75; --n=65315
 
 --Exclude those with unknown gender
 IF OBJECT_ID('tempdb..#tmp_studyPop') IS NOT NULL
@@ -327,7 +322,7 @@ SET a.Gender = d.Gender_Legal_Sex,
                     END,
     a.Married = CASE WHEN d.Marital_status IN ('Married', 'Law', 'Partner') THEN 1 ELSE 0 END
 FROM #A1c12MonthsLaterTable a
-JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=65327
+JOIN dem_2_pcp_combined d ON a.EMPI = d.EMPI; --n=64608
 
 -- Update government insurance data
 UPDATE a
@@ -340,7 +335,7 @@ SET a.GovIns = CASE
 FROM #A1c12MonthsLaterTable a
 JOIN con_2_pcp_combined c ON a.EMPI = c.EMPI;
 
-SELECT * FROM #A1c12MonthsLaterTable; --n=65327
+SELECT * FROM #A1c12MonthsLaterTable; --n=65315
 
 --------------------------------------------------------------------------------------------------------
 --SDI based on zip code
@@ -362,7 +357,7 @@ SELECT
 INTO #CleanedZipCodes
 FROM con_2_pcp_combined
 WHERE EMPI IN (SELECT EMPI FROM #tmp_studyPop);
---SELECT * FROM #CleanedZipCodes; --n=64611
+--SELECT * FROM #CleanedZipCodes; --n=65315
 
 -- Map cleaned Zip codes to ZCTA5_FIPS and SDI score
 --1. The #CleanedZipCodes table is joined with the ZIPCodetoZCTACrosswalk2022UDS using the cleaned zip codes.
@@ -380,7 +375,7 @@ FROM #CleanedZipCodes cz
 INNER JOIN ZIPCodetoZCTACrosswalk2022UDS crosswalk ON cz.CleanedZip = crosswalk.ZIP_CODE
 INNER JOIN dbo.rgcsdi_2015_2019_zcta rz ON crosswalk.zcta = rz.ZCTA5_FIPS;
 
---SELECT * FROM #MappedZipToSDI; --n=62481
+--SELECT * FROM #MappedZipToSDI; --n=65315
 
 --------------------------------------------------------------------------------------------------------
 --Additional variables from Demographics table
@@ -394,7 +389,7 @@ SELECT
     CASE WHEN d.Is_a_veteran = 'Yes' THEN 1 ELSE 0 END AS Veteran
 INTO #VeteranStatus
 FROM dem_2_pcp_combined d
-INNER JOIN #tmp_studyPop sp ON d.EMPI = sp.EMPI; --n 64611
+INNER JOIN #tmp_studyPop sp ON d.EMPI = sp.EMPI; --n=64608
 --SELECT * FROM #VeteranStatus;
 
 --------------------------------------------------------------------------------------------------------
@@ -592,8 +587,9 @@ IF OBJECT_ID('dbo.Labs', 'U') IS NOT NULL DROP TABLE dbo.Labs;
         e.EMPI,
         e.LabDate AS Date,
         e.ComponentCommonNM AS Code,
-        CASE WHEN e.NVal IS NOT NULL THEN e.NVal ELSE e.TVal END AS Result,
-        e.ValType,
+        TRY_CAST(e.NVal AS FLOAT) AS Result_n, -- Safe conversion to float
+        e.TVal AS Result_t, -- Keep character results directly
+        CASE WHEN TRY_CAST(e.NVal AS FLOAT) IS NOT NULL THEN 'Numeric' ELSE 'String' END AS ValType, -- Determine ValType
         'EPIC' AS Source
     FROM dbo.labsEpic e
     WHERE e.LabDate BETWEEN @minDate AND @maxDate
@@ -603,8 +599,9 @@ IF OBJECT_ID('dbo.Labs', 'U') IS NOT NULL DROP TABLE dbo.Labs;
         l.empi,
         l.LabDate,
         l.GroupCD AS Code,
-        CASE WHEN l.NVal IS NOT NULL THEN CAST(l.NVal AS FLOAT) ELSE l.TVal END AS Result,
-        l.ValType,
+        TRY_CAST(l.NVal AS FLOAT) AS Result_n,
+        l.TVal AS Result_t,
+        CASE WHEN TRY_CAST(l.NVal AS FLOAT) IS NOT NULL THEN 'Numeric' ELSE 'String' END AS ValType,
         'LMR' AS Source
     FROM dbo.labsLMR l
     WHERE l.LabDate BETWEEN @minDate AND @maxDate
@@ -614,34 +611,49 @@ IF OBJECT_ID('dbo.Labs', 'U') IS NOT NULL DROP TABLE dbo.Labs;
         a.EMPI,
         a.LabDate,
         a.GroupCD AS Code,
-        CASE WHEN a.nval IS NOT NULL THEN CAST(a.nval AS FLOAT) ELSE a.tval END AS Result,
-        a.valtype,
+        TRY_CAST(a.nval AS FLOAT) AS Result_n,
+        a.tval AS Result_t,
+        CASE WHEN TRY_CAST(a.nval AS FLOAT) IS NOT NULL THEN 'Numeric' ELSE 'String' END AS ValType,
         'Archive' AS Source
     FROM dbo.labsLMRArchive a
     WHERE a.LabDate BETWEEN @minDate AND @maxDate
           AND (a.nval IS NOT NULL OR a.tval IS NOT NULL)
 ),
-FilteredLabs AS (
+LabsWithIndexDate AS (
     SELECT
-        c.EMPI,
-        c.Date,
-        c.Code,
-        AVG(c.Result) AS AvgResult,
-        c.ValType,
-        c.Source
-    FROM CombinedLabs c
-    INNER JOIN #tmp_indexDate idx ON c.EMPI = idx.EMPI AND c.Date <= idx.IndexDate
-    GROUP BY c.EMPI, c.Date, c.Code, c.ValType, c.Source
+        cl.EMPI,
+        cl.Date,
+        cl.Code,
+        cl.Result_n,
+        cl.Result_t,
+        cl.ValType,
+        cl.Source
+    FROM CombinedLabs cl
+    INNER JOIN #tmp_indexDate idx ON cl.EMPI = idx.EMPI AND cl.Date <= idx.IndexDate
+),
+LabsFiltered AS (
+    SELECT
+        l.EMPI,
+        l.Date,
+        l.Code,
+        l.Result_n,
+        CASE WHEN l.Result_n IS NULL THEN l.Result_t ELSE NULL END AS Result_t, -- Keep only one result per row
+        l.ValType,
+        l.Source
+    FROM LabsWithIndexDate l
+    WHERE l.EMPI IN (SELECT EMPI FROM DiabetesOutcomes) -- Restrict to EMPIs present in DiabetesOutcomes
 )
+
 SELECT
     EMPI,
     Date,
     Code,
-    AvgResult AS Result,
+    Result_n,
+    Result_t,
     ValType,
     Source
 INTO dbo.Labs
-FROM FilteredLabs;
+FROM LabsFiltered;
 
 SELECT TOP 100 * FROM dbo.Labs;
 
@@ -652,4 +664,4 @@ SELECT
 FROM dbo.Labs;
 
 --UniqueEMPIs   UniqueLabCodes
---74960 3145
+--54775 11430
