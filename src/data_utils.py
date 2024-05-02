@@ -69,7 +69,7 @@ def print_covariate_metadata(covariates, ESD):
         else:
             print(f"{covariate} is not available in measurement configs.")
 
-def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, threshold=None, use_threshold=False):
+def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, use_threshold=False):
     df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
 
     print(f"{df_name} DataFrame shape: {df.shape}")
@@ -98,7 +98,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
 
             # Calculate the threshold
             total_count = code_counts['count'].sum()
-            threshold = total_count * (0.01 if df_name == 'Diagnoses' else 0.01)
+            threshold = total_count * 0.01  # 1% threshold
 
             # Filter out CodeWithType that appear less than the threshold
             frequent_codes = code_counts.filter(pl.col('count') >= threshold)['CodeWithType'].to_list()
@@ -114,7 +114,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
 
             # Calculate the threshold
             total_count = code_counts['count'].sum()
-            threshold = total_count * 0.04
+            threshold = total_count * 0.01  # 1% threshold
 
             # Filter out Codes that appear less than the threshold
             frequent_codes = code_counts.filter(pl.col('count') >= threshold)['Code'].to_list()

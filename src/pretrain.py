@@ -86,15 +86,17 @@ def main(cfg: PretrainConfig) -> None:
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
             ),
-            'CodeWithType': MeasurementConfig(
+            'CodeWithType_diagnoses': MeasurementConfig(
+                temporality=TemporalityType.DYNAMIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+            ),
+            'CodeWithType_procedures': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
             # 'Result': MeasurementConfig(
             #     temporality=TemporalityType.DYNAMIC,
-            #     modality=DataModality.MULTIVARIATE_REGRESSION,
-            #     values_column='Result',
-            #     modifiers={'numerical_only': True},
+            #     modality=DataModality.UNIVARIATE_REGRESSION,
             # ),
         },
         min_valid_column_observations=0.01,  # Drop columns observed in less than 1% of events
@@ -105,7 +107,8 @@ def main(cfg: PretrainConfig) -> None:
         normalizer_config={'cls': 'standard_scaler'},
         save_dir=DATA_DIR,  # Save directory for the dataset
         agg_by_time_scale="1h",  # Aggregate events into 1-hour buckets
-    )
+        )   
+
     dataset = Dataset(config=dataset_config)
 
     # Update the save_dir attribute

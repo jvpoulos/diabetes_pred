@@ -29,10 +29,10 @@ config:
   input_dropout: 0.2
   resid_dropout: 0.2
   intermediate_size: 256
-  measurements_per_dep_graph_level:
-    - ["AgeYears"]
-    - ["event_type"]
-    - ["CodeWithType_diagnoses", "CodeWithType_procedures", ["Result", "numerical_only"]]
+measurements_per_dep_graph_level:
+  - ["AgeYears"]
+  - ["event_type"]
+  - ["CodeWithType_diagnoses", "CodeWithType_procedures", "Result"]
 optimization_config:
   init_lr: 0.0001
   end_lr_frac_of_init_lr: null

@@ -26,6 +26,7 @@ from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 from typing import Any
 import polars as pl
+from polars.datatypes import DataType
 
 from EventStream.data.config import (
     InputDFSchema,
@@ -70,26 +71,26 @@ def main(use_dask=False, use_labs=False):
     if use_labs:
         labs_file_path = 'data/Labs.txt'
 
-    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, use_threshold=False)
+    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, use_threshold=True)
     df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
 
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=False)
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=True)
     df_dia = df_dia if isinstance(df_dia, pl.DataFrame) else pl.from_pandas(df_dia)
 
     if df_dia.is_empty():
         raise ValueError("Diagnoses DataFrame is empty.")
 
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=False)
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=True)
     df_prc = df_prc if isinstance(df_prc, pl.DataFrame) else pl.from_pandas(df_prc)
 
     if df_prc.is_empty():
         raise ValueError("Procedures DataFrame is empty.")
 
     if use_labs:
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=False)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=True)
         df_labs = df_labs if isinstance(df_labs, pl.DataFrame) else pl.from_pandas(df_labs)
 
         if df_labs.is_empty():
@@ -390,7 +391,7 @@ def main(use_dask=False, use_labs=False):
 
     if not df_prc.is_empty():
         events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
-
+    
     dynamic_input_schemas.extend([
         InputDFSchema(
             input_df=df_dia,
@@ -413,68 +414,53 @@ def main(use_dask=False, use_labs=False):
     ])
 
     if use_labs:
-        if df_labs.is_empty():
-            raise ValueError("Labs DataFrame is empty.")
-        else:
-            dynamic_input_schemas.append(
-                InputDFSchema(
-                    input_df=df_labs,
-                    subject_id_col=None,  # Set to None for dynamic input schemas
-                    data_schema={
-                        'Code': InputDataType.CATEGORICAL,
-                        'Result': InputDataType.FLOAT,
-                        'Date': InputDataType.TIMESTAMP
-                    },
-                    event_type='LAB',
-                    ts_col='Date',
-                    ts_format='%Y-%m-%d %H:%M:%S',
-                    type=InputDFType.EVENT
-                )
+        dynamic_input_schemas.append(
+            InputDFSchema(
+                input_df=df_labs,
+                subject_id_col=None,
+                data_schema={
+                    'Code': InputDataType.CATEGORICAL,
+                    'Result': InputDataType.FLOAT,
+                    'timestamp': InputDataType.TIMESTAMP
+                },
+                event_type='LAB',
+                ts_col='timestamp',
+                ts_format='%Y-%m-%d %H:%M:%S',
+                type=InputDFType.EVENT
             )
+        )
 
-
-    if not df_dia.is_empty():
-        df_dia = df_dia.lazy().with_columns(pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S').alias('Date'))
-
-    if not df_prc.is_empty():
-        df_prc = df_prc.lazy().with_columns(pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S').alias('Date'))
-
+    # Collect the 'EMPI' column from the DataFrames
+    df_dia_empi = df_dia.lazy().select('EMPI').collect()['EMPI']
+    df_prc_empi = df_prc.lazy().select('EMPI').collect()['EMPI']
     if use_labs:
-        if not df_labs.is_empty():
-            df_labs = df_labs.lazy().with_columns(
-                pl.col('Date').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S%.f').alias('timestamp')
-            )
-
-    # Collect the 'EMPI' column from the lazy DataFrames
-    df_dia_empi = df_dia.select('EMPI').collect()['EMPI']
-    df_prc_empi = df_prc.select('EMPI').collect()['EMPI']
-    if use_labs:
-        df_labs_empi = df_labs.select('EMPI').collect()['EMPI']
+        df_labs_empi = df_labs.lazy().select('EMPI').collect()['EMPI']
 
     # Process events and measurements data in a streaming fashion
-    events_df = pl.concat(events_dfs, how='diagonal').lazy()
+    events_df = pl.concat(events_dfs, how='diagonal')
     events_df = events_df.with_columns(
         pl.col('subject_id').cast(pl.UInt32),
-        pl.col('Date').alias('timestamp'),  # Use the 'Date' column as 'timestamp'
+        pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
         pl.when(pl.col('subject_id').is_in(df_dia_empi))
-        .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
-        .when(pl.col('subject_id').is_in(df_prc_empi))
-        .then(pl.lit('PROCEDURE').cast(pl.Categorical))
+         .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
+         .when(pl.col('subject_id').is_in(df_prc_empi))
+         .then(pl.lit('PROCEDURE').cast(pl.Categorical))
+         .otherwise(pl.lit('UNKNOWN').cast(pl.Categorical))
+         .alias('event_type')
+    )
+
+    event_types_idxmap = {et: i for i, et in enumerate(events_df['event_type'].unique().to_list(), start=1)}
         # .when(pl.col('subject_id').is_in(df_labs_empi)) 
         # .then(pl.lit('LAB').cast(pl.Categorical))
-        .otherwise(pl.lit('UNKNOWN').cast(pl.Categorical))
-        .alias('event_type')
-    )
 
     # Add the 'event_id' column to the 'events_df' DataFrame
     events_df = events_df.with_row_index(name='event_id')
-    event_types_idxmap = {et: i for i, et in enumerate(events_df.select('event_type').collect()['event_type'].unique().to_list(), start=1)}
 
-    df_outcomes = df_outcomes.lazy().with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
+    df_outcomes = df_outcomes.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
-        dynamic_measurements_df = df_labs.join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left').collect()
+        dynamic_measurements_df = df_labs.lazy().join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left').collect()
 
     if not use_labs:
         dynamic_measurements_df = pl.concat([
@@ -486,7 +472,7 @@ def main(use_dask=False, use_labs=False):
 
     dataset_schema = DatasetSchema(
         static=InputDFSchema(
-            input_df=df_outcomes.collect(),  # Convert LazyFrame to DataFrame
+            input_df=df_outcomes,  # Use df_outcomes directly
             subject_id_col='subject_id',
             data_schema={
                 'InitialA1c': InputDataType.FLOAT,
@@ -522,45 +508,45 @@ def main(use_dask=False, use_labs=False):
             json.dump(dataset_schema_dict, f, default=json_serial)
 
     # Check if subjects_df is populated correctly
-    if df_outcomes.collect().is_empty():
+    if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
     else:
-        print(f"Outcomes DataFrame shape: {df_outcomes.collect().shape}")
-        print(f"Outcomes DataFrame columns: {df_outcomes.collect().columns}")
-        
+        print(f"Outcomes DataFrame shape: {df_outcomes.shape}")
+        print(f"Outcomes DataFrame columns: {df_outcomes.columns}")
+
     # Check if events_df is populated correctly
-    if events_df.collect().is_empty():
+    if events_df.is_empty():
         raise ValueError("Events DataFrame is empty.")
     else:
-        print(f"Events DataFrame shape: {events_df.collect().shape}")
-        print(f"Events DataFrame columns: {events_df.collect().columns}")
-        
-    # Check if dynamic_measurements_df is populated 
+        print(f"Events DataFrame shape: {events_df.shape}")
+        print(f"Events DataFrame columns: {events_df.columns}")
+
+    # Check if dynamic_measurements_df is populated
     if use_labs:
         if dynamic_measurements_df.is_empty():
             raise ValueError("Dynamic Measurements DataFrame is empty.")
         else:
             print(f"Dynamic Measurements DataFrame shape: {dynamic_measurements_df.shape}")
             print(f"Dynamic Measurements DataFrame columns: {dynamic_measurements_df.columns}")
-        
+
     # Check if subjects_df contains the "subject_id" column
-    if "subject_id" not in df_outcomes.collect().columns:
+    if "subject_id" not in df_outcomes.columns:
         raise ValueError("subjects_df does not contain the 'subject_id' column.")
 
     # Check if events_df contains the "subject_id" column
-    if "subject_id" not in events_df.collect().columns:
+    if "subject_id" not in events_df.columns:
         raise ValueError("events_df does not contain the 'subject_id' column.")
-        
+
     # Check if the subject IDs in events_df match the subject IDs in subjects_df
-    if not set(events_df.collect()["subject_id"]).issubset(set(df_outcomes.collect()["subject_id"])):
+    if not set(events_df["subject_id"]).issubset(set(df_outcomes["subject_id"])):
         raise ValueError("Subject IDs in events_df do not match the subject IDs in subjects_df.")
 
     print("Creating Dataset object...")
     ESD = Dataset(
         config=config,
-        subjects_df=df_outcomes.collect(),  # Convert LazyFrame to DataFrame
-        events_df=events_df.collect(),  # Convert LazyFrame to DataFrame
-        dynamic_measurements_df=dynamic_measurements_df if use_labs else None
+        subjects_df=df_outcomes,  # Use df_outcomes directly
+        events_df=events_df,  # Use events_df directly
+        dynamic_measurements_df=dynamic_measurements_df
     )
 
     print("Dataset object created.")
