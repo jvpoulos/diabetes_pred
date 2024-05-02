@@ -71,26 +71,26 @@ def main(use_dask=False, use_labs=False):
     if use_labs:
         labs_file_path = 'data/Labs.txt'
 
-    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, use_threshold=True)
+    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
 
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, use_threshold=True)
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(38960*0.01))
     df_dia = df_dia if isinstance(df_dia, pl.DataFrame) else pl.from_pandas(df_dia)
 
     if df_dia.is_empty():
         raise ValueError("Diagnoses DataFrame is empty.")
 
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, use_threshold=True)
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(38960*0.01))
     df_prc = df_prc if isinstance(df_prc, pl.DataFrame) else pl.from_pandas(df_prc)
 
     if df_prc.is_empty():
         raise ValueError("Procedures DataFrame is empty.")
 
     if use_labs:
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, use_threshold=True)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, min_frequency=ceil(38960*0.01))
         df_labs = df_labs if isinstance(df_labs, pl.DataFrame) else pl.from_pandas(df_labs)
 
         if df_labs.is_empty():
@@ -460,7 +460,15 @@ def main(use_dask=False, use_labs=False):
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
-        dynamic_measurements_df = df_labs.lazy().join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left').collect()
+        dynamic_measurements_df = df_labs.select('EMPI', 'Code', 'Result', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
+        dynamic_measurements_df = (
+            dynamic_measurements_df
+            .group_by(['subject_id', 'timestamp'])
+            .agg(pl.col('Result').count().alias('tmp_event_id'))
+            .drop('tmp_event_id')
+            .with_row_index('tmp_event_id')
+            .rename({'tmp_event_id': 'event_id'})
+        )
 
     if not use_labs:
         dynamic_measurements_df = pl.concat([
@@ -468,7 +476,31 @@ def main(use_dask=False, use_labs=False):
             df_prc.select('EMPI', 'CodeWithType', 'Date')
         ], how='diagonal')
         dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
-        dynamic_measurements_df = dynamic_measurements_df.join(events_df.select('timestamp', 'event_id'), on='timestamp', how='left')
+        dynamic_measurements_df = (
+            dynamic_measurements_df
+            .group_by(['subject_id', 'timestamp'])
+            .agg(pl.len().alias('tmp_event_id'))
+            .join(
+                dynamic_measurements_df.select('subject_id', 'timestamp', 'CodeWithType'),
+                on=['subject_id', 'timestamp'],
+                how='left'
+            )
+            .drop('tmp_event_id')
+            .with_row_index('tmp_event_id')
+            .rename({'tmp_event_id': 'event_id'})
+        )
+
+    print("Shape of dynamic_measurements_df before join:", dynamic_measurements_df.shape)
+    print("Sample rows of dynamic_measurements_df before join:")
+    print(dynamic_measurements_df.head(5))
+
+    print("Shape of events_df used for join:", events_df.select('timestamp', 'event_id').shape)
+    print("Sample rows of events_df used for join:")
+    print(events_df.select('timestamp', 'event_id').head(5))
+
+    print("Shape of dynamic_measurements_df after join:", dynamic_measurements_df.shape)
+    print("Sample rows of dynamic_measurements_df after join:")
+    print(dynamic_measurements_df.head(5))
 
     dataset_schema = DatasetSchema(
         static=InputDFSchema(

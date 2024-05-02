@@ -28,12 +28,13 @@ ESD.preprocess()
 # Inspect dataframes
 
 print(ESD.subjects_df.head(3))
-print(ESD.events_df.head(25))
-print(ESD.dynamic_measurements_df.head(25))
+print(ESD.events_df.head(3))
+print(ESD.dynamic_measurements_df.head(3))
 
 # vocabulary indices
-print(ESD.unified_vocabulary_idxmap)
-# inferred measurement metadata
+print("Unified Vocabulary:")
+for word, index in ESD.unified_vocabulary_idxmap.items():
+    print(f"{index}: {word}")
 
 static_covariates = ['InitialA1c', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
 
@@ -68,16 +69,19 @@ print(ESD.subjects_df.describe())
 print(ESD.events_df.describe())
 print(ESD.dynamic_measurements_df.describe())
 
-# Calculate the total number of subjects by age and gender
-total_subjects_by_age_gender = ESD.subjects_df.groupby(['AgeYears', 'Female']).agg(pl.count('subject_id').alias('total_count'))
+# Data preparation
+subjects_with_events = ESD.subjects_df.join(ESD.events_df.select('subject_id'), on='subject_id', how='inner').unique()
+
+# Calculate the total count of subjects with events
+total_count_subjects_with_events = subjects_with_events.select('subject_id').unique().count()
 
 # Calculate the number of subjects with events by age and gender
-subjects_with_events_by_age_gender = ESD.subjects_df.join(ESD.events_df, on='subject_id').select('AgeYears', 'Female').unique().groupby(['AgeYears', 'Female']).agg(pl.count().alias('count'))
+subjects_with_events_by_age_gender = subjects_with_events.group_by(['AgeYears', 'Female']).agg(pl.count('subject_id').alias('count'))
 
-# Join subjects_with_events_by_age_gender with total_subjects_by_age_gender
-subjects_with_events_by_age_gender = subjects_with_events_by_age_gender.join(total_subjects_by_age_gender, on=['AgeYears', 'Female'], how='left')
+# Join with the total count of subjects with events
+subjects_with_events_by_age_gender = subjects_with_events_by_age_gender.with_columns(pl.lit(total_count_subjects_with_events).alias('total_count'))
 
-# Calculate the percentage of subjects with an event relative to the total number of subjects per age and gender
+# Calculate the percentage relative to the total count of subjects with events
 subjects_with_events_by_age_gender = subjects_with_events_by_age_gender.with_columns((pl.col('count') / pl.col('total_count') * 100).alias('percentage'))
 
 # Join events with subjects and calculate events per subject at each age, by gender
@@ -96,9 +100,9 @@ merged_data_pl = pl.DataFrame(merged_data)
 
 # Create and save the plots
 save_plot(subjects_with_events_pd, 'AgeYears', 'percentage', 'Female', 
-          '% of Patients with an Event by Age and Gender', 'Percentage (%)', (15, 78),
+          '% of Patients with an Event by Age and Gender', 'Percentage', (13, 80),
           "data_summaries/subjects_with_events_by_age_gender.png")
 
 save_plot(merged_data, 'AgeYears', 'events_per_subject', 'Female', 
-          'Events per Subject at Age, by Gender', 'Events per Subject', (15, 78),
+          'Events per Subject at Age, by Gender', 'Events per Subject', (13, 80),
           "data_summaries/events_per_subject_at_age_by_gender.png")

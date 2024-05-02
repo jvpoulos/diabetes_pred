@@ -69,60 +69,65 @@ def print_covariate_metadata(covariates, ESD):
         else:
             print(f"{covariate} is not available in measurement configs.")
 
-def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, use_threshold=False):
+def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, min_frequency=None):
     df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
-
+    
     print(f"{df_name} DataFrame shape: {df.shape}")
-
+    
     df = pl.from_pandas(df)
+    
     print(f"{df_name} Polars DataFrame shape: {df.shape}")
-
+    
     print(f"Preprocess {df_name.lower()} data")
     print(f"Original {df_name} DataFrame shape: {df.shape}")
-
+    
     # Convert 'A1cGreaterThan7' to a float
     if df_name == 'Outcomes':
         df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float64))
-
+    
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         # Parse the 'Date' column as datetime
         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
-
+    
     if df_name in ['Diagnoses', 'Procedures']:
         # Drop rows with missing/null values in Date or CodeWithType
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
-
-        if use_threshold:
+        
+        if min_frequency is not None:
             # Count the occurrences of each CodeWithType
-            code_counts = df.select('CodeWithType').group_by('CodeWithType').count().sort('count', descending=True)
-
-            # Calculate the threshold
-            total_count = code_counts['count'].sum()
-            threshold = total_count * 0.01  # 1% threshold
-
-            # Filter out CodeWithType that appear less than the threshold
-            frequent_codes = code_counts.filter(pl.col('count') >= threshold)['CodeWithType'].to_list()
-            df = df.filter(pl.col('CodeWithType').is_in(frequent_codes))
-
+            code_counts = df.select('CodeWithType').groupby('CodeWithType').count().sort('count', descending=True)
+            
+            # Determine the infrequent categories based on min_frequency
+            if isinstance(min_frequency, int):
+                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['CodeWithType']
+            else:
+                min_count_threshold = min_frequency * len(df)
+                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['CodeWithType']
+            
+            # Filter out infrequent categories
+            df = df.filter(~pl.col('CodeWithType').is_in(infrequent_categories))
+    
     elif df_name == 'Labs':
         # Drop rows with missing/null values in Date, Code, or Result
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
-
-        if use_threshold:
-            # Count the occurrences of each Code
-            code_counts = df.select('Code').group_by('Code').count().sort('count', descending=True)
-
-            # Calculate the threshold
-            total_count = code_counts['count'].sum()
-            threshold = total_count * 0.01  # 1% threshold
-
-            # Filter out Codes that appear less than the threshold
-            frequent_codes = code_counts.filter(pl.col('count') >= threshold)['Code'].to_list()
-            df = df.filter(pl.col('Code').is_in(frequent_codes))
-
-    if use_threshold:
+        
+        if min_frequency is not None:
+            # Count the occurrences of each CodeWithType
+            code_counts = df.select('Code').groupby('Code').count().sort('count', descending=True)
+            
+            # Determine the infrequent categories based on min_frequency
+            if isinstance(min_frequency, int):
+                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['Code']
+            else:
+                min_count_threshold = min_frequency * len(df)
+                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['Code']
+            
+            # Filter out infrequent categories
+            df = df.filter(~pl.col('Code').is_in(infrequent_categories))
+    
+    if min_frequency is not None:
         print(f"Reduced {df_name} DataFrame shape: {df.shape}")
-
+    
     return df
 
 def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000, min_frequency=None):
