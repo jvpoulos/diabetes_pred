@@ -2,8 +2,11 @@
 do_overwrite: false
 seed: 42
 save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
-
+dataset_path: null
 config:
+  measurements_per_dep_graph_level:
+    - ["AgeYears", "SDI_score", "InitialA1c"]
+    - ["event_type"]
   _target_: EventStream.transformer.config.StructuredTransformerConfig
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: true
@@ -13,7 +16,7 @@ config:
   categorical_embedding_weight: 0.3
   numerical_embedding_weight: 0.5
   do_normalize_by_measurement_index: true
-  structured_event_processing_mode: nested_attention
+  structured_event_processing_mode: conditionally_independent
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   dep_graph_attention_types: ["global", "local"]
@@ -42,14 +45,22 @@ optimization_config:
   patience: 2
   gradient_accumulation: 2
   num_dataloader_workers: 1
+  lr_num_warmup_steps: 500
+  max_training_steps: 1500
 
 data_config:
   save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
+  dataset_path: null 
   max_seq_len: 128
   min_seq_len: 4
   train_subset_size: 0.95
   train_subset_seed: 1
-
+  task_df_name: null
+  seq_padding_side: right
+  do_include_subject_id: False
+  do_include_start_time_min: False
+  do_include_subsequence_indices: False
+  
 pretraining_metrics_config:
   do_skip_all_metrics: false
   do_validate_args: true
@@ -88,11 +99,14 @@ trainer_config:
 experiment_dir: "./experiments"
 
 wandb_logger_kwargs:
-  name: "jvpoulos"
   project: "diabetes_pred_temporal"
   team: null
   log_model: false
-  do_log_graph: false
 
+wandb_experiment_config_kwargs:
+  project: "diabetes_pred_temporal"
+  team: null
+  log_model: false
+  
 do_final_validation_on_metrics: true
 do_use_filesystem_sharing: false

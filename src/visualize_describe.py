@@ -27,9 +27,9 @@ ESD.preprocess()
 
 # Inspect dataframes
 
-print(ESD.subjects_df.head(3))
-print(ESD.events_df.head(3))
-print(ESD.dynamic_measurements_df.head(3))
+print(ESD.subjects_df.head(5))
+print(ESD.events_df.head(5))
+print(ESD.dynamic_measurements_df.head(5))
 
 # vocabulary indices
 print("Unified Vocabulary:")
@@ -103,6 +103,6 @@ save_plot(subjects_with_events_pd, 'AgeYears', 'percentage', 'Female',
           '% of Patients with an Event by Age and Gender', 'Percentage', (13, 80),
           "data_summaries/subjects_with_events_by_age_gender.png")
 
-save_plot(merged_data, 'AgeYears', 'events_per_subject', 'Female', 
+save_plot(merged_data, 'AgeYears', 'events_per_subject', 'Female',
           'Events per Subject at Age, by Gender', 'Events per Subject', (13, 80),
           "data_summaries/events_per_subject_at_age_by_gender.png")

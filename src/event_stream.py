@@ -449,9 +449,12 @@ def main(use_dask=False, use_labs=False):
          .alias('event_type')
     )
 
-    event_types_idxmap = {et: i for i, et in enumerate(events_df['event_type'].unique().to_list(), start=1)}
-        # .when(pl.col('subject_id').is_in(df_labs_empi)) 
-        # .then(pl.lit('LAB').cast(pl.Categorical))
+    unique_event_types = events_df['event_type'].unique().to_list()
+    event_types_idxmap = {
+        'DIAGNOSIS': 1,
+        'PROCEDURE': 2,
+        **(dict(enumerate((x for x in unique_event_types if x not in ['DIAGNOSIS', 'PROCEDURE']), start=3)))
+    }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
     events_df = events_df.with_row_index(name='event_id')

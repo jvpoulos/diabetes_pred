@@ -38,6 +38,7 @@ DATA_DIR = Path("data")
 def main(cfg: PretrainConfig) -> None:
     if isinstance(cfg, dict):
         cfg = OmegaConf.create(cfg)
+        cfg.data_config.save_dir = Path(cfg.data_config.save_dir)
 
     if os.environ.get("LOCAL_RANK", "0") == "0":
         cfg_fp = Path(cfg.save_dir) / "pretrain_config.yaml"
@@ -50,10 +51,6 @@ def main(cfg: PretrainConfig) -> None:
 
     dataset_config = DatasetConfig(
         measurement_configs={
-            'A1cGreaterThan7': MeasurementConfig(
-                temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
-            ),
             'InitialA1c': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.UNIVARIATE_REGRESSION,
@@ -86,11 +83,7 @@ def main(cfg: PretrainConfig) -> None:
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
             ),
-            'CodeWithType_diagnoses': MeasurementConfig(
-                temporality=TemporalityType.DYNAMIC,
-                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
-            ),
-            'CodeWithType_procedures': MeasurementConfig(
+            'CodeWithType': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
