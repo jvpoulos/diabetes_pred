@@ -30,6 +30,8 @@ from EventStream.data.time_dependent_functor import TimeOfDayFunctor
 
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
+from EventStream.data.data_embedding_layer import DataEmbeddingLayer
+
 torch.set_float32_matmul_precision("high")
 
 DATA_DIR = Path("data")
@@ -92,8 +94,8 @@ def main(cfg: PretrainConfig) -> None:
             #     modality=DataModality.UNIVARIATE_REGRESSION,
             # ),
         },
-        min_valid_column_observations=0.01,  # Drop columns observed in less than 1% of events
-        min_valid_vocab_element_observations=0.01,  # Drop vocabulary elements observed less than 1% of the time
+        min_valid_column_observations=None,  # Drop columns observed in less than n% of events
+        min_valid_vocab_element_observations=None,  # Drop vocabulary elements observed less than n% of the time
         min_true_float_frequency=0.9,  # Treat values as floats if at least 90% of observations are float
         min_unique_numerical_observations=10,  # Treat values as categorical if fewer than 10 unique values
         outlier_detector_config=None,  # No outlier detection
@@ -109,10 +111,31 @@ def main(cfg: PretrainConfig) -> None:
 
     # Split the dataset into train, validation, and test sets
     dataset.split(split_fracs=[0.7, 0.2, 0.1])
+    print("Dataset split.")
 
     # Preprocess the dataset
     dataset.preprocess()
     print("Finished preprocessing the dataset.")
+
+    # Inspect the vocabulary sizes
+    print("Vocabulary sizes:")
+    if hasattr(dataset, 'inferred_measurement_configs'):
+        vocab_sizes_by_measurement = {
+            measurement: len(config.vocabulary.vocabulary)
+            for measurement, config in dataset.inferred_measurement_configs.items()
+            if config.vocabulary is not None
+        }
+        print(vocab_sizes_by_measurement)
+    else:
+        print("Dataset does not have inferred_measurement_configs attribute.")
+
+    # Update the PretrainConfig with the appropriate n_total_embeddings value
+    max_vocab_size = max(vocab_sizes_by_measurement.values())
+    print("Max vocab size:", max_vocab_size)
+    # Update the PretrainConfig with the appropriate n_total_embeddings value
+    model_config = dict(cfg.config)
+    model_config["vocab_size"] = max_vocab_size
+    cfg.config = OmegaConf.create(model_config)
 
     # Serialize the Dataset
     dataset_path = DATA_DIR / "serialized_dataset.pkl"

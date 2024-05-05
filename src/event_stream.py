@@ -441,7 +441,9 @@ def main(use_dask=False, use_labs=False):
     events_df = events_df.with_columns(
         pl.col('subject_id').cast(pl.UInt32),
         pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
-        pl.when(pl.col('subject_id').is_in(df_dia_empi))
+        pl.when(pl.col('subject_id').is_in(df_dia_empi) & pl.col('subject_id').is_in(df_prc_empi))
+         .then(pl.lit('BOTH').cast(pl.Categorical))
+         .when(pl.col('subject_id').is_in(df_dia_empi))
          .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
          .when(pl.col('subject_id').is_in(df_prc_empi))
          .then(pl.lit('PROCEDURE').cast(pl.Categorical))
@@ -449,11 +451,21 @@ def main(use_dask=False, use_labs=False):
          .alias('event_type')
     )
 
-    unique_event_types = events_df['event_type'].unique().to_list()
+    # Update the event_types_idxmap
     event_types_idxmap = {
-        'DIAGNOSIS': 1,
-        'PROCEDURE': 2,
-        **(dict(enumerate((x for x in unique_event_types if x not in ['DIAGNOSIS', 'PROCEDURE']), start=3)))
+        'BOTH': 1,
+        'DIAGNOSIS': 2,
+        'PROCEDURE': 3
+    }
+
+    # Extract the numeric part of 'CodeWithType' and convert it to an integer
+    df_dia = df_dia.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
+    df_prc = df_prc.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
+
+    # Update the vocabulary sizes
+    vocab_sizes_by_measurement = {
+        'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
+        'CodeWithType': max(df_dia['CodeWithType_numeric'].max(), df_prc['CodeWithType_numeric'].max()) + 1
     }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
@@ -532,7 +544,16 @@ def main(use_dask=False, use_labs=False):
     DL_chunk_size = 20000
 
     config = DatasetConfig(
-        measurement_configs=measurement_configs,
+        measurement_configs={
+            'A1cGreaterThan7': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
+            'CodeWithType': MeasurementConfig(
+                temporality=TemporalityType.DYNAMIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+            ),
+        },
         save_dir="./data"
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object

@@ -56,6 +56,9 @@ data_config:
 pretraining_metrics_config:
   do_skip_all_metrics: false
   do_validate_args: true
+  do_log_only_loss:
+    tuning: false
+    held_out: false
   include_metrics:
     TRAIN:
       LOSS_PARTS: true
