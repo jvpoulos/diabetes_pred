@@ -30,8 +30,9 @@ optimization_config:
   end_lr_frac_of_init_lr: 0.01
   end_lr: null
   max_epochs: 10
-  batch_size: 32
-  validation_batch_size: 32
+  batch_size: 8
+  validation_batch_size: 8
+  gradient_accumulation: 4
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 2
   weight_decay: 0.2

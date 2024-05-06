@@ -38,13 +38,13 @@ optimization_config:
   end_lr_frac_of_init_lr: null
   end_lr: 0.00001
   max_epochs: 6
-  batch_size: 32
-  validation_batch_size: 32
+  batch_size: 8
+  validation_batch_size: 8
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 2
   weight_decay: 0.2
   patience: 2
-  gradient_accumulation: 2
+  gradient_accumulation: 4
   num_dataloader_workers: 1
   lr_num_warmup_steps: 500
   max_training_steps: 1500
