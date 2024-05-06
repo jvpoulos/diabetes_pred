@@ -7,9 +7,6 @@ seed: 42
 save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
-  measurements_per_dep_graph_level:
-    - ["AgeYears", "SDI_score", "InitialA1c"]
-    - ["event_type"]
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: false
   static_embedding_mode: sum_all
@@ -49,6 +46,7 @@ data_config:
   max_seq_len: 128
   min_seq_len: 4
   task_df_name: null
+  subsequence_sampling_strategy: to_end
   seq_padding_side: right
   do_include_subject_id: False
   do_include_start_time_min: False

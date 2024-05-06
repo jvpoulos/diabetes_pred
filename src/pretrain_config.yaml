@@ -5,7 +5,7 @@ save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
   measurements_per_dep_graph_level:
-    - ["AgeYears", "SDI_score", "InitialA1c"]
+    - ["Female", "Married", "GovIns"]
     - ["event_type"]
   _target_: EventStream.transformer.config.StructuredTransformerConfig
   do_use_learnable_sinusoidal_ATE: false
@@ -52,6 +52,7 @@ data_config:
   save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
   dataset_path: null 
   max_seq_len: 128
+  subsequence_sampling_strategy: to_end
   min_seq_len: 4
   train_subset_size: 0.95
   train_subset_seed: 1

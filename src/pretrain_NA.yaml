@@ -9,7 +9,7 @@ dataset_path: null
 config:
   structured_event_processing_mode: nested_attention
   measurements_per_dep_graph_level:
-    - ["AgeYears", "SDI_score", "InitialA1c"]
+    - ["Female", "Married", "GovIns"]
     - ["event_type"]
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: true
@@ -19,7 +19,6 @@ config:
   categorical_embedding_weight: 0.3
   numerical_embedding_weight: 0.5
   do_normalize_by_measurement_index: true
-  structured_event_processing_mode: nested_attention
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   dep_graph_attention_types: ["global", "local"]
@@ -54,6 +53,7 @@ data_config:
   dataset_path: null 
   max_seq_len: 128
   min_seq_len: 4
+  subsequence_sampling_strategy: to_end
   train_subset_size: 0.95
   train_subset_seed: 1
   task_df_name: null
