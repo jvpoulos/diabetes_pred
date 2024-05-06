@@ -168,8 +168,8 @@ $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
 
 For temporal analyses, run instead:
 ```bash
-$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # launch the Weights and Biases sweep and manage the sweep process
-$ python3 src/hp_sweep.py #  perform the actual hyperparameter tuning by loading the dataset, creating the model, and training it
+$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # create the sweep
+$ wandb agent <sweep_id> # Start the agent(s) to run the sweep
 ```
 
 4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
@@ -185,12 +185,9 @@ $ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --b
 For temporal analyses:
 
 ```bash
-$ python3 src/pretrain.py +config_name=pretrain_NA
-```
-
-or
-```bash
-$ python3 src/pretrain.py +config_name=pretrain_CI
+export CUDA_LAUNCH_BLOCKING=1
+export CUDA_VISIBLE_DEVICES=0,1
+$ python3 src/pretrain.py +config_name=pretrain_config
 ```
 
 5. (Optional) Extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:

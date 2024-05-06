@@ -16,11 +16,7 @@ config:
   structured_event_processing_mode: conditionally_independent
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
-  dep_graph_attention_types: ["global", "local"]
   seq_window_size: 4
-  dep_graph_window_size: 4
-  do_full_block_in_seq_attention: true
-  do_full_block_in_dep_graph_attention: false
   TTE_generation_layer_type: exponential
   head_dim: 8
   num_attention_heads: 4
@@ -33,15 +29,15 @@ optimization_config:
   init_lr: 0.0001
   end_lr_frac_of_init_lr: null
   end_lr: 0.00001
-  max_epochs: 6
-  batch_size: 8
-  validation_batch_size: 8
+  max_epochs: 2
+  batch_size: 32
+  validation_batch_size: 32
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 2
   weight_decay: 0.2
   patience: 2
-  gradient_accumulation: 4
-  num_dataloader_workers: 1
+  gradient_accumulation: 2
+  num_dataloader_workers: 13
   lr_num_warmup_steps: 500
   max_training_steps: 1500
 
@@ -62,12 +58,15 @@ data_config:
 pretraining_metrics_config:
   do_skip_all_metrics: false
   do_validate_args: true
-  do_log_only_loss:
-    tuning: false
-    held_out: false
   include_metrics:
     TRAIN:
-      LOSS_PARTS: true
+      CLASSIFICATION:
+        AUROC:
+        - WEIGHTED
+    TUNING:
+      CLASSIFICATION:
+        AUROC:
+        - WEIGHTED
 
 final_validation_metrics_config:
   n_auc_thresholds: 25
@@ -75,36 +74,30 @@ final_validation_metrics_config:
   do_validate_args: true
   include_metrics:
     TUNING:
-      LOSS_PARTS: true
       CLASSIFICATION:
         AUROC:
-        - WEIGHTED
-        ACCURACY: true
-        AUPRC:
         - WEIGHTED
     HELD_OUT:
-      LOSS_PARTS: true
       CLASSIFICATION:
         AUROC:
-        - WEIGHTED
-        ACCURACY: true
-        AUPRC:
         - WEIGHTED
 
 trainer_config:
-  accelerator: auto
-  devices: auto
-  detect_anomaly: true
+  accelerator: gpu
+  devices: 2
+  detect_anomaly: false
   log_every_n_steps: 1
 
 experiment_dir: "./experiments"
 
 wandb_logger_kwargs:
+  name: "jvpoulos"
   project: "diabetes_pred_temporal"
   team: null
   log_model: false
 
 wandb_experiment_config_kwargs:
+  entity: "jvpoulos"
   project: "diabetes_pred_temporal"
   team: null
   log_model: false

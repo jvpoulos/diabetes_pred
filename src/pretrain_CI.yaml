@@ -30,15 +30,15 @@ optimization_config:
   end_lr_frac_of_init_lr: 0.01
   end_lr: null
   max_epochs: 10
-  batch_size: 8
-  validation_batch_size: 8
-  gradient_accumulation: 4
+  batch_size: 32
+  validation_batch_size: 32
+  gradient_accumulation: 2
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 2
   weight_decay: 0.2
   patience: 3
   gradient_accumulation: null
-  num_dataloader_workers: 1
+  num_dataloader_workers: 0
   lr_num_warmup_steps: 500
   max_training_steps: 1500
 data_config:
@@ -55,9 +55,6 @@ data_config:
 pretraining_metrics_config:
   do_skip_all_metrics: false
   do_validate_args: true
-  do_log_only_loss:
-    tuning: false
-    held_out: false
   include_metrics:
     TRAIN:
       LOSS_PARTS: true
@@ -83,12 +80,13 @@ final_validation_metrics_config:
         AUPRC:
         - WEIGHTED
 trainer_config:
-  accelerator: cpu
-  devices: auto
-  detect_anomaly: true
+  accelerator: gpu
+  devices: 2
+  detect_anomaly: false
   log_every_n_steps: 1
 experiment_dir: "./experiments"
 wandb_logger_kwargs:
+  name: "jvpoulos"
   project: "diabetes_pred_temporal"
   team: null
   log_model: false
