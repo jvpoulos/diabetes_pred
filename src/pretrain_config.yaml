@@ -9,10 +9,12 @@ config:
   do_split_embeddings: true
   categorical_embedding_dim: 32
   numerical_embedding_dim: 16
-  static_embedding_mode: drop
+  static_embedding_mode: sum_all
   categorical_embedding_weight: 0.3
   numerical_embedding_weight: 0.5
-  do_normalize_by_measurement_index: true
+  static_embedding_weight: 0.4
+  dynamic_embedding_weight: 0.5
+  do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
@@ -60,13 +62,16 @@ pretraining_metrics_config:
   do_validate_args: true
   include_metrics:
     TRAIN:
+      LOSS_PARTS: true
       CLASSIFICATION:
         AUROC:
         - WEIGHTED
+        ACCURACY: true
     TUNING:
       CLASSIFICATION:
         AUROC:
         - WEIGHTED
+        ACCURACY: true
 
 final_validation_metrics_config:
   n_auc_thresholds: 25
@@ -74,13 +79,17 @@ final_validation_metrics_config:
   do_validate_args: true
   include_metrics:
     TUNING:
+      LOSS_PARTS: true
       CLASSIFICATION:
         AUROC:
         - WEIGHTED
+        ACCURACY: true
     HELD_OUT:
+      LOSS_PARTS: true
       CLASSIFICATION:
         AUROC:
         - WEIGHTED
+        ACCURACY: true
 
 trainer_config:
   accelerator: gpu
@@ -102,5 +111,5 @@ wandb_experiment_config_kwargs:
   team: null
   log_model: false
   
-do_final_validation_on_metrics: true
+do_final_validation_on_metrics: false
 do_use_filesystem_sharing: false

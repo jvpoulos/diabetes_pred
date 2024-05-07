@@ -8,10 +8,6 @@ from EventStream.data.dataset_config import DatasetConfig
 
 DATA_DIR = Path("data")
 
-# Create the task_dfs directory inside the data directory
-TASK_DF_DIR = DATA_DIR / "task_dfs"
-TASK_DF_DIR.mkdir(exist_ok=True, parents=True)
-
 # Load the Dataset object
 try:
     ESD = Dataset.load(DATA_DIR)
@@ -20,12 +16,20 @@ except AttributeError:
     config = DatasetConfig(save_dir=DATA_DIR)
     ESD = Dataset(config=config)
 
+# Create the task_dfs directory inside the data directory
+TASK_DF_DIR = DATA_DIR / "task_dfs"
+TASK_DF_DIR.mkdir(exist_ok=True, parents=True)
+
+# Create a single-label binary classification task for A1cGreaterThan7
 a1c_greater_than_7 = (
     ESD.subjects_df.lazy()
     .select(
         pl.col("subject_id"),
         pl.col("A1cGreaterThan7").cast(pl.Boolean),
     )
+    .with_columns(pl.col("A1cGreaterThan7").alias("label"))
+    .with_columns(pl.lit(None, dtype=pl.Datetime).alias("start_time"))
+    .with_columns(pl.lit(None, dtype=pl.Datetime).alias("end_time"))
 )
 
 a1c_greater_than_7.collect().write_parquet(TASK_DF_DIR / "a1c_greater_than_7.parquet")

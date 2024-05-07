@@ -53,6 +53,10 @@ def main(cfg: PretrainConfig) -> None:
 
     dataset_config = DatasetConfig(
         measurement_configs={
+            'A1cGreaterThan7': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            ),
             'InitialA1c': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.UNIVARIATE_REGRESSION,

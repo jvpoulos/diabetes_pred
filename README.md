@@ -57,7 +57,7 @@ GPUs: GeForce RTX 2080 (2)
 	- Define a labeler class specific to your task. In this case, you can use the existing A1cGreaterThan7Labeler class.
 
 - `pretrain.py`
-	- Pre-trains a model from scratch. Utilizes the `pretrain_NA.yaml` config file to pre-train the model on the task of predicting A1cGreaterThan7 using the A1cGreaterThan7Labeler from labelers.py.
+	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the task of predicting A1cGreaterThan7 using the A1cGreaterThan7Labeler from labelers.py.
 
 - `data_analysis.py`
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.

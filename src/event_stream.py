@@ -458,14 +458,14 @@ def main(use_dask=False, use_labs=False):
         'PROCEDURE': 3
     }
 
-    # Extract the numeric part of 'CodeWithType' and convert it to an integer
-    df_dia = df_dia.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
-    df_prc = df_prc.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
+    # # Extract the numeric part of 'CodeWithType' and convert it to an integer
+    # df_dia = df_dia.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
+    # df_prc = df_prc.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
 
     # Update the vocabulary sizes
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
-        'CodeWithType': max(df_dia['CodeWithType_numeric'].max(), df_prc['CodeWithType_numeric'].max()) + 1
+        'CodeWithType': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1
     }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
