@@ -25,11 +25,26 @@ ESD.split(split_fracs=[0.7, 0.2, 0.1])
 # Preprocess the dataset
 ESD.preprocess()
 
+# Checks
+assert 'A1cGreaterThan7' in ESD.subjects_df.columns, "A1cGreaterThan7 column is missing in subjects_df"
+assert pl.datatypes.Categorical(ESD.subjects_df['A1cGreaterThan7']), "A1cGreaterThan7 should be a categorical column"
+
+assert 'CodeWithType' in ESD.dynamic_measurements_df.columns, "CodeWithType column is missing in dynamic_measurements_df"
+
 # Inspect dataframes
 
-print(ESD.subjects_df.head(5))
-print(ESD.events_df.head(5))
-print(ESD.dynamic_measurements_df.head(5))
+print(ESD.subjects_df.head())
+print(ESD.events_df.head())
+print(ESD.dynamic_measurements_df.head())
+
+print("Unique event types in events_df:")
+print(ESD.events_df['event_type'].unique())
+
+print("Unique CodeWithType values in dynamic_measurements_df:")
+print(ESD.dynamic_measurements_df['CodeWithType'].unique())
+
+print("Unique values in A1cGreaterThan7:")
+print(ESD.subjects_df['A1cGreaterThan7'].unique())
 
 # vocabulary indices
 print("Unified Vocabulary:")

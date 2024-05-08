@@ -1,10 +1,13 @@
-# pretrain_config.yaml
 do_overwrite: false
 seed: 42
 save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
+  problem_type: single_label_classification
+  num_labels: 2
+  measurements_per_generative_mode:
+    SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7']
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: true
   categorical_embedding_dim: 32
@@ -64,13 +67,11 @@ pretraining_metrics_config:
     TRAIN:
       LOSS_PARTS: true
       CLASSIFICATION:
-        AUROC:
-        - WEIGHTED
+        AUROC: true
         ACCURACY: true
     TUNING:
       CLASSIFICATION:
-        AUROC:
-        - WEIGHTED
+        AUROC: true
         ACCURACY: true
 
 final_validation_metrics_config:
@@ -81,14 +82,12 @@ final_validation_metrics_config:
     TUNING:
       LOSS_PARTS: true
       CLASSIFICATION:
-        AUROC:
-        - WEIGHTED
+        AUROC: true
         ACCURACY: true
     HELD_OUT:
       LOSS_PARTS: true
       CLASSIFICATION:
-        AUROC:
-        - WEIGHTED
+        AUROC: true
         ACCURACY: true
 
 trainer_config:

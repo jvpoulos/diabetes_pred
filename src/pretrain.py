@@ -32,9 +32,29 @@ from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 from EventStream.data.data_embedding_layer import DataEmbeddingLayer
 
+from EventStream.transformer.config import StructuredTransformerConfig
+
 torch.set_float32_matmul_precision("high")
 
 DATA_DIR = Path("data")
+
+import copy
+
+def convert_config_to_python_object(config):
+    if isinstance(config, dict):
+        new_config = {}
+        for key, value in config.items():
+            new_config[key] = convert_config_to_python_object(value)
+        return new_config
+    elif isinstance(config, list):
+        new_config = []
+        for item in config:
+            new_config.append(convert_config_to_python_object(item))
+        return new_config
+    elif isinstance(config, str):
+        return config
+    else:
+        return copy.deepcopy(config)
 
 @hydra.main(version_base=None, config_path=".", config_name="pretrain_config")
 def main(cfg: PretrainConfig) -> None:
@@ -57,6 +77,10 @@ def main(cfg: PretrainConfig) -> None:
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
             ),
+             'event_type': MeasurementConfig(
+                temporality=TemporalityType.DYNAMIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+            ),       
             'InitialA1c': MeasurementConfig(
                 temporality=TemporalityType.STATIC,
                 modality=DataModality.UNIVARIATE_REGRESSION,
@@ -136,10 +160,24 @@ def main(cfg: PretrainConfig) -> None:
     # Update the PretrainConfig with the appropriate n_total_embeddings value
     max_vocab_size = max(vocab_sizes_by_measurement.values())
     print("Max vocab size:", max_vocab_size)
-    # Update the PretrainConfig with the appropriate n_total_embeddings value
+
+    # Update the config dictionary with the measurements_idxmap, measurements_per_generative_mode,
+    # vocab_offsets_by_measurement, and vocab_sizes_by_measurement from the dataset
     model_config = dict(cfg.config)
-    model_config["vocab_size"] = max_vocab_size
-    cfg.config = OmegaConf.create(model_config)
+    model_config["measurements_idxmap"] = dataset.vocabulary_config.measurements_idxmap
+    model_config["measurements_per_generative_mode"] = dataset.vocabulary_config.measurements_per_generative_mode
+    model_config["vocab_offsets_by_measurement"] = dataset.vocabulary_config.vocab_offsets_by_measurement
+    model_config["vocab_sizes_by_measurement"] = dataset.vocabulary_config.vocab_sizes_by_measurement
+    
+    # Convert seq_attention_types to a regular Python list
+    model_config["seq_attention_types"] = OmegaConf.to_container(model_config["seq_attention_types"], resolve=True)
+
+    model_config["measurements_per_generative_mode"] = {
+    DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7']
+    }
+    
+    # Create the StructuredTransformerConfig instance with the model_config
+    config = StructuredTransformerConfig(**model_config)
 
     # Serialize the Dataset
     dataset_path = DATA_DIR / "serialized_dataset.pkl"
@@ -152,6 +190,14 @@ def main(cfg: PretrainConfig) -> None:
     # Create the PytorchDataset instances with the PytorchDatasetConfig
     train_pyd = PytorchDataset(cfg.data_config, split="train")
     tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
+
+    # print("\nChecking measurements for DataModality.SINGLE_LABEL_CLASSIFICATION:")
+    # single_label_classification_measurements = config.measurements_for(DataModality.SINGLE_LABEL_CLASSIFICATION)
+
+    # Check the inferred_measurement_configs
+    print("\nInspecting inferred_measurement_configs:")
+    for measurement, config in dataset.inferred_measurement_configs.items():
+        print(f"Measurement: {measurement}, Modality: {config.modality}, Temporality: {config.temporality}")
 
     train(cfg, train_pyd, tuning_pyd)
 

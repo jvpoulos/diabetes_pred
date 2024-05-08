@@ -47,6 +47,7 @@ from EventStream.data.types import (
 from data_utils import read_file, preprocess_dataframe
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
+from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 from datetime import datetime
 
@@ -458,10 +459,6 @@ def main(use_dask=False, use_labs=False):
         'PROCEDURE': 3
     }
 
-    # # Extract the numeric part of 'CodeWithType' and convert it to an integer
-    # df_dia = df_dia.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
-    # df_prc = df_prc.with_columns(pl.col('CodeWithType').str.extract(r'^(\d+)', 1).alias('CodeWithType_numeric').cast(pl.Int64))
-
     # Update the vocabulary sizes
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
@@ -554,6 +551,7 @@ def main(use_dask=False, use_labs=False):
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
         },
+        normalizer_config={'cls': 'standard_scaler'},  # Use a dictionary with 'cls' key
         save_dir="./data"
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
