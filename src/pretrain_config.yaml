@@ -34,7 +34,7 @@ optimization_config:
   init_lr: 0.0001
   end_lr_frac_of_init_lr: null
   end_lr: 0.00001
-  max_epochs: 2
+  max_epochs: 100
   batch_size: 32
   validation_batch_size: 32
   lr_frac_warmup_steps: 0.05

@@ -191,9 +191,6 @@ def main(cfg: PretrainConfig) -> None:
     train_pyd = PytorchDataset(cfg.data_config, split="train")
     tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
 
-    # print("\nChecking measurements for DataModality.SINGLE_LABEL_CLASSIFICATION:")
-    # single_label_classification_measurements = config.measurements_for(DataModality.SINGLE_LABEL_CLASSIFICATION)
-
     # Check the inferred_measurement_configs
     print("\nInspecting inferred_measurement_configs:")
     for measurement, config in dataset.inferred_measurement_configs.items():
