@@ -36,40 +36,40 @@ GPUs: GeForce RTX 2080 (2)
 - `model_utils.py`
 	-  Set of utility functions and classes for training and validating machine learning models in PyTorch, including support for data loading, model training with techniques like MixUp and CutMix, model validation, and custom dataset handling.
 
-- `data_loader.py`
+- `data_loader.py` [static analyses]
 	- Loads and merges data from .txt files. Randomly splits the data into training (70%), validation (20%), and test (10%) sets. Preprocesses datasets, converts datasets into PyTorch Tensors, and saves them to file.
 
-- `event_stream.py`
+- `event_stream.py` [temporal analyses]
 	- Preprocess and generate "Event Stream" dataset. Make sure to set the appropriate file paths and configurations within the script. The script will generate the necessary data files, including the outcomes, diagnoses, procedures, and labs data.
 
-- `build_task.py`
+- `build_task.py` [temporal analyses]
 	- Defines the specific task --- this case, the task is binary classification on A1cGreaterThan7.
 
-- `pretrain.py`
+- `pretrain.py` [temporal analyses]
 	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the task of predicting A1cGreaterThan7 using the A1cGreaterThan7Labeler from labelers.py.
 
-- `data_analysis.py`
+- `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
-- `train_tune.py`
+- `train_tune.py` [static analyses]
 	- Hyperparameter optimization for transfomer models using Ray Tune.
 
-- `hp_sweep.py`
+- `hp_sweep.py` [temporal analyses]
 	- Perform hyperparameter tuning for the temporal analyses by loading the dataset, creating the model, and training it.
 
-- `train.py`
+- `train.py` [static analyses]
 	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
 
-- `attention.py`
+- `attention.py` [static analyses]
 	- Load a model, either a TabTransformer or an FTTransformer, and create HTML tables for attention maps.
 
-- `visualize_attn.py`
+- `visualize_attn.py` [static analyses]
 	- Load a Transformer model and visualize HTML representations for the head view, model view, and neuron view using the BertViz package.
 
-- `embeddings.py`
+- `embeddings.py` [static analyses]
 	- Loads a trained model, extracts embeddings for the validation dataset, and then applies the t-SNE algorithm to these embeddings.
 
-- `test.py`
+- `test.py` [static analyses]
 	- Loads the validated model from `train.py` and evaluates it on a test dataset.
 
 ## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
@@ -122,26 +122,13 @@ touch EventStreamGPT/EventStream/data/__init__.py
 ```bash
 $ python3 -m pip install "dask[complete]" --upgrade
 ```
-## Run the code
+## Static analyses
 
-1. For static analyses, run (arguments: `--use_dask`)
+1. Load data (arguments: `--use_dask`)
 
 ```bash
 $ cd diabetes_pred 
 $ python3 src/data_loader.py
-```
-
-For temporal analyses, run instead (arguments: `--use_dask`):
-```bash
-$ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
-$ python3 src/event_stream.py # create data files
-$ python3 src/build_task.py # create the task-specific DataFrame (data/task_dfs/a1c_greater_than_7.parquet).
-```
-
-Create the task-specific DataFrame (data/task_dfs/a1c_greater_than_7.parquet):
-
-```bash
-$ python3 src/build_task.py 
 ```
 
 2. (Optional) Create plots and summary statistics for the training dataset (static analyses):
@@ -150,21 +137,10 @@ $ python3 src/build_task.py
 $ python3 src/data_analysis.py
 ``` 
 
-For temporal analyses, run instead:
-```bash
-$ python3 src/visualize_describe.py
-```
-
 3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
 $ python3 src/train_tune.py --model_type FTTransformer --epochs 25
-```
-
-For temporal analyses, run instead:
-```bash
-$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # create the sweep
-$ wandb agent <sweep_id> # Start the agent(s) to run the sweep
 ```
 
 4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
@@ -177,26 +153,19 @@ or
 ```bash
 $ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 8 --epochs 200 --early_stopping_patience 10 --use_batch_accumulation --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization layernorm --use_mixup --use_cutmix --weight_decay 0.1 --d_hidden_factor 4
 ```
-For temporal analyses:
 
-```bash
-export CUDA_LAUNCH_BLOCKING=1
-export CUDA_VISIBLE_DEVICES=0,1
-$ python3 src/pretrain.py +config_name=pretrain_config
-```
-
-5. (Optional) For static analyses: extract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:
+5. (Optional) Etract attention weights from the last layer of the transformer and create attention map tables. Arguments: `--nproc_per_node` (required) `--dataset_type` `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--model_path` `--batch_size` `--pruning` `--quantization`:
 ```bash
 $ python3 src/attention.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_bs8_lr0.001_wd0.01_ep21_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 --pruning --quantization
 ```
 
-6. (Optional) For static analyses: extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning` `--quantization`:
+6. (Optional) Extract learned embeddings from the last layer of the transformer, apply the t-SNE algorithm to these embeddings, and then plot them. Arguments:`--dataset_type` `--model_type` `--dim` (optional)  `--attn_dropout` (optional) `--model_path` `--batch_size` `--pruning` `--quantization`:
 
 ```bash
 $ python3 src/embeddings.py --dataset_type 'train' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_bs8_lr0.001_wd0.01_ep21_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 2 -n 1 -g 2 -nr 0 --pruning --quantization
 ```
 
-7. For static analyses: evaluate trained model on test set. Arguments: `--dataset_type` `--model_type` `--model_path` `--batch_size` `--pruning` `--quantization`:
+7. Evaluate trained model on test set. Arguments: `--dataset_type` `--model_type` `--model_path` `--batch_size` `--pruning` `--quantization`:
 
 ```bash
 $ python3 src/test.py  --dataset_type 'test' --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --model_path 'model_weights/FTTransformer_dim128_dep3_heads16_fdr0.0_adr0.0_bs8_lr0.001_wd0.01_ep21_esFalse_esp10_rs42_cmp0.3_cml10_umfalse_ma0.2_mn5.0_ucfalse_cltrue_batrue_schtrue_best.pth' --batch_size 1
@@ -206,4 +175,38 @@ or
 
 ```bash
 $ python3 src/test.py  --dataset_type 'test' --model_type ResNet --dim 128 --depth 3 --dropout 0 --model_path 'model_weights/ResNet_dep3_dr0.2_bs8_lr0.01_wd0.1_ep16_esFalse_esp10_rs42_cmp0.3_cml10_umtrue_ma0.2_mn5.0_uctrue_cltrue_batrue_schtrue_best.pth' --batch_size 1
+```
+
+## Temporal analyses
+
+1. Create data files (arguments: `--use_dask`):
+```bash
+$ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
+$ python3 src/event_stream.py 
+```
+
+Create the task-specific DataFrame (data/task_dfs/a1c_greater_than_7.parquet):
+
+```bash
+$ python3 src/build_task.py 
+```
+
+2. (Optional) Create plots and summary statistics:
+
+```bash
+$ python3 src/visualize_describe.py
+```
+
+3. (Optional) Hyperparameter optimization for transfomer model:
+```bash
+$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # create the sweep
+$ wandb agent <sweep_id> # Start the agent(s) to run the sweep
+```
+
+4. Train and evaluate transformer:
+
+```bash
+export CUDA_LAUNCH_BLOCKING=1
+export CUDA_VISIBLE_DEVICES=0,1
+$ python3 src/pretrain.py +config_name=pretrain_config
 ```
