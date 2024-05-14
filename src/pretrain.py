@@ -145,6 +145,9 @@ def main(cfg: PretrainConfig) -> None:
     dataset.preprocess()
     print("Finished preprocessing the dataset.")
 
+    print("Vocabulary Config:")
+    print(dataset.vocabulary_config)
+
     # Inspect the vocabulary sizes
     print("Vocabulary sizes:")
     if hasattr(dataset, 'inferred_measurement_configs'):
@@ -165,7 +168,6 @@ def main(cfg: PretrainConfig) -> None:
     # vocab_offsets_by_measurement, and vocab_sizes_by_measurement from the dataset
     model_config = dict(cfg.config)
     model_config["measurements_idxmap"] = dataset.vocabulary_config.measurements_idxmap
-    model_config["measurements_per_generative_mode"] = dataset.vocabulary_config.measurements_per_generative_mode
     model_config["vocab_offsets_by_measurement"] = dataset.vocabulary_config.vocab_offsets_by_measurement
     model_config["vocab_sizes_by_measurement"] = dataset.vocabulary_config.vocab_sizes_by_measurement
     
@@ -179,6 +181,10 @@ def main(cfg: PretrainConfig) -> None:
     # Create the StructuredTransformerConfig instance with the model_config
     config = StructuredTransformerConfig(**model_config)
 
+    print("StructuredTransformerConfig Vocabulary Info:")
+    print("vocab_offsets_by_measurement:", config.vocab_offsets_by_measurement)
+    print("vocab_sizes_by_measurement:", config.vocab_sizes_by_measurement)
+
     # Serialize the Dataset
     dataset_path = DATA_DIR / "serialized_dataset.pkl"
     dataset.save(save_path=dataset_path, do_overwrite=True)
@@ -190,6 +196,8 @@ def main(cfg: PretrainConfig) -> None:
     # Create the PytorchDataset instances with the PytorchDatasetConfig
     train_pyd = PytorchDataset(cfg.data_config, split="train")
     tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
+
+    config.set_to_dataset(train_pyd)
 
     # Check the inferred_measurement_configs
     print("\nInspecting inferred_measurement_configs:")

@@ -25,9 +25,8 @@ a1c_greater_than_7 = (
     ESD.subjects_df.lazy()
     .select(
         pl.col("subject_id"),
-        pl.col("A1cGreaterThan7").cast(pl.Boolean),
+        pl.col("A1cGreaterThan7").cast(pl.Boolean).fill_null(False).alias("label"),
     )
-    .with_columns(pl.col("A1cGreaterThan7").alias("label"))
     .with_columns(pl.lit(None, dtype=pl.Datetime).alias("start_time"))
     .with_columns(pl.lit(None, dtype=pl.Datetime).alias("end_time"))
 )

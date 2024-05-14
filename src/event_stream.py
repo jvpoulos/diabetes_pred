@@ -75,6 +75,8 @@ def main(use_dask=False, use_labs=False):
     df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
 
+    print("Outcomes DataFrame columns:", df_outcomes.columns)
+
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
@@ -462,7 +464,15 @@ def main(use_dask=False, use_labs=False):
     # Update the vocabulary sizes
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
-        'CodeWithType': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1
+        'CodeWithType': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
+        'A1cGreaterThan7': 2  # Assuming binary classification for A1cGreaterThan7
+    }
+
+    # Update the vocabulary offsets
+    vocab_offsets_by_measurement = {
+        'event_type': 0,
+        'CodeWithType': len(event_types_idxmap) + 1,
+        'A1cGreaterThan7': len(event_types_idxmap) + 1 + max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1
     }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
@@ -470,9 +480,15 @@ def main(use_dask=False, use_labs=False):
 
     df_outcomes = df_outcomes.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
+    # ensure that the 'A1cGreaterThan7' column is present in the outcomes DataFrame
+    df_outcomes = df_outcomes.with_columns(
+        pl.col('A1cGreaterThan7').fill_null(False).cast(pl.Boolean).alias('A1cGreaterThan7')
+    )
+
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
         dynamic_measurements_df = df_labs.select('EMPI', 'Code', 'Result', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
         dynamic_measurements_df = (
             dynamic_measurements_df
             .group_by(['subject_id', 'timestamp'])
@@ -488,6 +504,7 @@ def main(use_dask=False, use_labs=False):
             df_prc.select('EMPI', 'CodeWithType', 'Date')
         ], how='diagonal')
         dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
         dynamic_measurements_df = (
             dynamic_measurements_df
             .group_by(['subject_id', 'timestamp'])
@@ -595,6 +612,10 @@ def main(use_dask=False, use_labs=False):
     if not set(events_df["subject_id"]).issubset(set(df_outcomes["subject_id"])):
         raise ValueError("Subject IDs in events_df do not match the subject IDs in subjects_df.")
 
+     # Check if the 'A1cGreaterThan7' column is present in df_outcomes
+    if 'A1cGreaterThan7' not in df_outcomes.columns:
+        raise ValueError("The 'A1cGreaterThan7' column is missing in the outcomes DataFrame.")
+
     print("Creating Dataset object...")
     ESD = Dataset(
         config=config,
@@ -613,6 +634,10 @@ def main(use_dask=False, use_labs=False):
     ESD.preprocess()
     print("Dataset preprocessed.")
 
+    # Assign the vocabulary sizes and offsets to the Dataset's vocabulary_config
+    ESD.vocabulary_config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
+    ESD.vocabulary_config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
+    
     print("Saving dataset...")
     ESD.save(do_overwrite=do_overwrite)
     print("Dataset saved.")
