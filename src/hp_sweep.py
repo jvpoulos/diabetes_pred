@@ -3,16 +3,16 @@ import hydra
 import wandb
 from omegaconf import DictConfig
 from EventStream.transformer.config import StructuredTransformerConfig
-from EventStream.transformer.lightning_modules.generative_modeling import train
+from EventStream.transformer.lightning_modules.fine_tuning import train
 from EventStream.data.dataset_polars import Dataset
 from EventStream.data.pytorch_dataset import PytorchDataset
 
 @hydra.main(
     version_base=None,
     config_path=".",
-    config_name="pretrain_config",
+    config_name="finetune_config",
 )
-def main(cfg: PretrainConfig):
+def main(cfg: FinetuneConfig):
     # Initialize wandb
     wandb.init(config=cfg, project="diabetes_pred_temporal")
     
@@ -32,7 +32,7 @@ def main(cfg: PretrainConfig):
     train_pyd = PytorchDataset(cfg.data_config, split="train")
     tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
 
-    # Train the model
+    # Fine-tune the model
     train(cfg, train_pyd, tuning_pyd)
 
 if __name__ == "__main__":

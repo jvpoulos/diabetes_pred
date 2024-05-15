@@ -46,7 +46,10 @@ GPUs: GeForce RTX 2080 (2)
 	- Defines the specific task --- this case, the task is binary classification on A1cGreaterThan7.
 
 - `pretrain.py` [temporal analyses]
-	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the task of predicting A1cGreaterThan7 using the A1cGreaterThan7Labeler from labelers.py.
+	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the binary classification task.
+
+- `finetune.py` [temporal analyses]
+	- Fine-tunes a saved model on the binary classification task.
 
 - `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
@@ -199,15 +202,21 @@ $ python3 src/visualize_describe.py
 
 3. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
-$ python3 ../EventStreamGPT/scripts/launch_from_scratch_supervised_wandb_hp_sweep.py # create the sweep. This will create a sweep on Weights and Biases with the specified hyperparameter ranges.
+$ python3 ../EventStreamGPT/scripts/launch_finetuning_wandb_hp_sweep.py # create the sweep. This will create a sweep on Weights and Biases with the specified hyperparameter ranges.
 $ wandb agent <sweep_id> # Start the agent(s) to run the sweep. Replace <sweep_id> with the sweep ID obtained from the previous step.
 ```
 The agent(s) will run the `hp_sweep.py` script with different hyperparameter configurations sampled from the ranges specified in the sweep configuration file. The training results and metrics will be logged to Weights and Biases for each run.
 
-4. Train and evaluate transformer:
+4. Pretrain the transformer:
 
 ```bash
 export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=0,1
 $ python3 src/pretrain.py +config_name=pretrain_config
+```
+
+Fine-tune the pretrained trainsformer:
+
+```bash
+$ python3 src/finetune.py experiment_dir="./experiments" load_from_model_dir="./experiments/pretrain/2024-05-14_16-08-59/pretrained_weights" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 data_config_path="./experiments/pretrain/2024-05-14_16-08-59/data_config.json"
 ```
