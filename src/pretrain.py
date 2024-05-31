@@ -39,6 +39,8 @@ torch.set_float32_matmul_precision("high")
 DATA_DIR = Path("data")
 
 import copy
+import json
+import polars as pl
 
 def convert_config_to_python_object(config):
     if isinstance(config, dict):
@@ -129,10 +131,42 @@ def main(cfg: PretrainConfig) -> None:
         outlier_detector_config=None,  # No outlier detection
         normalizer_config={'cls': 'standard_scaler'},
         save_dir=DATA_DIR,  # Save directory for the dataset
-        agg_by_time_scale="1h",  # Aggregate events into 1-hour buckets
+        agg_by_time_scale=None,
         )   
 
     dataset = Dataset(config=dataset_config)
+
+    # Update the save_dir attribute
+    dataset.config.save_dir = Path(dataset.config.save_dir)
+
+    # Ensure that the 'A1cGreaterThan7' column is present in the outcomes DataFrame and has the correct data type
+
+    if 'A1cGreaterThan7' not in dataset.subjects_df.columns:
+        raise ValueError("The 'A1cGreaterThan7' column is missing in the outcomes DataFrame.")
+
+    dataset.subjects_df = dataset.subjects_df.with_columns(
+        pl.col('A1cGreaterThan7')
+        .cast(pl.Utf8)  # Cast to string first
+        .map_dict({'true': True, 'false': False})  # Map string values to boolean
+        .fill_null(False)  # Fill null values with False
+        .cast(pl.Boolean)  # Cast to boolean
+        .alias('A1cGreaterThan7')
+    )
+
+    # Ensure that the 'subject_id' column in df_outcomes is properly populated, has the correct data type, and does not contain null values
+    dataset.subjects_df = dataset.subjects_df.with_columns(
+        pl.col('EMPI').cast(pl.UInt32).fill_null(0).alias('subject_id')
+    )
+
+    # Ensure that the 'subject_id' column in events_df is properly populated, has the correct data type, and does not contain null values
+    dataset.events_df = dataset.events_df.with_columns(
+        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
+    )
+
+    # Ensure that the 'subject_id' column in dynamic_measurements_df is properly populated, has the correct data type, and does not contain null values
+    dataset.dynamic_measurements_df = dataset.dynamic_measurements_df.with_columns(
+        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
+    )
 
     # Update the save_dir attribute
     dataset.config.save_dir = DATA_DIR
@@ -174,10 +208,12 @@ def main(cfg: PretrainConfig) -> None:
     # Convert seq_attention_types to a regular Python list
     model_config["seq_attention_types"] = OmegaConf.to_container(model_config["seq_attention_types"], resolve=True)
 
+    # Update the PretrainConfig with the appropriate measurements_per_generative_mode
     model_config["measurements_per_generative_mode"] = {
-    DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7']
+        DataModality.MULTIVARIATE_REGRESSION: ['next_event_time'],  
+        DataModality.MULTI_LABEL_CLASSIFICATION: ['next_event_measurements']
     }
-    
+            
     # Create the StructuredTransformerConfig instance with the model_config
     config = StructuredTransformerConfig(**model_config)
 
@@ -189,6 +225,11 @@ def main(cfg: PretrainConfig) -> None:
     dataset_path = DATA_DIR / "serialized_dataset.pkl"
     dataset.save(save_path=dataset_path, do_overwrite=True)
     print("Saved the preprocessed dataset.")
+
+    # Cache the deep learning representation
+    print("Caching deep learning representation...")
+    dataset.cache_deep_learning_representation(do_overwrite=True)
+    print("Deep learning representation cached.")
 
     # Update the PretrainConfig with the serialized dataset path
     cfg.dataset_path = dataset_path

@@ -49,7 +49,11 @@ from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, 
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+import os
+import tempfile
+import shutil
 
 def json_serial(obj):
     if isinstance(obj, datetime):
@@ -64,6 +68,16 @@ def add_to_container(key: str, val: Any, cont: dict[str, Any]):
             raise ValueError(f"{key} is specified twice ({val} v. {cont[key]})")
     else:
         cont[key] = val
+
+# Create a function to generate time intervals
+def generate_time_intervals(start_date, end_date, interval_days):
+    current_date = start_date
+    intervals = []
+    while current_date < end_date:
+        next_date = current_date + timedelta(days=interval_days)
+        intervals.append((current_date, next_date))
+        current_date = next_date
+    return intervals
 
 def main(use_dask=False, use_labs=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
@@ -104,7 +118,9 @@ def main(use_dask=False, use_labs=False):
     measurements_by_temporality = {
         TemporalityType.STATIC: {
             'outcomes': {
-                DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7'],
+                # DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7'],
+                DataModality.UNIVARIATE_REGRESSION: ['InitialA1c', 'SDI_score'],
+                DataModality.SINGLE_LABEL_CLASSIFICATION: ['Female', 'Married', 'GovIns', 'English', 'AgeYears', 'Veteran']
             }
         },
         TemporalityType.DYNAMIC: {
@@ -114,12 +130,8 @@ def main(use_dask=False, use_labs=False):
             'procedures': {
                 DataModality.MULTI_LABEL_CLASSIFICATION: ['CodeWithType'],
             },
-            'labs': {
-                DataModality.UNIVARIATE_REGRESSION: ['Result'] if use_labs else []
-            }
         }
     }
-
     static_sources = defaultdict(dict)
     dynamic_sources = defaultdict(dict)
     measurement_configs = {}
@@ -175,7 +187,6 @@ def main(use_dask=False, use_labs=False):
     # Add the columns to the 'col_schema' dictionary for the 'outcomes' input schema
     static_sources['outcomes']['EMPI'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['InitialA1c'] = InputDataType.FLOAT
-    static_sources['outcomes']['A1cGreaterThan7'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['Female'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['Married'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['GovIns'] = InputDataType.CATEGORICAL
@@ -308,7 +319,6 @@ def main(use_dask=False, use_labs=False):
             'columns': {
                 'EMPI': ('EMPI', InputDataType.CATEGORICAL),
                 'InitialA1c': ('InitialA1c', InputDataType.FLOAT),
-                'A1cGreaterThan7': ('A1cGreaterThan7', InputDataType.BOOLEAN),
                 'Female': ('Female', InputDataType.CATEGORICAL),
                 'Married': ('Married', InputDataType.CATEGORICAL),
                 'GovIns': ('GovIns', InputDataType.CATEGORICAL),
@@ -445,34 +455,33 @@ def main(use_dask=False, use_labs=False):
         pl.col('subject_id').cast(pl.UInt32),
         pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
         pl.when(pl.col('subject_id').is_in(df_dia_empi) & pl.col('subject_id').is_in(df_prc_empi))
-         .then(pl.lit('BOTH').cast(pl.Categorical))
-         .when(pl.col('subject_id').is_in(df_dia_empi))
-         .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
-         .when(pl.col('subject_id').is_in(df_prc_empi))
-         .then(pl.lit('PROCEDURE').cast(pl.Categorical))
-         .otherwise(pl.lit('UNKNOWN').cast(pl.Categorical))
-         .alias('event_type')
+        .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
+        # .when(pl.col('subject_id').is_in(df_prc_empi))
+        # .then(pl.lit('PROCEDURE').cast(pl.Categorical))
+        .otherwise(pl.lit('PROCEDURE').cast(pl.Categorical))
+        .alias('event_type')
     )
+
+    # Print the unique values and null count of the 'subject_id' column
+    print("Unique values in subject_id column of events_df:", events_df['subject_id'].unique())
+    print("Number of null values in subject_id column of events_df:", events_df['subject_id'].null_count())
 
     # Update the event_types_idxmap
     event_types_idxmap = {
-        'BOTH': 1,
-        'DIAGNOSIS': 2,
-        'PROCEDURE': 3
+        'DIAGNOSIS': 1,
+        'PROCEDURE': 2
     }
 
-    # Update the vocabulary sizes
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
         'CodeWithType': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
-        'A1cGreaterThan7': 2  # Assuming binary classification for A1cGreaterThan7
+        # 'A1cGreaterThan7': 2,  # Assuming binary classification for A1cGreaterThan7
     }
 
-    # Update the vocabulary offsets
     vocab_offsets_by_measurement = {
         'event_type': 0,
         'CodeWithType': len(event_types_idxmap) + 1,
-        'A1cGreaterThan7': len(event_types_idxmap) + 1 + max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1
+        # 'A1cGreaterThan7': len(event_types_idxmap) + 1 + max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
     }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
@@ -480,10 +489,13 @@ def main(use_dask=False, use_labs=False):
 
     df_outcomes = df_outcomes.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
-    # ensure that the 'A1cGreaterThan7' column is present in the outcomes DataFrame
-    df_outcomes = df_outcomes.with_columns(
-        pl.col('A1cGreaterThan7').fill_null(False).cast(pl.Boolean).alias('A1cGreaterThan7')
-    )
+    # Print the unique values and null count of the 'subject_id' column
+    print("Unique values in subject_id column of df_outcomes:", df_outcomes['subject_id'].unique())
+    print("Number of null values in subject_id column of df_outcomes:", df_outcomes['subject_id'].null_count())
+
+    print("Shape of df_outcomes:", df_outcomes.shape)
+    print("Columns of df_outcomes:", df_outcomes.columns)
+    # print("Unique values in A1cGreaterThan7 column of df_outcomes:", df_outcomes['A1cGreaterThan7'].unique())
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
@@ -519,6 +531,12 @@ def main(use_dask=False, use_labs=False):
             .rename({'tmp_event_id': 'event_id'})
         )
 
+    interval_dynamic_measurements_df = dynamic_measurements_df  # Initialize the variable
+
+    # Print the unique values and null count of the 'subject_id' column
+    print("Unique values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].unique())
+    print("Number of null values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].null_count())
+
     print("Shape of dynamic_measurements_df before join:", dynamic_measurements_df.shape)
     print("Sample rows of dynamic_measurements_df before join:")
     print(dynamic_measurements_df.head(5))
@@ -531,13 +549,38 @@ def main(use_dask=False, use_labs=False):
     print("Sample rows of dynamic_measurements_df after join:")
     print(dynamic_measurements_df.head(5))
 
+    print("Columns of events_df:", events_df.columns)
+    print("Unique values in event_type:", events_df['event_type'].unique())
+
+    print("Columns of dynamic_measurements_df:", dynamic_measurements_df.columns)
+    print("Unique values in CodeWithType:", dynamic_measurements_df['CodeWithType'].unique())
+
+    print("Unique values in subject_id column of df_outcomes:", df_outcomes['subject_id'].unique())
+    print("Unique values in subject_id column of events_df:", events_df['subject_id'].unique())
+    if use_labs:
+        print("Unique values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].unique())
+
+    # Check for rows with null subject_id in df_outcomes
+    null_subject_ids_outcomes = df_outcomes.filter(pl.col('subject_id').is_null())
+    print("Rows with null subject_id in df_outcomes:")
+    print(null_subject_ids_outcomes)
+
+    # Check for rows with null subject_id in events_df
+    null_subject_ids_events = events_df.filter(pl.col('subject_id').is_null())
+    print("Rows with null subject_id in events_df:")
+    print(null_subject_ids_events)
+
+    # Check for rows with null subject_id in dynamic_measurements_df
+    null_subject_ids_measurements = dynamic_measurements_df.filter(pl.col('subject_id').is_null())
+    print("Rows with null subject_id in dynamic_measurements_df:")
+    print(null_subject_ids_measurements)
+
     dataset_schema = DatasetSchema(
         static=InputDFSchema(
             input_df=df_outcomes,  # Use df_outcomes directly
             subject_id_col='subject_id',
             data_schema={
                 'InitialA1c': InputDataType.FLOAT,
-                'A1cGreaterThan7': InputDataType.CATEGORICAL,
                 'Female': InputDataType.CATEGORICAL,
                 'Married': InputDataType.CATEGORICAL,
                 'GovIns': InputDataType.CATEGORICAL,
@@ -559,16 +602,16 @@ def main(use_dask=False, use_labs=False):
 
     config = DatasetConfig(
         measurement_configs={
-            'A1cGreaterThan7': MeasurementConfig(
-                temporality=TemporalityType.STATIC,
-                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
-            ),
+            # 'A1cGreaterThan7': MeasurementConfig(
+            #     temporality=TemporalityType.STATIC,
+            #     modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+            # ),
             'CodeWithType': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
         },
-        normalizer_config={'cls': 'standard_scaler'},  # Use a dictionary with 'cls' key
+        normalizer_config={'cls': 'standard_scaler'},
         save_dir="./data"
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
@@ -612,9 +655,78 @@ def main(use_dask=False, use_labs=False):
     if not set(events_df["subject_id"]).issubset(set(df_outcomes["subject_id"])):
         raise ValueError("Subject IDs in events_df do not match the subject IDs in subjects_df.")
 
-     # Check if the 'A1cGreaterThan7' column is present in df_outcomes
-    if 'A1cGreaterThan7' not in df_outcomes.columns:
-        raise ValueError("The 'A1cGreaterThan7' column is missing in the outcomes DataFrame.")
+    # Ensure that the 'subject_id' column in df_outcomes is properly populated, has the correct data type, and does not contain null values
+    df_outcomes = df_outcomes.with_columns(
+        pl.col('EMPI').cast(pl.UInt32).fill_null(0).alias('subject_id')
+    )
+    
+    # Ensure that the 'subject_id' column in events_df is properly populated, has the correct data type, and does not contain null values
+    events_df = events_df.with_columns(
+        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
+    )
+
+    # Ensure that the 'subject_id' column in dynamic_measurements_df is properly populated, has the correct data type, and does not contain null values 
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(
+        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
+    )
+
+    print("Process events data")
+
+    # Determine the start and end timestamps
+    start_timestamp = events_df['timestamp'].min()
+    end_timestamp = events_df['timestamp'].max()
+
+    # Convert the start and end timestamps to datetime objects
+    start_timestamp = datetime.fromisoformat(str(start_timestamp))
+    end_timestamp = datetime.fromisoformat(str(end_timestamp))
+
+    # Generate time intervals (e.g., weekly intervals)
+    time_intervals = generate_time_intervals(start_timestamp.date(), end_timestamp.date(), 7)
+
+    # Process the data in time intervals
+    processed_events_df = pl.DataFrame()
+    processed_dynamic_measurements_df = pl.DataFrame()
+
+    for start_date, end_date in time_intervals:
+        print(f"Processing interval {start_date} - {end_date}")
+
+        # Filter events_df and dynamic_measurements_df for the current time interval
+        interval_events_df = events_df.filter(
+            (pl.col('timestamp') >= pl.datetime(start_date.year, start_date.month, start_date.day)) &
+            (pl.col('timestamp') < pl.datetime(end_date.year, end_date.month, end_date.day))
+        )
+        interval_dynamic_measurements_df = dynamic_measurements_df.filter(
+            (pl.col('timestamp') >= pl.datetime(start_date.year, start_date.month, start_date.day)) &
+            (pl.col('timestamp') < pl.datetime(end_date.year, end_date.month, end_date.day))
+        )
+
+        # Perform the shifting and joining operations on the current interval
+        interval_next_event_df = interval_events_df.sort('subject_id', 'timestamp').select(
+            pl.col('subject_id'),
+            pl.col('timestamp').shift(-1).over('subject_id').alias('next_event_time'),
+            pl.col('event_type').shift(-1).over('subject_id').alias('next_event_type'),
+        )
+
+        interval_dynamic_measurements_df = interval_dynamic_measurements_df.sort('subject_id', 'timestamp').with_columns(
+            pl.col('CodeWithType').shift(-1).over('subject_id').alias('next_CodeWithType'),
+        )
+
+        interval_events_df = interval_events_df.join(interval_next_event_df, on='subject_id', how='left')
+
+        # Append the processed intervals to the final DataFrames
+        processed_events_df = pl.concat([processed_events_df, interval_events_df])
+        processed_dynamic_measurements_df = pl.concat([processed_dynamic_measurements_df, interval_dynamic_measurements_df])
+
+    # Drop duplicate event_id values from the processed_events_df
+    processed_events_df = processed_events_df.unique(subset=['event_id'])
+
+    # Update the events_df and dynamic_measurements_df with the processed data
+    events_df = processed_events_df
+    events_df = events_df.drop('next_event_time')
+    dynamic_measurements_df = processed_dynamic_measurements_df
+
+    print(f"Final shape of events_df: {events_df.shape}")
+    print(f"Final shape of dynamic_measurements_df: {dynamic_measurements_df.shape}")
 
     print("Creating Dataset object...")
     ESD = Dataset(
@@ -627,17 +739,38 @@ def main(use_dask=False, use_labs=False):
     print("Dataset object created.")
 
     print("Splitting dataset...")
-
     ESD.split(split_fracs=split, split_names=["train", "tuning", "held_out"], seed=seed)
     print("Dataset split.")
+
     print("Preprocessing dataset...")
     ESD.preprocess()
     print("Dataset preprocessed.")
 
+    print("Add epsilon to concurrent timestamps")
+    eps = np.finfo(float).eps
+
+    # Handle null timestamp values by filling them with a default value
+    default_timestamp = pl.datetime(2000, 1, 1)  # Choose an appropriate default value
+    ESD.events_df = ESD.events_df.with_columns(
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+    )
+    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns(
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+    )
+
+    # Add epsilon to concurrent timestamps
+    eps = np.finfo(float).eps
+    ESD.events_df = ESD.events_df.with_columns(
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
+    )
+    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns(
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
+    )
+
     # Assign the vocabulary sizes and offsets to the Dataset's vocabulary_config
     ESD.vocabulary_config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
     ESD.vocabulary_config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
-    
+
     print("Saving dataset...")
     ESD.save(do_overwrite=do_overwrite)
     print("Dataset saved.")

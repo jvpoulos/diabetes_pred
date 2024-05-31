@@ -13,14 +13,14 @@ try:
     ESD = Dataset.load(DATA_DIR)
 except AttributeError:
     # If the AttributeError occurs during loading, create a new Dataset object
-    config = DatasetConfig(save_dir=DATA_DIR)
+    config = DatasetConfig(save_dir=DATA_DIR, measurement_configs={})
     ESD = Dataset(config=config)
 
 # Create the task_dfs directory inside the data directory
 TASK_DF_DIR = DATA_DIR / "task_dfs"
 TASK_DF_DIR.mkdir(exist_ok=True, parents=True)
 
-# Create a single-label binary classification task for A1cGreaterThan7
+# Finetuning objective: Predict A1cGreaterThan7 using single-label classification
 a1c_greater_than_7 = (
     ESD.subjects_df.lazy()
     .select(

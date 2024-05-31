@@ -27,6 +27,9 @@ from dask.distributed import Client, as_completed
 import polars as pl
 import pandas as pd
 import plotly.express as px
+import matplotlib.pyplot as plt
+from datetime import datetime
+import matplotlib.dates as mdates
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """
@@ -53,7 +56,110 @@ def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path
 
     # Save to file
     fig.write_image(file_path, format="png", width=600, height=350, scale=2)
+
+def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(df[x], df[y])
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    plt.xticks(rotation=90)
+
+    # Add vertical dashed lines
+    date1 = mdates.date2num(datetime(2000, 1, 1))
+    date2 = mdates.date2num(datetime(2022, 6, 30))
+    ax.axvline(date1, color='r', linestyle='--', label='Start of Study')
+    ax.axvline(date2, color='r', linestyle='-', label='End of Study')
+    ax.legend()
+
+    if x_range:
+        ax.set_xlim(x_range)
+
+    plt.savefig(f'data_summaries/{filename}', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+def temporal_dist_pd(df, measure, event_type_col=None):
+    df = df.sort('timestamp').to_pandas()
+    df['day'] = df['timestamp'].dt.date
+    if event_type_col is None:
+        daily_counts = df.groupby('day')[measure].count().reset_index()
+        daily_counts.columns = ['day', 'count']
+    else:
+        daily_counts = df.groupby(['day', event_type_col])[measure].count().reset_index()
+        if event_type_col == 'CodeWithType':
+            daily_counts.columns = ['day', 'CodeWithType', 'count']
+        else:
+            daily_counts.columns = ['day', event_type_col, 'count']
+    return daily_counts
+
+def save_scatter_plot(data, x_col, y_col, title, y_label, file_path, x_range=None, x_label=None, x_scale=None):
+    """
+    Creates a scatter plot and saves it to a file.
+
+    Parameters:
+    - data: DataFrame with the data to plot.
+    - x_col: Column name to use for the x-axis.
+    - y_col: Column name to use for the y-axis.
+    - title: Title for the plot.
+    - y_label: Label for the y-axis.
+    - file_path: Path to save the plot as a PNG file.
+    - x_range: Tuple specifying the range of the x-axis (min, max). Default is None.
+    - x_label: Label for the x-axis. Default is None.
+    - x_scale: Tuple specifying the scale for the x-axis (min, max). Default is None.
+    """
+    # Create the scatter plot
+    fig = px.scatter(data, x=x_col, y=y_col, title=title, labels={x_col: x_label or x_col, y_col: y_label})
+
+    # Set the x-axis range if provided
+    if x_range is not None:
+        fig.update_layout(xaxis_range=x_range)
+
+    # Set the x-axis scale if provided
+    if x_scale is not None:
+        fig.update_xaxes(range=x_scale)
+
+    # Save to file
+    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
     
+def save_plot_measurements_per_subject(data, x_col, gender_col, title, x_label, file_path):
+    """
+    Creates a box plot for the distribution of measurements per subject, grouped by gender, and saves it to a file.
+
+    Parameters:
+    - data: DataFrame with the data to plot.
+    - x_col: Column name to use for the x-axis (number of measurements).
+    - gender_col: Column name for gender representation.
+    - title: Title for the plot.
+    - x_label: Label for the x-axis.
+    - file_path: Path to save the plot as a PNG file.
+    """
+    # Map gender to "Female" or "Male"
+    data[gender_col] = data[gender_col].map({1: "Female", 0: "Male"})
+
+    # Create the box plot with specified colors
+    fig = px.box(data, x=x_col, color=gender_col, title=title, labels={x_col: x_label, gender_col: 'Gender'},
+                 color_discrete_map={"Female": "blue", "Male": "red"})
+
+    # Save to file
+    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
+
+def save_plot_heatmap(data, x_col, y_col, title, file_path):
+    """
+    Creates a heatmap plot and saves it to a file.
+
+    Parameters:
+    - data: DataFrame or 2D array with the data to plot.
+    - x_col: Column names to use for the x-axis.
+    - y_col: Column names to use for the y-axis.
+    - title: Title for the plot.
+    - file_path: Path to save the plot as a PNG file.
+    """
+    # Create the heatmap plot
+    fig = px.imshow(data, x=x_col, y=y_col, color_continuous_scale='RdBu', zmin=-1, zmax=1, title=title)
+
+    # Save to file
+    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
+
 def print_covariate_metadata(covariates, ESD):
     """
     Prints the measurement metadata for each covariate in the given list.

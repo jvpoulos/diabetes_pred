@@ -1,14 +1,13 @@
-do_overwrite: false
+do_overwrite: false  
 seed: 42
-save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
+save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
-  problem_type: next_event_prediction
-  num_labels: null
+  problem_type: single_label_classification
+  num_labels: 2
   measurements_per_generative_mode:
-    MULTIVARIATE_REGRESSION: ['next_event_time']
-    MULTI_LABEL_CLASSIFICATION: ['next_event_measurements']
+    SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7']
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: true
   categorical_embedding_dim: 32
@@ -82,16 +81,14 @@ final_validation_metrics_config:
   include_metrics:
     TUNING:
       LOSS_PARTS: true
-      MULTIVARIATE_REGRESSION:
-        MSE: true
-      MULTI_LABEL_CLASSIFICATION:
+      CLASSIFICATION:
         AUROC: true
+        ACCURACY: true  
     HELD_OUT:
-      LOSS_PARTS: true  
-      MULTIVARIATE_REGRESSION:
-        MSE: true
-      MULTI_LABEL_CLASSIFICATION: 
+      LOSS_PARTS: true
+      CLASSIFICATION:
         AUROC: true
+        ACCURACY: true
 
 trainer_config:
   accelerator: gpu
@@ -103,13 +100,13 @@ experiment_dir: "./experiments"
 
 wandb_logger_kwargs:
   name: "jvpoulos"
-  project: "diabetes_pretrain"
+  project: "diabetes_finetune"
   team: null
   log_model: false
 
 wandb_experiment_config_kwargs:
   entity: "jvpoulos"
-  project: "diabetes_pretrain"
+  project: "diabetes_finetune"
   team: null
   log_model: false
   
