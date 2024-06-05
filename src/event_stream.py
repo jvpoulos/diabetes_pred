@@ -27,6 +27,7 @@ from dask.distributed import Client, as_completed
 from typing import Any
 import polars as pl
 from polars.datatypes import DataType
+import pickle
 
 from EventStream.data.config import (
     InputDFSchema,
@@ -44,7 +45,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -54,30 +55,7 @@ from dateutil.relativedelta import relativedelta
 import os
 import tempfile
 import shutil
-
-def json_serial(obj):
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    raise TypeError(f'Type {type(obj)} not serializable')
-
-def add_to_container(key: str, val: Any, cont: dict[str, Any]):
-    if key in cont:
-        if cont[key] == val:
-            print(f"WARNING: {key} is specified twice with value {val}.")
-        else:
-            raise ValueError(f"{key} is specified twice ({val} v. {cont[key]})")
-    else:
-        cont[key] = val
-
-# Create a function to generate time intervals
-def generate_time_intervals(start_date, end_date, interval_days):
-    current_date = start_date
-    intervals = []
-    while current_date < end_date:
-        next_date = current_date + timedelta(days=interval_days)
-        intervals.append((current_date, next_date))
-        current_date = next_date
-    return intervals
+import pyarrow.parquet as pq
 
 def main(use_dask=False, use_labs=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
@@ -778,6 +756,54 @@ def main(use_dask=False, use_labs=False):
     print("Caching deep learning representation...")
     ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
     print("Deep learning representation cached.")
+
+    # Read and display the contents of the Parquet files
+    print("Contents of E.pkl:")
+    serialized_dataset_path = ESD.config.save_dir / "E.pkl"
+    if serialized_dataset_path.exists():
+        with open(serialized_dataset_path, "rb") as f:
+            serialized_dataset = pickle.load(f)
+            print(serialized_dataset)
+    else:
+        print("E.pkl not found.")
+
+    print("Contents of vocabulary_config.json:")
+    vocabulary_config_path = ESD.config.save_dir / "vocabulary_config.json"
+    if vocabulary_config_path.exists():
+        with open(vocabulary_config_path, "r") as f:
+            vocabulary_config = json.load(f)
+            print(json.dumps(vocabulary_config, indent=2))
+    else:
+        print("vocabulary_config.json not found.")
+
+    print("Contents of inferred_measurement_configs.json:")
+    inferred_measurement_configs_path = ESD.config.save_dir / "inferred_measurement_configs.json"
+    if inferred_measurement_configs_path.exists():
+        with open(inferred_measurement_configs_path, "r") as f:
+            inferred_measurement_configs = json.load(f)
+            print(json.dumps(inferred_measurement_configs, indent=2))
+    else:
+        print("inferred_measurement_configs.json not found.")
+
+    print("Contents of Parquet files in DL_reps directory:")
+    dl_reps_dir = ESD.config.save_dir / "DL_reps"
+    if dl_reps_dir.exists():
+        for split in ["train", "tuning", "held_out"]:
+            parquet_files = list(dl_reps_dir.glob(f"{split}*.parquet"))
+            if parquet_files:
+                print(f"Parquet files for split '{split}':")
+                for parquet_file in parquet_files:
+                    print(f"File: {parquet_file}")
+                    try:
+                        df = read_parquet_file(parquet_file)
+                        print(df.head())
+                    except Exception as e:
+                        print(f"Error reading Parquet file: {parquet_file}")
+                        print(f"Error message: {str(e)}")
+            else:
+                print(f"No Parquet files found for split '{split}'.")
+    else:
+        print("DL_reps directory not found.")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

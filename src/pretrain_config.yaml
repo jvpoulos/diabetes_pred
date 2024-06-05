@@ -7,8 +7,7 @@ config:
   problem_type: next_event_prediction
   num_labels: null
   measurements_per_generative_mode:
-    MULTIVARIATE_REGRESSION: ['next_event_time']
-    MULTI_LABEL_CLASSIFICATION: ['next_event_measurements']
+    MULTI_LABEL_CLASSIFICATION: ['CodeWithType', 'A1cGreaterThan7']
   do_use_learnable_sinusoidal_ATE: false
   do_split_embeddings: true
   categorical_embedding_dim: 32
@@ -49,6 +48,7 @@ optimization_config:
 
 data_config:
   save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
+  dl_reps_dir: "./data/DL_reps"
   dataset_path: null 
   max_seq_len: 128
   subsequence_sampling_strategy: to_end

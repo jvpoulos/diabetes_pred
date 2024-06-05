@@ -30,6 +30,58 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 from datetime import datetime
 import matplotlib.dates as mdates
+from EventStream.data.pytorch_dataset import PytorchDataset
+from EventStream.data.dataset_config import DatasetConfig
+from pathlib import Path
+import pyarrow.parquet as pq
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+import os
+import tempfile
+import shutil
+import pickle
+
+def json_serial(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f'Type {type(obj)} not serializable')
+
+def add_to_container(key: str, val: any, cont: dict[str, any]):
+    if key in cont:
+        if cont[key] == val:
+            print(f"WARNING: {key} is specified twice with value {val}.")
+        else:
+            raise ValueError(f"{key} is specified twice ({val} v. {cont[key]})")
+    else:
+        cont[key] = val
+
+def read_parquet_file(file_path):
+    table = pq.read_table(file_path)
+    df = table.to_pandas()
+    return df
+
+# Create a function to generate time intervals
+def generate_time_intervals(start_date, end_date, interval_days):
+    current_date = start_date
+    intervals = []
+    while current_date < end_date:
+        next_date = current_date + timedelta(days=interval_days)
+        intervals.append((current_date, next_date))
+        current_date = next_date
+    return intervals
+
+class CustomPytorchDataset(PytorchDataset):
+    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str):
+        super().__init__(config, split)
+        self.dl_reps_dir = Path(dl_reps_dir)  # Convert dl_reps_dir to a Path object
+        self.load_cached_data()
+
+    def load_cached_data(self):
+        if self.dl_reps_dir is None:
+            raise ValueError("The 'dl_reps_dir' attribute must be set to a valid directory path.")
+        
+        cached_path = Path(self.dl_reps_dir) / f"{self.split}*.parquet"
+        self.cached_data = pl.scan_parquet(cached_path)
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """

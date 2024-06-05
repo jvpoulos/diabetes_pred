@@ -34,6 +34,8 @@ from EventStream.data.data_embedding_layer import DataEmbeddingLayer
 
 from EventStream.transformer.config import StructuredTransformerConfig
 
+from data_utils import CustomPytorchDataset
+
 torch.set_float32_matmul_precision("high")
 
 DATA_DIR = Path("data")
@@ -139,20 +141,6 @@ def main(cfg: PretrainConfig) -> None:
     # Update the save_dir attribute
     dataset.config.save_dir = Path(dataset.config.save_dir)
 
-    # Ensure that the 'A1cGreaterThan7' column is present in the outcomes DataFrame and has the correct data type
-
-    if 'A1cGreaterThan7' not in dataset.subjects_df.columns:
-        raise ValueError("The 'A1cGreaterThan7' column is missing in the outcomes DataFrame.")
-
-    dataset.subjects_df = dataset.subjects_df.with_columns(
-        pl.col('A1cGreaterThan7')
-        .cast(pl.Utf8)  # Cast to string first
-        .map_dict({'true': True, 'false': False})  # Map string values to boolean
-        .fill_null(False)  # Fill null values with False
-        .cast(pl.Boolean)  # Cast to boolean
-        .alias('A1cGreaterThan7')
-    )
-
     # Ensure that the 'subject_id' column in df_outcomes is properly populated, has the correct data type, and does not contain null values
     dataset.subjects_df = dataset.subjects_df.with_columns(
         pl.col('EMPI').cast(pl.UInt32).fill_null(0).alias('subject_id')
@@ -204,16 +192,11 @@ def main(cfg: PretrainConfig) -> None:
     model_config["measurements_idxmap"] = dataset.vocabulary_config.measurements_idxmap
     model_config["vocab_offsets_by_measurement"] = dataset.vocabulary_config.vocab_offsets_by_measurement
     model_config["vocab_sizes_by_measurement"] = dataset.vocabulary_config.vocab_sizes_by_measurement
+    model_config["problem_type"] = cfg.config.problem_type
     
     # Convert seq_attention_types to a regular Python list
     model_config["seq_attention_types"] = OmegaConf.to_container(model_config["seq_attention_types"], resolve=True)
 
-    # Update the PretrainConfig with the appropriate measurements_per_generative_mode
-    model_config["measurements_per_generative_mode"] = {
-        DataModality.MULTIVARIATE_REGRESSION: ['next_event_time'],  
-        DataModality.MULTI_LABEL_CLASSIFICATION: ['next_event_measurements']
-    }
-            
     # Create the StructuredTransformerConfig instance with the model_config
     config = StructuredTransformerConfig(**model_config)
 
@@ -222,7 +205,7 @@ def main(cfg: PretrainConfig) -> None:
     print("vocab_sizes_by_measurement:", config.vocab_sizes_by_measurement)
 
     # Serialize the Dataset
-    dataset_path = DATA_DIR / "serialized_dataset.pkl"
+    dataset_path = DATA_DIR / "E.pkl"
     dataset.save(save_path=dataset_path, do_overwrite=True)
     print("Saved the preprocessed dataset.")
 
@@ -235,8 +218,8 @@ def main(cfg: PretrainConfig) -> None:
     cfg.dataset_path = dataset_path
 
     # Create the PytorchDataset instances with the PytorchDatasetConfig
-    train_pyd = PytorchDataset(cfg.data_config, split="train")
-    tuning_pyd = PytorchDataset(cfg.data_config, split="tuning")
+    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=Path(cfg.data_config.dl_reps_dir))
+    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=Path(cfg.data_config.dl_reps_dir))
 
     config.set_to_dataset(train_pyd)
 

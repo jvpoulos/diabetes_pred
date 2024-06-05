@@ -48,6 +48,9 @@ GPUs: GeForce RTX 2080 (2)
 - `finetune.py` [temporal analyses]
 	- Fine-tunes a transformer (from scratch) on the binary classification task. Utilizes the `pretrain_config.yaml` config file.
 
+- `pretrain.py` [temporal analyses]
+	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the binary classification task.
+
 - `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
@@ -204,10 +207,22 @@ $ wandb agent <sweep_id> # Start the agent(s) to run the sweep. Replace <sweep_i
 ```
 The agent(s) will run the `hp_sweep.py` script with different hyperparameter configurations sampled from the ranges specified in the sweep configuration file. The training results and metrics will be logged to Weights and Biases for each run.
 
-4.  Fine-tune the transformer from scratch
+4. Pretrain the transformer:
 
 ```bash
 $ export CUDA_LAUNCH_BLOCKING=1
 $ export CUDA_VISIBLE_DEVICES=0,1
-$ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 pretrain_config_path="./experiments/pretrain/2024-05-15_22-33-05/pretrain_config.yaml" do_overwrite=True config.problem_type="single_label_classification"
+$ python3 src/pretrain.py +config_name=pretrain_config
+```
+
+or Train the transformer from scratch:
+
+```bash
+$ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 pretrain_config_path="./experiments/pretrain/2024-06-04_13-03-18/pretrain_config.yaml" do_overwrite=True config.problem_type="single_label_classification"
+```
+
+or fine-tune the pre-trained model:
+
+```bash
+$ $ python3 src/finetune.py experiment_dir="./experiments" load_from_model_dir="./experiments/pretrain/2024-05-14_16-08-59/pretrained_weights" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 data_config_path="./experiments/pretrain/2024-05-14_16-08-59/data_config.json"
 ```
