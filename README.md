@@ -215,7 +215,7 @@ $ export CUDA_VISIBLE_DEVICES=0,1
 $ python3 src/pretrain.py +config_name=pretrain_config
 ```
 
-or Train the transformer from scratch:
+Train the transformer from scratch:
 
 ```bash
 $ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 pretrain_config_path="./experiments/pretrain/2024-06-04_13-03-18/pretrain_config.yaml" do_overwrite=True config.problem_type="single_label_classification"
@@ -224,5 +224,5 @@ $ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_la
 or fine-tune the pre-trained model:
 
 ```bash
-$ $ python3 src/finetune.py experiment_dir="./experiments" load_from_model_dir="./experiments/pretrain/2024-05-14_16-08-59/pretrained_weights" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 data_config_path="./experiments/pretrain/2024-05-14_16-08-59/data_config.json"
+$ python3 src/finetune.py experiment_dir="./experiments" load_from_model_dir="./experiments/pretrain/2024-05-14_16-08-59/pretrained_weights" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 data_config_path="./experiments/pretrain/2024-05-14_16-08-59/data_config.json"
 ```

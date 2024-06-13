@@ -66,14 +66,13 @@ def main(cfg: PretrainConfig) -> None:
         cfg = OmegaConf.create(cfg)
         cfg.data_config.save_dir = Path(cfg.data_config.save_dir)
 
+    print(f"cfg.save_dir: {cfg.save_dir}")
     if os.environ.get("LOCAL_RANK", "0") == "0":
         cfg_fp = Path(cfg.save_dir) / "pretrain_config.yaml"
         cfg_fp.parent.mkdir(exist_ok=True, parents=True)
 
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         OmegaConf.save(cfg_dict, cfg_fp)
-
-    # Create an instance of the Dataset class
 
     dataset_config = DatasetConfig(
         measurement_configs={
@@ -121,56 +120,44 @@ def main(cfg: PretrainConfig) -> None:
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
-            # 'Result': MeasurementConfig(
-            #     temporality=TemporalityType.DYNAMIC,
-            #     modality=DataModality.UNIVARIATE_REGRESSION,
-            # ),
         },
-        min_valid_column_observations=None,  # Drop columns observed in less than n% of events
-        min_valid_vocab_element_observations=None,  # Drop vocabulary elements observed less than n% of the time
-        min_true_float_frequency=0.9,  # Treat values as floats if at least 90% of observations are float
-        min_unique_numerical_observations=10,  # Treat values as categorical if fewer than 10 unique values
-        outlier_detector_config=None,  # No outlier detection
+        min_valid_column_observations=None,
+        min_valid_vocab_element_observations=None,
+        min_true_float_frequency=0.9,
+        min_unique_numerical_observations=10,
+        outlier_detector_config=None,
         normalizer_config={'cls': 'standard_scaler'},
-        save_dir=DATA_DIR,  # Save directory for the dataset
+        save_dir=DATA_DIR,
         agg_by_time_scale=None,
-        )   
+    )   
 
     dataset = Dataset(config=dataset_config)
 
-    # Update the save_dir attribute
     dataset.config.save_dir = Path(dataset.config.save_dir)
 
-    # Ensure that the 'subject_id' column in df_outcomes is properly populated, has the correct data type, and does not contain null values
     dataset.subjects_df = dataset.subjects_df.with_columns(
         pl.col('EMPI').cast(pl.UInt32).fill_null(0).alias('subject_id')
     )
 
-    # Ensure that the 'subject_id' column in events_df is properly populated, has the correct data type, and does not contain null values
     dataset.events_df = dataset.events_df.with_columns(
         pl.col('subject_id').cast(pl.UInt32).fill_null(0)
     )
 
-    # Ensure that the 'subject_id' column in dynamic_measurements_df is properly populated, has the correct data type, and does not contain null values
     dataset.dynamic_measurements_df = dataset.dynamic_measurements_df.with_columns(
         pl.col('subject_id').cast(pl.UInt32).fill_null(0)
     )
 
-    # Update the save_dir attribute
     dataset.config.save_dir = DATA_DIR
 
-    # Split the dataset into train, validation, and test sets
     dataset.split(split_fracs=[0.7, 0.2, 0.1])
     print("Dataset split.")
 
-    # Preprocess the dataset
     dataset.preprocess()
     print("Finished preprocessing the dataset.")
 
     print("Vocabulary Config:")
     print(dataset.vocabulary_config)
 
-    # Inspect the vocabulary sizes
     print("Vocabulary sizes:")
     if hasattr(dataset, 'inferred_measurement_configs'):
         vocab_sizes_by_measurement = {
@@ -182,48 +169,37 @@ def main(cfg: PretrainConfig) -> None:
     else:
         print("Dataset does not have inferred_measurement_configs attribute.")
 
-    # Update the PretrainConfig with the appropriate n_total_embeddings value
     max_vocab_size = max(vocab_sizes_by_measurement.values())
     print("Max vocab size:", max_vocab_size)
 
-    # Update the config dictionary with the measurements_idxmap, measurements_per_generative_mode,
-    # vocab_offsets_by_measurement, and vocab_sizes_by_measurement from the dataset
     model_config = dict(cfg.config)
     model_config["measurements_idxmap"] = dataset.vocabulary_config.measurements_idxmap
     model_config["vocab_offsets_by_measurement"] = dataset.vocabulary_config.vocab_offsets_by_measurement
     model_config["vocab_sizes_by_measurement"] = dataset.vocabulary_config.vocab_sizes_by_measurement
     model_config["problem_type"] = cfg.config.problem_type
-    
-    # Convert seq_attention_types to a regular Python list
     model_config["seq_attention_types"] = OmegaConf.to_container(model_config["seq_attention_types"], resolve=True)
 
-    # Create the StructuredTransformerConfig instance with the model_config
     config = StructuredTransformerConfig(**model_config)
 
     print("StructuredTransformerConfig Vocabulary Info:")
     print("vocab_offsets_by_measurement:", config.vocab_offsets_by_measurement)
     print("vocab_sizes_by_measurement:", config.vocab_sizes_by_measurement)
 
-    # Serialize the Dataset
     dataset_path = DATA_DIR / "E.pkl"
     dataset.save(save_path=dataset_path, do_overwrite=True)
     print("Saved the preprocessed dataset.")
 
-    # Cache the deep learning representation
     print("Caching deep learning representation...")
     dataset.cache_deep_learning_representation(do_overwrite=True)
     print("Deep learning representation cached.")
 
-    # Update the PretrainConfig with the serialized dataset path
     cfg.dataset_path = dataset_path
 
-    # Create the PytorchDataset instances with the PytorchDatasetConfig
-    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=Path(cfg.data_config.dl_reps_dir))
-    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=Path(cfg.data_config.dl_reps_dir))
+    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=Path("data/DL_reps"))
+    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=Path("data/DL_reps"))
 
     config.set_to_dataset(train_pyd)
 
-    # Check the inferred_measurement_configs
     print("\nInspecting inferred_measurement_configs:")
     for measurement, config in dataset.inferred_measurement_configs.items():
         print(f"Measurement: {measurement}, Modality: {config.modality}, Temporality: {config.temporality}")

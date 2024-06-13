@@ -28,6 +28,7 @@ from typing import Any
 import polars as pl
 from polars.datatypes import DataType
 import pickle
+from pathlib import Path
 
 from EventStream.data.config import (
     InputDFSchema,
@@ -334,6 +335,9 @@ def main(use_dask=False, use_labs=False):
         } if use_labs else []
     }
 
+    dynamic_sources['diagnoses']['dynamic_indices'] = InputDataType.CATEGORICAL
+    dynamic_sources['procedures']['dynamic_indices'] = InputDataType.CATEGORICAL
+
     # Add the 'EMPI' column to the 'col_schema' dictionary for all dynamic input schemas
     dynamic_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
     dynamic_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
@@ -452,14 +456,12 @@ def main(use_dask=False, use_labs=False):
 
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
-        'CodeWithType': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
-        # 'A1cGreaterThan7': 2,  # Assuming binary classification for A1cGreaterThan7
+        'dynamic_indices': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
     }
 
     vocab_offsets_by_measurement = {
         'event_type': 0,
-        'CodeWithType': len(event_types_idxmap) + 1,
-        # 'A1cGreaterThan7': len(event_types_idxmap) + 1 + max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
+        'dynamic_indices': len(event_types_idxmap) + 1,
     }
 
     # Add the 'event_id' column to the 'events_df' DataFrame
@@ -473,7 +475,6 @@ def main(use_dask=False, use_labs=False):
 
     print("Shape of df_outcomes:", df_outcomes.shape)
     print("Columns of df_outcomes:", df_outcomes.columns)
-    # print("Unique values in A1cGreaterThan7 column of df_outcomes:", df_outcomes['A1cGreaterThan7'].unique())
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
     if use_labs:
@@ -493,14 +494,18 @@ def main(use_dask=False, use_labs=False):
             df_dia.select('EMPI', 'CodeWithType', 'Date'),
             df_prc.select('EMPI', 'CodeWithType', 'Date')
         ], how='diagonal')
-        dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
-        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
+        dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp', 'CodeWithType': 'dynamic_indices'})
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(
+            pl.col('subject_id').cast(pl.UInt32),
+            pl.col('timestamp').cast(pl.Datetime),
+     #       pl.col('dynamic_indices').cast(pl.Categorical)
+        )
         dynamic_measurements_df = (
             dynamic_measurements_df
             .group_by(['subject_id', 'timestamp'])
             .agg(pl.len().alias('tmp_event_id'))
             .join(
-                dynamic_measurements_df.select('subject_id', 'timestamp', 'CodeWithType'),
+                dynamic_measurements_df.select('subject_id', 'timestamp', 'dynamic_indices'), 
                 on=['subject_id', 'timestamp'],
                 how='left'
             )
@@ -509,7 +514,19 @@ def main(use_dask=False, use_labs=False):
             .rename({'tmp_event_id': 'event_id'})
         )
 
+
+    print("Columns of dynamic_measurements_df:", dynamic_measurements_df.columns)
     interval_dynamic_measurements_df = dynamic_measurements_df  # Initialize the variable
+
+    print("Data types of dynamic_measurements_df columns:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(
+    pl.col('subject_id').cast(pl.UInt32),
+    pl.col('timestamp').cast(pl.Datetime),
+    pl.col('dynamic_indices').cast(pl.Categorical)
+)
 
     # Print the unique values and null count of the 'subject_id' column
     print("Unique values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].unique())
@@ -531,27 +548,7 @@ def main(use_dask=False, use_labs=False):
     print("Unique values in event_type:", events_df['event_type'].unique())
 
     print("Columns of dynamic_measurements_df:", dynamic_measurements_df.columns)
-    print("Unique values in CodeWithType:", dynamic_measurements_df['CodeWithType'].unique())
-
-    print("Unique values in subject_id column of df_outcomes:", df_outcomes['subject_id'].unique())
-    print("Unique values in subject_id column of events_df:", events_df['subject_id'].unique())
-    if use_labs:
-        print("Unique values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].unique())
-
-    # Check for rows with null subject_id in df_outcomes
-    null_subject_ids_outcomes = df_outcomes.filter(pl.col('subject_id').is_null())
-    print("Rows with null subject_id in df_outcomes:")
-    print(null_subject_ids_outcomes)
-
-    # Check for rows with null subject_id in events_df
-    null_subject_ids_events = events_df.filter(pl.col('subject_id').is_null())
-    print("Rows with null subject_id in events_df:")
-    print(null_subject_ids_events)
-
-    # Check for rows with null subject_id in dynamic_measurements_df
-    null_subject_ids_measurements = dynamic_measurements_df.filter(pl.col('subject_id').is_null())
-    print("Rows with null subject_id in dynamic_measurements_df:")
-    print(null_subject_ids_measurements)
+    print("Unique values in dynamic_indices:", dynamic_measurements_df['dynamic_indices'].unique())
 
     dataset_schema = DatasetSchema(
         static=InputDFSchema(
@@ -580,17 +577,13 @@ def main(use_dask=False, use_labs=False):
 
     config = DatasetConfig(
         measurement_configs={
-            # 'A1cGreaterThan7': MeasurementConfig(
-            #     temporality=TemporalityType.STATIC,
-            #     modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
-            # ),
-            'CodeWithType': MeasurementConfig(
+            'dynamic_indices': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
             ),
         },
         normalizer_config={'cls': 'standard_scaler'},
-        save_dir="./data"
+        save_dir=Path("data")  # Modify this line
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
 
@@ -598,55 +591,6 @@ def main(use_dask=False, use_labs=False):
         dataset_schema_dict = dataset_schema.to_dict()
         with open(config.save_dir / "input_schema.json", "w") as f:
             json.dump(dataset_schema_dict, f, default=json_serial)
-
-    # Check if subjects_df is populated correctly
-    if df_outcomes.is_empty():
-        raise ValueError("Outcomes DataFrame is empty.")
-    else:
-        print(f"Outcomes DataFrame shape: {df_outcomes.shape}")
-        print(f"Outcomes DataFrame columns: {df_outcomes.columns}")
-
-    # Check if events_df is populated correctly
-    if events_df.is_empty():
-        raise ValueError("Events DataFrame is empty.")
-    else:
-        print(f"Events DataFrame shape: {events_df.shape}")
-        print(f"Events DataFrame columns: {events_df.columns}")
-
-    # Check if dynamic_measurements_df is populated
-    if use_labs:
-        if dynamic_measurements_df.is_empty():
-            raise ValueError("Dynamic Measurements DataFrame is empty.")
-        else:
-            print(f"Dynamic Measurements DataFrame shape: {dynamic_measurements_df.shape}")
-            print(f"Dynamic Measurements DataFrame columns: {dynamic_measurements_df.columns}")
-
-    # Check if subjects_df contains the "subject_id" column
-    if "subject_id" not in df_outcomes.columns:
-        raise ValueError("subjects_df does not contain the 'subject_id' column.")
-
-    # Check if events_df contains the "subject_id" column
-    if "subject_id" not in events_df.columns:
-        raise ValueError("events_df does not contain the 'subject_id' column.")
-
-    # Check if the subject IDs in events_df match the subject IDs in subjects_df
-    if not set(events_df["subject_id"]).issubset(set(df_outcomes["subject_id"])):
-        raise ValueError("Subject IDs in events_df do not match the subject IDs in subjects_df.")
-
-    # Ensure that the 'subject_id' column in df_outcomes is properly populated, has the correct data type, and does not contain null values
-    df_outcomes = df_outcomes.with_columns(
-        pl.col('EMPI').cast(pl.UInt32).fill_null(0).alias('subject_id')
-    )
-    
-    # Ensure that the 'subject_id' column in events_df is properly populated, has the correct data type, and does not contain null values
-    events_df = events_df.with_columns(
-        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
-    )
-
-    # Ensure that the 'subject_id' column in dynamic_measurements_df is properly populated, has the correct data type, and does not contain null values 
-    dynamic_measurements_df = dynamic_measurements_df.with_columns(
-        pl.col('subject_id').cast(pl.UInt32).fill_null(0)
-    )
 
     print("Process events data")
 
@@ -678,19 +622,6 @@ def main(use_dask=False, use_labs=False):
             (pl.col('timestamp') < pl.datetime(end_date.year, end_date.month, end_date.day))
         )
 
-        # Perform the shifting and joining operations on the current interval
-        interval_next_event_df = interval_events_df.sort('subject_id', 'timestamp').select(
-            pl.col('subject_id'),
-            pl.col('timestamp').shift(-1).over('subject_id').alias('next_event_time'),
-            pl.col('event_type').shift(-1).over('subject_id').alias('next_event_type'),
-        )
-
-        interval_dynamic_measurements_df = interval_dynamic_measurements_df.sort('subject_id', 'timestamp').with_columns(
-            pl.col('CodeWithType').shift(-1).over('subject_id').alias('next_CodeWithType'),
-        )
-
-        interval_events_df = interval_events_df.join(interval_next_event_df, on='subject_id', how='left')
-
         # Append the processed intervals to the final DataFrames
         processed_events_df = pl.concat([processed_events_df, interval_events_df])
         processed_dynamic_measurements_df = pl.concat([processed_dynamic_measurements_df, interval_dynamic_measurements_df])
@@ -700,7 +631,6 @@ def main(use_dask=False, use_labs=False):
 
     # Update the events_df and dynamic_measurements_df with the processed data
     events_df = processed_events_df
-    events_df = events_df.drop('next_event_time')
     dynamic_measurements_df = processed_dynamic_measurements_df
 
     print(f"Final shape of events_df: {events_df.shape}")
@@ -753,38 +683,22 @@ def main(use_dask=False, use_labs=False):
     ESD.save(do_overwrite=do_overwrite)
     print("Dataset saved.")
 
+    # Print the contents of ESD
+    print("Contents of ESD after saving:")
+    print("Config:", ESD.config)
+    print("Subjects DF:")
+    print(ESD.subjects_df.head())
+    print("Events DF:")
+    print(ESD.events_df.head())
+    print("Dynamic Measurements DF:")
+    print(ESD.dynamic_measurements_df.head())
+    print("Inferred Measurement Configs:", ESD.inferred_measurement_configs)
+
     print("Caching deep learning representation...")
     ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
     print("Deep learning representation cached.")
 
     # Read and display the contents of the Parquet files
-    print("Contents of E.pkl:")
-    serialized_dataset_path = ESD.config.save_dir / "E.pkl"
-    if serialized_dataset_path.exists():
-        with open(serialized_dataset_path, "rb") as f:
-            serialized_dataset = pickle.load(f)
-            print(serialized_dataset)
-    else:
-        print("E.pkl not found.")
-
-    print("Contents of vocabulary_config.json:")
-    vocabulary_config_path = ESD.config.save_dir / "vocabulary_config.json"
-    if vocabulary_config_path.exists():
-        with open(vocabulary_config_path, "r") as f:
-            vocabulary_config = json.load(f)
-            print(json.dumps(vocabulary_config, indent=2))
-    else:
-        print("vocabulary_config.json not found.")
-
-    print("Contents of inferred_measurement_configs.json:")
-    inferred_measurement_configs_path = ESD.config.save_dir / "inferred_measurement_configs.json"
-    if inferred_measurement_configs_path.exists():
-        with open(inferred_measurement_configs_path, "r") as f:
-            inferred_measurement_configs = json.load(f)
-            print(json.dumps(inferred_measurement_configs, indent=2))
-    else:
-        print("inferred_measurement_configs.json not found.")
-
     print("Contents of Parquet files in DL_reps directory:")
     dl_reps_dir = ESD.config.save_dir / "DL_reps"
     if dl_reps_dir.exists():

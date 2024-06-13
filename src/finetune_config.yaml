@@ -47,9 +47,9 @@ optimization_config:
   max_training_steps: 1500
 
 data_config:
-  save_dir: "./experiments/pretrain/${now:%Y-%m-%d_%H-%M-%S}"
+  save_dir: "./data"
   dl_reps_dir: "data/DL_reps"
-  dataset_path: null 
+  dataset_path: null
   max_seq_len: 128
   subsequence_sampling_strategy: to_end
   min_seq_len: 4

@@ -12,27 +12,16 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import matplotlib.dates as mdates
 
+DATA_DIR = Path("data")
+
 # Load the dataset
-config_file = Path("./data/config.json")
-try:
-    ESD = Dataset.load(Path("./data"), do_pickle_config=False)
-except AttributeError:
-    # If the AttributeError occurs during loading, create a new Dataset object
-    from EventStream.data.dataset_config import DatasetConfig
-    config = DatasetConfig(save_dir=Path("./data"))
-    ESD = Dataset(config=config)
+ESD = Dataset.load(DATA_DIR)
 
 # Split the dataset into train, validation, and test sets
 ESD.split(split_fracs=[0.7, 0.2, 0.1])
 
 # Preprocess the dataset
 ESD.preprocess()
-
-# Checks
-assert 'A1cGreaterThan7' in ESD.subjects_df.columns, "A1cGreaterThan7 column is missing in subjects_df"
-assert pl.datatypes.Categorical(ESD.subjects_df['A1cGreaterThan7']), "A1cGreaterThan7 should be a categorical column"
-
-assert 'CodeWithType' in ESD.dynamic_measurements_df.columns, "CodeWithType column is missing in dynamic_measurements_df"
 
 # Inspect dataframes
 
@@ -43,18 +32,12 @@ print(ESD.dynamic_measurements_df.head())
 print("Unique event types in events_df:")
 print(ESD.events_df['event_type'].unique())
 
-print("Unique CodeWithType values in dynamic_measurements_df:")
-print(ESD.dynamic_measurements_df['CodeWithType'].unique())
-
-print("Unique values in A1cGreaterThan7:")
-print(ESD.subjects_df['A1cGreaterThan7'].unique())
-
 # vocabulary indices
 print("Unified Vocabulary:")
 for word, index in ESD.unified_vocabulary_idxmap.items():
     print(f"{index}: {word}")
 
-static_covariates = ['InitialA1c', 'A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+static_covariates = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
 
 # Create a Visualizer object
 V = Visualizer(
@@ -78,9 +61,6 @@ with open("data_summaries/dataset_description.txt", "w") as f:
     ESD.describe(do_print_measurement_summaries=True, viz_config=V)
     sys.stdout = original_stdout
 
-print("Unique values in A1cGreaterThan7:")
-print(ESD.subjects_df['A1cGreaterThan7'].unique())
-
 assert 'event_id' in ESD.dynamic_measurements_df.columns, "event_id column is missing in dynamic_measurements_df"
 assert ESD.dynamic_measurements_df['event_id'].is_numeric(), "event_id should be a numeric column"
 print("Data type of event_id column:", ESD.dynamic_measurements_df['event_id'].dtype)
@@ -90,9 +70,6 @@ print("Summary statistics:")
 print(ESD.subjects_df.describe())
 print(ESD.events_df.describe())
 print(ESD.dynamic_measurements_df.describe())
-
-print("Frequency distribution of CodeWithType:")
-print(ESD.dynamic_measurements_df['CodeWithType'].value_counts())
 
 # Data preparation
 subjects_with_events = ESD.subjects_df.join(ESD.events_df.select('subject_id'), on='subject_id', how='inner').unique()
@@ -202,38 +179,3 @@ print("Columns in subjects_with_events:", subjects_with_events.columns)
 # Temporal distribution of measurements:
 temporal_distribution_measurements = temporal_dist_pd(ESD.dynamic_measurements_df, 'measurement_id')
 save_plot_line(temporal_distribution_measurements, 'day', 'count', 'temporal_distribution_measurements.png', 'Day', 'Count of Measurements', 'Temporal distribution of measurements (daily)', x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31))))
-
-# Correlation between static covariates and outcome variables:
-
-# Assuming 'A1cGreaterThan7' is the outcome variable
-static_covariates = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
-
-# Convert the subjects DataFrame to pandas
-subjects_df_pd = ESD.subjects_df.to_pandas()
-
-# Convert 'A1cGreaterThan7' to numeric values (1 for 'true', 0 for 'false')
-subjects_df_pd['A1cGreaterThan7'] = subjects_df_pd['A1cGreaterThan7'].map({'true': 1, 'false': 0})
-
-# Calculate the correlation matrix
-corr_matrix = subjects_df_pd[static_covariates + ['A1cGreaterThan7']].corr()
-
-# Define the desired labels for the covariates
-covariate_labels = ['Baseline HbA1c', 'Female', 'Married', 'Medicare/Medicaid', 'English lang.', 'Age', 'SDI score', 'Veteran', 'HbA1c ≥ 7%']
-
-# Create a dictionary to map the original column names to the desired labels
-label_map = dict(zip(static_covariates + ['A1cGreaterThan7'], covariate_labels))
-
-# Rename the columns and index of the correlation matrix using the label map
-corr_matrix_labeled = corr_matrix.rename(columns=label_map, index=label_map)
-
-# Save the plot with the updated labels
-save_plot_heatmap(corr_matrix_labeled, corr_matrix_labeled.columns, corr_matrix_labeled.columns, 'Correlation matrix', "data_summaries/correlation_matrix.png")
-
-# Create a scatter plot of measurements per subject vs InitialA1c
-measurements_per_subject = ESD.dynamic_measurements_df.group_by('subject_id').agg(pl.count('measurement_id').alias('num_measurements'))
-measurements_and_initial_a1c = measurements_per_subject.join(ESD.subjects_df[['subject_id', 'InitialA1c']], on='subject_id', how='left')
-
-measurements_and_initial_a1c = ESD._denormalize(measurements_and_initial_a1c, 'InitialA1c')
-measurements_and_initial_a1c_pd = measurements_and_initial_a1c.to_pandas()
-
-save_scatter_plot(measurements_and_initial_a1c_pd, 'InitialA1c', 'num_measurements', 'Measurements per patient vs. baseline HbA1c (%)', 'Number of Measurements', "data_summaries/measurements_per_subject_vs_initial_a1c.png", x_label='Baseline HbA1c (%)', x_scale=(0, 20))

@@ -71,17 +71,56 @@ def generate_time_intervals(start_date, end_date, interval_days):
     return intervals
 
 class CustomPytorchDataset(PytorchDataset):
-    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str):
-        super().__init__(config, split)
+    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, task_df: pl.DataFrame = None):
         self.dl_reps_dir = Path(dl_reps_dir)  # Convert dl_reps_dir to a Path object
+        super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
         self.load_cached_data()
 
     def load_cached_data(self):
-        if self.dl_reps_dir is None:
+        if not self.dl_reps_dir:
             raise ValueError("The 'dl_reps_dir' attribute must be set to a valid directory path.")
         
-        cached_path = Path(self.dl_reps_dir) / f"{self.split}*.parquet"
-        self.cached_data = pl.scan_parquet(cached_path)
+        cached_path = self.dl_reps_dir / f"{self.split}*.parquet"
+        parquet_files = list(cached_path.parent.glob(cached_path.name))
+
+        if not parquet_files:
+            raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
+
+        print(f"Loading Parquet files for split '{self.split}':")
+        for parquet_file in parquet_files:
+            print(f"File: {parquet_file}")
+            try:
+                df = pd.read_parquet(parquet_file)
+                print(df.head())  # Print the first few rows of each Parquet file
+                print(df.dtypes)  # Print the data types of each column
+            except Exception as e:
+                print(f"Error reading Parquet file: {parquet_file}")
+                print(f"Error message: {str(e)}")
+                continue
+
+        self.cached_data = pd.concat([pd.read_parquet(file) for file in parquet_files], ignore_index=True)
+
+        # Ensure all required columns are present and handle missing values
+        required_columns = ["dynamic_indices", "dynamic_counts"]
+        for col in required_columns:
+            if col not in self.cached_data.columns:
+                self.cached_data[col] = None
+
+        # Handle categorical columns separately
+        categorical_columns = ["dynamic_indices_event_type"]
+        for col in categorical_columns:
+            if col in self.cached_data.columns:
+                self.cached_data[col] = self.cached_data[col].apply(lambda x: x.to_list() if isinstance(x, list) else [])
+
+        # Ensure no None values are present in the DataFrame to avoid unwrap errors
+        self.cached_data = self.cached_data.fillna({
+            col: 0 if self.cached_data[col].dtype in [np.float64, np.float32, np.int64, np.int32] else ""
+            for col in self.cached_data.columns if col not in categorical_columns
+        })
+
+        print(f"Loaded cached data from {self.dl_reps_dir} for split '{self.split}'.")
+        print(f"Cached data shape: {self.cached_data.shape}")
+        print(f"Cached data columns: {self.cached_data.columns}")
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """

@@ -1,6 +1,7 @@
 {
-  "save_dir": "experiments/pretrain/2024-06-04_15-27-57",
+  "save_dir": "data",
   "dataset_path": null,
+  "dl_reps_dir": "data/DL_reps",
   "max_seq_len": 256,
   "min_seq_len": 2,
   "seq_padding_side": "right",

@@ -1,20 +1,21 @@
 import os
+import sys
 from pathlib import Path
 
 import polars as pl
 
 from EventStream.data.dataset_polars import Dataset
-from EventStream.data.dataset_config import DatasetConfig
 
 DATA_DIR = Path("data")
 
 # Load the Dataset object
-try:
-    ESD = Dataset.load(DATA_DIR)
-except AttributeError:
-    # If the AttributeError occurs during loading, create a new Dataset object
-    config = DatasetConfig(save_dir=DATA_DIR, measurement_configs={})
-    ESD = Dataset(config=config)
+ESD = Dataset.load(DATA_DIR)
+
+# Split the dataset into train, validation, and test sets
+ESD.split(split_fracs=[0.7, 0.2, 0.1])
+
+# Preprocess the dataset
+ESD.preprocess()
 
 # Create the task_dfs directory inside the data directory
 TASK_DF_DIR = DATA_DIR / "task_dfs"
@@ -31,4 +32,15 @@ a1c_greater_than_7 = (
     .with_columns(pl.lit(None, dtype=pl.Datetime).alias("end_time"))
 )
 
-a1c_greater_than_7.collect().write_parquet(TASK_DF_DIR / "a1c_greater_than_7.parquet")
+# Collect the lazy DataFrame
+a1c_greater_than_7_df = a1c_greater_than_7.collect()
+
+# Filter the task DataFrame based on the split subject IDs
+train_df = a1c_greater_than_7_df.filter(pl.col("subject_id").is_in(ESD.split_subjects["train"]))
+val_df = a1c_greater_than_7_df.filter(pl.col("subject_id").is_in(ESD.split_subjects["tuning"]))
+test_df = a1c_greater_than_7_df.filter(pl.col("subject_id").is_in(ESD.split_subjects["held_out"]))
+
+# Save the split dataframes to parquet files
+train_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_train.parquet")
+val_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_val.parquet")
+test_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_test.parquet")
