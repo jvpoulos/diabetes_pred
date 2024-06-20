@@ -5,11 +5,18 @@ from pathlib import Path
 import polars as pl
 
 from EventStream.data.dataset_polars import Dataset
+from EventStream.data.dataset_config import DatasetConfig
 
 DATA_DIR = Path("data")
 
 # Load the Dataset object
-ESD = Dataset.load(DATA_DIR)
+try: 
+    ESD = Dataset.load(DATA_DIR)
+except AttributeError:
+    config = DatasetConfig(save_dir=DATA_DIR)
+    ESD = Dataset(
+        config=config,
+    )    
 
 # Split the dataset into train, validation, and test sets
 ESD.split(split_fracs=[0.7, 0.2, 0.1])

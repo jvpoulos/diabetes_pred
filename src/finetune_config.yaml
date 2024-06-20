@@ -21,7 +21,7 @@ config:
   structured_event_processing_mode: conditionally_independent
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
-  seq_window_size: 4
+  seq_window_size: 32
   TTE_generation_layer_type: exponential
   head_dim: 8
   num_attention_heads: 4
@@ -29,6 +29,7 @@ config:
   input_dropout: 0.2
   resid_dropout: 0.2
   intermediate_size: 256
+  do_use_sinusoidal: true
 
 optimization_config:
   init_lr: 0.0001

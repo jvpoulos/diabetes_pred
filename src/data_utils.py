@@ -41,6 +41,32 @@ import tempfile
 import shutil
 import pickle
 
+def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
+    # Convert timestamp to month
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(
+        pl.col("timestamp").dt.strftime("%Y-%m").alias("month")
+    )
+
+    # Calculate the number of measurements per patient per month
+    measurements_per_patient_per_month = (
+        dynamic_measurements_df.groupby(["subject_id", "month"])
+        .agg(pl.count("measurement_id").alias("num_measurements"))
+        .groupby("month")
+        .agg(pl.mean("num_measurements").alias("avg_measurements_per_patient"))
+    )
+
+    # Convert to pandas DataFrame
+    measurements_per_patient_per_month_pd = measurements_per_patient_per_month.to_pandas()
+
+    # Create and save the plot
+    fig = px.line(
+        measurements_per_patient_per_month_pd,
+        x="month",
+        y="avg_measurements_per_patient",
+        title="Average Measurements per Patient per Month",
+    )
+    fig.write_image("data_summaries/avg_measurements_per_patient_per_month.png")
+
 def json_serial(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
@@ -71,56 +97,140 @@ def generate_time_intervals(start_date, end_date, interval_days):
     return intervals
 
 class CustomPytorchDataset(PytorchDataset):
-    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, task_df: pl.DataFrame = None):
-        self.dl_reps_dir = Path(dl_reps_dir)  # Convert dl_reps_dir to a Path object
-        super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
+    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, subjects_df: pl.DataFrame, task_df: pl.DataFrame = None, device: torch.device = None):
+        self.string_to_int_mapping = {}
+        self.current_index = 0
+        self.dl_reps_dir = Path(dl_reps_dir)
+        self.subjects_df = subjects_df
+        self.task_df = task_df
+        self.device = device
+        super().__init__(config, split, task_df=task_df, dl_reps_dir=str(self.dl_reps_dir))
         self.load_cached_data()
+
+    def get_int_mapping(self, s):
+        if s not in self.string_to_int_mapping:
+            self.string_to_int_mapping[s] = self.current_index
+            self.current_index += 1
+        return self.string_to_int_mapping[s]
+
+    def __getitem__(self, idx):
+        row = self.cached_data.iloc[idx]
+
+        subject_id = row['subject_id']
+        filtered_task_df = self.task_df.filter(pl.col('subject_id') == subject_id)
+
+        if not filtered_task_df.is_empty():
+            label = filtered_task_df['label'][0]
+        else:
+            label = None
+
+        # Convert dynamic_indices to a list of integers if it's an object array
+        if isinstance(row['dynamic_indices'], np.ndarray) and row['dynamic_indices'].dtype == np.object_:
+            dynamic_indices = torch.tensor([self.get_int_mapping(x) for x in row['dynamic_indices']], dtype=torch.long)
+        else:
+            dynamic_indices = torch.tensor(row['dynamic_indices'], dtype=torch.long)
+
+        # Convert dynamic_counts to a list of integers if it's an object array
+        if isinstance(row['dynamic_counts'], np.ndarray) and row['dynamic_counts'].dtype == np.object_:
+            dynamic_counts = torch.tensor([int(x) for x in row['dynamic_counts']], dtype=torch.long)
+        else:
+            dynamic_counts = torch.tensor(row['dynamic_counts'], dtype=torch.long)
+
+        # Check if 'dynamic_indices_event_type' exists in the row
+        if 'dynamic_indices_event_type' in row:
+            dynamic_indices_event_type = row['dynamic_indices_event_type']
+            if isinstance(dynamic_indices_event_type, np.ndarray) and dynamic_indices_event_type.dtype == np.object_:
+                dynamic_indices_event_type = [self.get_int_mapping(x) for x in dynamic_indices_event_type]
+            elif isinstance(dynamic_indices_event_type, str):
+                dynamic_indices_event_type = [x.strip() for x in dynamic_indices_event_type.strip('[]').split(',')]
+                dynamic_indices_event_type = [self.get_int_mapping(x) for x in dynamic_indices_event_type]
+            dynamic_indices_event_type = torch.tensor(dynamic_indices_event_type, dtype=torch.long)
+        else:
+            dynamic_indices_event_type = torch.zeros_like(dynamic_indices, dtype=torch.long)
+
+        # Check if 'dynamic_counts_event_type' exists in the row
+        if 'dynamic_counts_event_type' in row:
+            dynamic_counts_event_type = row['dynamic_counts_event_type']
+            if isinstance(dynamic_counts_event_type, np.ndarray) and dynamic_counts_event_type.dtype == np.object_:
+                dynamic_counts_event_type = [int(x) if x.isdigit() else 0 for x in dynamic_counts_event_type]
+            elif isinstance(dynamic_counts_event_type, str):
+                dynamic_counts_event_type = [x.strip() for x in dynamic_counts_event_type.strip('[]').split(',')]
+                dynamic_counts_event_type = [int(x) if x.isdigit() else 0 for x in dynamic_counts_event_type]
+            dynamic_counts_event_type = torch.tensor(dynamic_counts_event_type, dtype=torch.long)
+        else:
+            dynamic_counts_event_type = torch.zeros_like(dynamic_counts, dtype=torch.long)
+
+        return {
+            'dynamic_indices': dynamic_indices.to(self.device),
+            'dynamic_counts': dynamic_counts.to(self.device),
+            'dynamic_indices_event_type': dynamic_indices_event_type.to(self.device),
+            'dynamic_counts_event_type': dynamic_counts_event_type.to(self.device),
+            'labels': torch.tensor(label, dtype=torch.bool).to(self.device) if label is not None else None
+        }
 
     def load_cached_data(self):
         if not self.dl_reps_dir:
             raise ValueError("The 'dl_reps_dir' attribute must be set to a valid directory path.")
-        
-        cached_path = self.dl_reps_dir / f"{self.split}*.parquet"
-        parquet_files = list(cached_path.parent.glob(cached_path.name))
+
+        cached_path = os.path.join(self.dl_reps_dir, f"{self.split}*.parquet")
+        parquet_files = [f for f in os.listdir(self.dl_reps_dir) if f.startswith(f"{self.split}") and f.endswith(".parquet")]
 
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
 
         print(f"Loading Parquet files for split '{self.split}':")
+        cached_data_list = []
         for parquet_file in parquet_files:
-            print(f"File: {parquet_file}")
+            print(f"File: {os.path.join(self.dl_reps_dir, parquet_file)}")
             try:
-                df = pd.read_parquet(parquet_file)
-                print(df.head())  # Print the first few rows of each Parquet file
-                print(df.dtypes)  # Print the data types of each column
+                df = pd.read_parquet(os.path.join(self.dl_reps_dir, parquet_file))
+                cached_data_list.append(df)
             except Exception as e:
-                print(f"Error reading Parquet file: {parquet_file}")
+                print(f"Error reading Parquet file: {os.path.join(self.dl_reps_dir, parquet_file)}")
                 print(f"Error message: {str(e)}")
                 continue
 
-        self.cached_data = pd.concat([pd.read_parquet(file) for file in parquet_files], ignore_index=True)
+        self.cached_data = pd.concat(cached_data_list, ignore_index=True)
 
-        # Ensure all required columns are present and handle missing values
-        required_columns = ["dynamic_indices", "dynamic_counts"]
-        for col in required_columns:
-            if col not in self.cached_data.columns:
-                self.cached_data[col] = None
-
-        # Handle categorical columns separately
-        categorical_columns = ["dynamic_indices_event_type"]
-        for col in categorical_columns:
+        # Convert the string-encoded lists to actual lists
+        for col in ["dynamic_indices", "dynamic_counts", "dynamic_indices_event_type", "dynamic_counts_event_type"]:
             if col in self.cached_data.columns:
-                self.cached_data[col] = self.cached_data[col].apply(lambda x: x.to_list() if isinstance(x, list) else [])
-
-        # Ensure no None values are present in the DataFrame to avoid unwrap errors
-        self.cached_data = self.cached_data.fillna({
-            col: 0 if self.cached_data[col].dtype in [np.float64, np.float32, np.int64, np.int32] else ""
-            for col in self.cached_data.columns if col not in categorical_columns
-        })
+                self.cached_data[col] = self.cached_data[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
 
         print(f"Loaded cached data from {self.dl_reps_dir} for split '{self.split}'.")
         print(f"Cached data shape: {self.cached_data.shape}")
-        print(f"Cached data columns: {self.cached_data.columns}")
+
+    def collate(self, batch):
+        valid_items = [item for item in batch if item["labels"] is not None]
+        if not valid_items:
+            return None
+
+        max_seq_len = max(len(item["dynamic_indices"]) for item in valid_items)
+        max_n_data = max(max(len(v) for v in item["dynamic_indices"]) for item in valid_items)
+
+        dynamic_indices = torch.zeros((len(valid_items), max_seq_len, max_n_data), dtype=torch.long)
+        dynamic_counts = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
+        dynamic_indices_event_type = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
+        dynamic_counts_event_type = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
+        labels = torch.zeros((len(valid_items),), dtype=torch.bool)
+
+        for i, item in enumerate(valid_items):
+            seq_len = len(item["dynamic_indices"])
+            if seq_len > 0:
+                dynamic_indices[i, :seq_len, :len(item["dynamic_indices"][0])] = torch.tensor(item["dynamic_indices"], dtype=torch.long)
+                dynamic_counts[i, :seq_len] = torch.tensor(item["dynamic_counts"], dtype=torch.long)
+                dynamic_indices_event_type[i, :seq_len] = torch.tensor(item["dynamic_indices_event_type"], dtype=torch.long)
+                dynamic_counts_event_type[i, :seq_len] = torch.tensor(item["dynamic_counts_event_type"], dtype=torch.long)
+            labels[i] = item["labels"]
+
+        return {
+            'dynamic_indices': dynamic_indices,
+            'dynamic_counts': dynamic_counts,
+            'dynamic_indices_event_type': dynamic_indices_event_type,
+            'dynamic_counts_event_type': dynamic_counts_event_type,
+            'labels': labels
+        }
+
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """
@@ -266,66 +376,48 @@ def print_covariate_metadata(covariates, ESD):
         else:
             print(f"{covariate} is not available in measurement configs.")
 
-def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, min_frequency=None):
-    df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
-    
-    print(f"{df_name} DataFrame shape: {df.shape}")
-    
-    df = pl.from_pandas(df)
-    
-    print(f"{df_name} Polars DataFrame shape: {df.shape}")
-    
-    print(f"Preprocess {df_name.lower()} data")
-    print(f"Original {df_name} DataFrame shape: {df.shape}")
-    
-    # Convert 'A1cGreaterThan7' to a float
+def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=10000, min_frequency=None):
+    chunks = []
+    for chunk in pd.read_csv(file_path, sep='|', chunksize=chunk_size):
+        chunk = read_file(file_path, columns, selected_columns, chunk_size=chunk_size, parse_dates=None)
+        chunk = process_chunk(df_name, chunk, columns, selected_columns, min_frequency)
+        chunks.append(chunk)
+
+    df = pd.concat(chunks, ignore_index=True)
+    return pl.from_pandas(df)
+
+def process_chunk(df_name, chunk, columns, selected_columns, min_frequency):
+    chunk = chunk[selected_columns]
+
     if df_name == 'Outcomes':
-        df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float64))
-    
+        chunk['A1cGreaterThan7'] = chunk['A1cGreaterThan7'].astype(float)
+
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
-        # Parse the 'Date' column as datetime
-        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
-    
+        chunk['Date'] = pd.to_datetime(chunk['Date'], format="%Y-%m-%d %H:%M:%S")
+
     if df_name in ['Diagnoses', 'Procedures']:
-        # Drop rows with missing/null values in Date or CodeWithType
-        df = df.drop_nulls(subset=['Date', 'CodeWithType'])
-        
+        chunk = chunk.dropna(subset=['Date', 'CodeWithType'])
         if min_frequency is not None:
-            # Count the occurrences of each CodeWithType
-            code_counts = df.select('CodeWithType').groupby('CodeWithType').count().sort('count', descending=True)
-            
-            # Determine the infrequent categories based on min_frequency
+            code_counts = chunk['CodeWithType'].value_counts()
             if isinstance(min_frequency, int):
-                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['CodeWithType']
+                infrequent_categories = code_counts[code_counts < min_frequency].index
             else:
-                min_count_threshold = min_frequency * len(df)
-                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['CodeWithType']
-            
-            # Filter out infrequent categories
-            df = df.filter(~pl.col('CodeWithType').is_in(infrequent_categories))
-    
+                min_count_threshold = min_frequency * len(chunk)
+                infrequent_categories = code_counts[code_counts < min_count_threshold].index
+            chunk = chunk[~chunk['CodeWithType'].isin(infrequent_categories)]
+
     elif df_name == 'Labs':
-        # Drop rows with missing/null values in Date, Code, or Result
-        df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
-        
+        chunk = chunk.dropna(subset=['Date', 'Code', 'Result'])
         if min_frequency is not None:
-            # Count the occurrences of each CodeWithType
-            code_counts = df.select('Code').groupby('Code').count().sort('count', descending=True)
-            
-            # Determine the infrequent categories based on min_frequency
+            code_counts = chunk['Code'].value_counts()
             if isinstance(min_frequency, int):
-                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['Code']
+                infrequent_categories = code_counts[code_counts < min_frequency].index
             else:
-                min_count_threshold = min_frequency * len(df)
-                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['Code']
-            
-            # Filter out infrequent categories
-            df = df.filter(~pl.col('Code').is_in(infrequent_categories))
-    
-    if min_frequency is not None:
-        print(f"Reduced {df_name} DataFrame shape: {df.shape}")
-    
-    return df
+                min_count_threshold = min_frequency * len(chunk)
+                infrequent_categories = code_counts[code_counts < min_count_threshold].index
+            chunk = chunk[~chunk['Code'].isin(infrequent_categories)]
+
+    return chunk
 
 def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size=10000, min_frequency=None):
     """

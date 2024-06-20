@@ -29,6 +29,8 @@ import polars as pl
 from polars.datatypes import DataType
 import pickle
 from pathlib import Path
+import polars.expr as expr
+import pyarrow.parquet as pq
 
 from EventStream.data.config import (
     InputDFSchema,
@@ -58,46 +60,56 @@ import tempfile
 import shutil
 import pyarrow.parquet as pq
 
-def main(use_dask=False, use_labs=False):
+import psutil
+
+def print_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    print(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+
+def main(use_labs=False, save_schema=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
     if use_labs:
         labs_file_path = 'data/Labs.txt'
 
-    df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
-    df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
+    subjects_df = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select, chunk_size=10000)
 
-    print("Outcomes DataFrame columns:", df_outcomes.columns)
+    # Aggregate subjects_df to have one row per EMPI
+    subjects_df = subjects_df.groupby('EMPI').agg([
+        pl.col('InitialA1c').first(),
+        pl.col('A1cGreaterThan7').first(),
+        pl.col('Female').first(),
+        pl.col('Married').first(),
+        pl.col('GovIns').first(),
+        pl.col('English').first(),
+        pl.col('AgeYears').first(),
+        pl.col('SDI_score').first(),
+        pl.col('Veteran').first()
+    ])
 
-    if df_outcomes.is_empty():
-        raise ValueError("Outcomes DataFrame is empty.")
+    # Add the subject_id column
+    subjects_df = subjects_df.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(38960*0.01))
-    df_dia = df_dia if isinstance(df_dia, pl.DataFrame) else pl.from_pandas(df_dia)
+    # Print the new shape of subjects_df
+    print("Shape of subjects_df after aggregation:", subjects_df.shape)
+    print("Number of unique EMPIs:", subjects_df['EMPI'].n_unique())
 
-    if df_dia.is_empty():
-        raise ValueError("Diagnoses DataFrame is empty.")
-
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(38960*0.01))
-    df_prc = df_prc if isinstance(df_prc, pl.DataFrame) else pl.from_pandas(df_prc)
-
-    if df_prc.is_empty():
-        raise ValueError("Procedures DataFrame is empty.")
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
 
     if use_labs:
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, min_frequency=ceil(38960*0.01))
-        df_labs = df_labs if isinstance(df_labs, pl.DataFrame) else pl.from_pandas(df_labs)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=90000, min_frequency=ceil(subjects_df.height*0.01))
 
-        if df_labs.is_empty():
-            raise ValueError("Labs DataFrame is empty.")
-        
+    # Get the union of unique codes from df_dia and df_prc
+    unique_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
+
     # Build measurement_configs and track input schemas
     subject_id_col = 'EMPI'
     measurements_by_temporality = {
         TemporalityType.STATIC: {
             'outcomes': {
-                # DataModality.SINGLE_LABEL_CLASSIFICATION: ['A1cGreaterThan7'],
                 DataModality.UNIVARIATE_REGRESSION: ['InitialA1c', 'SDI_score'],
                 DataModality.SINGLE_LABEL_CLASSIFICATION: ['Female', 'Married', 'GovIns', 'English', 'AgeYears', 'Veteran']
             }
@@ -182,7 +194,7 @@ def main(use_dask=False, use_labs=False):
 
     # Build DatasetSchema
     connection_uri = None
-    
+
     def build_schema(
         col_schema: dict[str, InputDataType],
         source_schema: dict[str, Any],
@@ -193,7 +205,7 @@ def main(use_dask=False, use_labs=False):
 
         if "input_df" in source_schema:
             if schema_name == 'outcomes':
-                input_schema_kwargs["input_df"] = df_outcomes
+                input_schema_kwargs["input_df"] = subjects_df
             elif schema_name == 'diagnoses':
                 input_schema_kwargs["input_df"] = df_dia
             elif schema_name == 'procedures':
@@ -361,32 +373,21 @@ def main(use_dask=False, use_labs=False):
 
     # Build DatasetSchema
     dynamic_input_schemas = []
-    events_dfs = []
 
-    if df_dia.is_empty():
-        raise ValueError("Diagnoses DataFrame is empty.")
-    else:
-        dynamic_input_schemas.append(
-            InputDFSchema(
-                input_df=df_dia,
-                subject_id_col=None,  # Set to None for dynamic input schemas
-                data_schema={
-                    'Date': InputDataType.TIMESTAMP
-                },
-                event_type='DIAGNOSIS',
-                ts_col='Date',
-                ts_format='%Y-%m-%d %H:%M:%S',
-                type=InputDFType.EVENT
-            )
+    dynamic_input_schemas.append(
+        InputDFSchema(
+            input_df=df_dia,
+            subject_id_col=None,  # Set to None for dynamic input schemas
+            data_schema={
+                'Date': InputDataType.TIMESTAMP
+            },
+            event_type='DIAGNOSIS',
+            ts_col='Date',
+            ts_format='%Y-%m-%d %H:%M:%S',
+            type=InputDFType.EVENT
         )
-        events_dfs.append(df_dia.select('EMPI', 'Date').rename({'EMPI': 'subject_id'}))
+    )
 
-    if not df_dia.is_empty():
-        events_dfs.append(df_dia.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
-
-    if not df_prc.is_empty():
-        events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
-    
     dynamic_input_schemas.extend([
         InputDFSchema(
             input_df=df_dia,
@@ -424,59 +425,65 @@ def main(use_dask=False, use_labs=False):
                 type=InputDFType.EVENT
             )
         )
-
-    # Collect the 'EMPI' column from the DataFrames
-    df_dia_empi = df_dia.lazy().select('EMPI').collect()['EMPI']
-    df_prc_empi = df_prc.lazy().select('EMPI').collect()['EMPI']
+    
     if use_labs:
-        df_labs_empi = df_labs.lazy().select('EMPI').collect()['EMPI']
+        df_labs_empi = df_labs['EMPI'].unique()
 
-    # Process events and measurements data in a streaming fashion
-    events_df = pl.concat(events_dfs, how='diagonal')
-    events_df = events_df.with_columns(
-        pl.col('subject_id').cast(pl.UInt32),
-        pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
-        pl.when(pl.col('subject_id').is_in(df_dia_empi) & pl.col('subject_id').is_in(df_prc_empi))
-        .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
-        # .when(pl.col('subject_id').is_in(df_prc_empi))
-        # .then(pl.lit('PROCEDURE').cast(pl.Categorical))
-        .otherwise(pl.lit('PROCEDURE').cast(pl.Categorical))
-        .alias('event_type')
-    )
+    print("Processing events and measurements data...")
+    print_memory_usage()
 
-    # Print the unique values and null count of the 'subject_id' column
-    print("Unique values in subject_id column of events_df:", events_df['subject_id'].unique())
-    print("Number of null values in subject_id column of events_df:", events_df['subject_id'].null_count())
+    print("df_dia schema:", df_dia.schema)
+    print("df_prc schema:", df_prc.schema)
 
-    # Update the event_types_idxmap
-    event_types_idxmap = {
-        'DIAGNOSIS': 1,
-        'PROCEDURE': 2
-    }
+    events_df = pl.concat([df_dia, df_prc], how='diagonal')
+    events_df = events_df.with_columns([
+        pl.col('EMPI').alias('subject_id').cast(pl.UInt32),
+        pl.col('Date').alias('timestamp'),
+        pl.when(pl.col('EMPI').is_in(df_dia['EMPI']))
+        .then(pl.lit('DIAGNOSIS'))
+        .otherwise(pl.lit('PROCEDURE'))
+        .alias('event_type').cast(pl.Categorical)
+    ])
+    events_df = events_df.join(subjects_df.select(['EMPI', 'subject_id']), on='EMPI', how='inner')
+    events_df = events_df.with_row_index('event_id')
 
-    vocab_sizes_by_measurement = {
-        'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
-        'dynamic_indices': max(len(df_dia['CodeWithType'].unique()), len(df_prc['CodeWithType'].unique())) + 1,
-    }
+    # Replace the dynamic_measurements_df creation
+    dynamic_measurements_df = pl.concat([
+        df_dia.select('EMPI', 'CodeWithType', 'Date'),
+        df_prc.select('EMPI', 'CodeWithType', 'Date')
+    ])
 
-    vocab_offsets_by_measurement = {
-        'event_type': 0,
-        'dynamic_indices': len(event_types_idxmap) + 1,
-    }
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.col('EMPI').alias('subject_id').cast(pl.UInt32),
+        pl.col('Date').alias('timestamp'),
+        pl.col('CodeWithType').alias('dynamic_indices'),
+        pl.lit(1).cast(pl.Int32).alias('dynamic_counts'),
+        pl.when(pl.col('EMPI').is_in(df_dia['EMPI']))
+        .then(pl.lit('DIAGNOSIS'))
+        .otherwise(pl.lit('PROCEDURE'))
+        .alias('dynamic_indices_event_type').cast(pl.Categorical),
+        pl.lit(1).cast(pl.Int32).alias('dynamic_counts_event_type')
+    ])
 
-    # Add the 'event_id' column to the 'events_df' DataFrame
-    events_df = events_df.with_row_index(name='event_id')
+    dynamic_measurements_df = dynamic_measurements_df.join(subjects_df.select(['EMPI', 'subject_id']), on='EMPI', how='inner')
 
-    df_outcomes = df_outcomes.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
+    dynamic_measurements_df = dynamic_measurements_df.group_by([
+        'subject_id', 'timestamp', 'dynamic_indices', 'dynamic_indices_event_type'
+    ]).agg([
+        pl.col('dynamic_counts').sum(),
+        pl.col('dynamic_counts_event_type').sum()
+    ])
 
-    # Print the unique values and null count of the 'subject_id' column
-    print("Unique values in subject_id column of df_outcomes:", df_outcomes['subject_id'].unique())
-    print("Number of null values in subject_id column of df_outcomes:", df_outcomes['subject_id'].null_count())
+    dynamic_measurements_df = dynamic_measurements_df.with_row_index('event_id')
 
-    print("Shape of df_outcomes:", df_outcomes.shape)
-    print("Columns of df_outcomes:", df_outcomes.columns)
+    # Get the union of unique codes from df_dia and df_prc
+    unique_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
 
-    # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
+    subjects_df = subjects_df.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
+
+    print("Shape of subjects_df:", subjects_df.shape)
+    print("Columns of subjects_df:", subjects_df.columns)
+
     if use_labs:
         dynamic_measurements_df = df_labs.select('EMPI', 'Code', 'Result', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
         dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
@@ -489,86 +496,58 @@ def main(use_dask=False, use_labs=False):
             .rename({'tmp_event_id': 'event_id'})
         )
 
-    if not use_labs:
-        dynamic_measurements_df = pl.concat([
-            df_dia.select('EMPI', 'CodeWithType', 'Date'),
-            df_prc.select('EMPI', 'CodeWithType', 'Date')
-        ], how='diagonal')
-        dynamic_measurements_df = dynamic_measurements_df.rename({'EMPI': 'subject_id', 'Date': 'timestamp', 'CodeWithType': 'dynamic_indices'})
-        dynamic_measurements_df = dynamic_measurements_df.with_columns(
-            pl.col('subject_id').cast(pl.UInt32),
-            pl.col('timestamp').cast(pl.Datetime),
-     #       pl.col('dynamic_indices').cast(pl.Categorical)
+    event_types = events_df['event_type'].unique().to_list()
+    event_types_idxmap = {event_type: idx + 1 for idx, event_type in enumerate(event_types)}
+    event_types_idxmap['UNKNOWN'] = len(event_types_idxmap) + 1
+
+    print("Event types index map:")
+    print(event_types_idxmap)
+
+    unique_codes = set(dynamic_measurements_df['dynamic_indices'].unique())
+
+    vocab_sizes_by_measurement = {
+        'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
+        'dynamic_indices': len(unique_codes) + 1,  # Add 1 for the unknown token
+    }
+
+    vocab_offsets_by_measurement = {
+        'event_type': 0,
+        'dynamic_indices': len(event_types_idxmap) + 1,
+    }
+
+    print_memory_usage()
+
+    print("Convert temporal dfs to lazy frames..")
+    events_df = events_df.lazy()
+    dynamic_measurements_df = dynamic_measurements_df.lazy()
+
+    if save_schema: 
+        print("Building dataset schema...")
+        dataset_schema = DatasetSchema(
+            static=InputDFSchema(
+                input_df=subjects_df,  # Use subjects_df directly
+                subject_id_col='subject_id',
+                data_schema={
+                    'InitialA1c': InputDataType.FLOAT,
+                    'Female': InputDataType.CATEGORICAL,
+                    'Married': InputDataType.CATEGORICAL,
+                    'GovIns': InputDataType.CATEGORICAL,
+                    'English': InputDataType.CATEGORICAL,
+                    'AgeYears': InputDataType.CATEGORICAL,
+                    'SDI_score': InputDataType.FLOAT,
+                    'Veteran': InputDataType.CATEGORICAL
+                },
+                type=InputDFType.STATIC
+            ),
+            dynamic=dynamic_input_schemas
         )
-        dynamic_measurements_df = (
-            dynamic_measurements_df
-            .group_by(['subject_id', 'timestamp'])
-            .agg(pl.len().alias('tmp_event_id'))
-            .join(
-                dynamic_measurements_df.select('subject_id', 'timestamp', 'dynamic_indices'), 
-                on=['subject_id', 'timestamp'],
-                how='left'
-            )
-            .drop('tmp_event_id')
-            .with_row_index('tmp_event_id')
-            .rename({'tmp_event_id': 'event_id'})
-        )
+        print("Saving input_schema to file...")
+        if config.save_dir is not None:
+            dataset_schema_dict = dataset_schema.to_dict()
+            with open(config.save_dir / "input_schema.json", "w") as f:
+                json.dump(dataset_schema_dict, f, default=json_serial)
 
-
-    print("Columns of dynamic_measurements_df:", dynamic_measurements_df.columns)
-    interval_dynamic_measurements_df = dynamic_measurements_df  # Initialize the variable
-
-    print("Data types of dynamic_measurements_df columns:")
-    for col in dynamic_measurements_df.columns:
-        print(f"{col}: {dynamic_measurements_df[col].dtype}")
-
-    dynamic_measurements_df = dynamic_measurements_df.with_columns(
-    pl.col('subject_id').cast(pl.UInt32),
-    pl.col('timestamp').cast(pl.Datetime),
-    pl.col('dynamic_indices').cast(pl.Categorical)
-)
-
-    # Print the unique values and null count of the 'subject_id' column
-    print("Unique values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].unique())
-    print("Number of null values in subject_id column of dynamic_measurements_df:", dynamic_measurements_df['subject_id'].null_count())
-
-    print("Shape of dynamic_measurements_df before join:", dynamic_measurements_df.shape)
-    print("Sample rows of dynamic_measurements_df before join:")
-    print(dynamic_measurements_df.head(5))
-
-    print("Shape of events_df used for join:", events_df.select('timestamp', 'event_id').shape)
-    print("Sample rows of events_df used for join:")
-    print(events_df.select('timestamp', 'event_id').head(5))
-
-    print("Shape of dynamic_measurements_df after join:", dynamic_measurements_df.shape)
-    print("Sample rows of dynamic_measurements_df after join:")
-    print(dynamic_measurements_df.head(5))
-
-    print("Columns of events_df:", events_df.columns)
-    print("Unique values in event_type:", events_df['event_type'].unique())
-
-    print("Columns of dynamic_measurements_df:", dynamic_measurements_df.columns)
-    print("Unique values in dynamic_indices:", dynamic_measurements_df['dynamic_indices'].unique())
-
-    dataset_schema = DatasetSchema(
-        static=InputDFSchema(
-            input_df=df_outcomes,  # Use df_outcomes directly
-            subject_id_col='subject_id',
-            data_schema={
-                'InitialA1c': InputDataType.FLOAT,
-                'Female': InputDataType.CATEGORICAL,
-                'Married': InputDataType.CATEGORICAL,
-                'GovIns': InputDataType.CATEGORICAL,
-                'English': InputDataType.CATEGORICAL,
-                'AgeYears': InputDataType.CATEGORICAL,
-                'SDI_score': InputDataType.FLOAT,
-                'Veteran': InputDataType.CATEGORICAL
-            },
-            type=InputDFType.STATIC
-        ),
-        dynamic=dynamic_input_schemas
-    )
-
+    print("Building dataset config...")
     # Build Config
     split = (0.7, 0.2, 0.1)
     seed = 42
@@ -587,64 +566,22 @@ def main(use_dask=False, use_labs=False):
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
 
-    if config.save_dir is not None:
-        dataset_schema_dict = dataset_schema.to_dict()
-        with open(config.save_dir / "input_schema.json", "w") as f:
-            json.dump(dataset_schema_dict, f, default=json_serial)
+    # Before creating the Dataset object
+    subjects_df = subjects_df.collect() if isinstance(subjects_df, pl.LazyFrame) else subjects_df
+    events_df = events_df.collect() if isinstance(events_df, pl.LazyFrame) else events_df
+    dynamic_measurements_df = dynamic_measurements_df.collect() if isinstance(dynamic_measurements_df, pl.LazyFrame) else dynamic_measurements_df
 
-    print("Process events data")
-
-    # Determine the start and end timestamps
-    start_timestamp = events_df['timestamp'].min()
-    end_timestamp = events_df['timestamp'].max()
-
-    # Convert the start and end timestamps to datetime objects
-    start_timestamp = datetime.fromisoformat(str(start_timestamp))
-    end_timestamp = datetime.fromisoformat(str(end_timestamp))
-
-    # Generate time intervals (e.g., weekly intervals)
-    time_intervals = generate_time_intervals(start_timestamp.date(), end_timestamp.date(), 7)
-
-    # Process the data in time intervals
-    processed_events_df = pl.DataFrame()
-    processed_dynamic_measurements_df = pl.DataFrame()
-
-    for start_date, end_date in time_intervals:
-        print(f"Processing interval {start_date} - {end_date}")
-
-        # Filter events_df and dynamic_measurements_df for the current time interval
-        interval_events_df = events_df.filter(
-            (pl.col('timestamp') >= pl.datetime(start_date.year, start_date.month, start_date.day)) &
-            (pl.col('timestamp') < pl.datetime(end_date.year, end_date.month, end_date.day))
-        )
-        interval_dynamic_measurements_df = dynamic_measurements_df.filter(
-            (pl.col('timestamp') >= pl.datetime(start_date.year, start_date.month, start_date.day)) &
-            (pl.col('timestamp') < pl.datetime(end_date.year, end_date.month, end_date.day))
-        )
-
-        # Append the processed intervals to the final DataFrames
-        processed_events_df = pl.concat([processed_events_df, interval_events_df])
-        processed_dynamic_measurements_df = pl.concat([processed_dynamic_measurements_df, interval_dynamic_measurements_df])
-
-    # Drop duplicate event_id values from the processed_events_df
-    processed_events_df = processed_events_df.unique(subset=['event_id'])
-
-    # Update the events_df and dynamic_measurements_df with the processed data
-    events_df = processed_events_df
-    dynamic_measurements_df = processed_dynamic_measurements_df
-
-    print(f"Final shape of events_df: {events_df.shape}")
-    print(f"Final shape of dynamic_measurements_df: {dynamic_measurements_df.shape}")
-
+    # Create the Dataset object with eager DataFrames
     print("Creating Dataset object...")
     ESD = Dataset(
         config=config,
-        subjects_df=df_outcomes,  # Use df_outcomes directly
-        events_df=events_df,  # Use events_df directly
+        subjects_df=subjects_df,
+        events_df=events_df,
         dynamic_measurements_df=dynamic_measurements_df
     )
 
     print("Dataset object created.")
+    print_memory_usage()
 
     print("Splitting dataset...")
     ESD.split(split_fracs=split, split_names=["train", "tuning", "held_out"], seed=seed)
@@ -654,30 +591,54 @@ def main(use_dask=False, use_labs=False):
     ESD.preprocess()
     print("Dataset preprocessed.")
 
+    print("Caching deep learning representation...")
+    ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
+    print("Deep learning representation cached.")
+    print_memory_usage()
+
     print("Add epsilon to concurrent timestamps")
     eps = np.finfo(float).eps
 
     # Handle null timestamp values by filling them with a default value
-    default_timestamp = pl.datetime(2000, 1, 1)  # Choose an appropriate default value
-    ESD.events_df = ESD.events_df.with_columns(
-        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-    )
-    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns(
-        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-    )
+    default_timestamp = datetime(2000, 1, 1)  # Use Python's datetime
 
-    # Add epsilon to concurrent timestamps
-    eps = np.finfo(float).eps
-    ESD.events_df = ESD.events_df.with_columns(
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
-    )
-    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns(
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
-    )
+    if 'timestamp' not in ESD.events_df.columns:
+        ESD.events_df = ESD.events_df.with_columns([
+            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+        ])
+    else:
+        ESD.events_df = ESD.events_df.with_columns([
+            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+        ])
 
-    # Assign the vocabulary sizes and offsets to the Dataset's vocabulary_config
+    ESD.events_df = ESD.events_df.with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp_with_epsilon')
+    ])
+
+    if 'timestamp' not in ESD.dynamic_measurements_df.columns:
+        ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
+            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+        ])
+    else:
+        ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
+            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
+        ])
+
+    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp_with_epsilon')
+    ])
+
+    # Assign the updated vocabulary sizes and offsets to the Dataset's vocabulary_config
     ESD.vocabulary_config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
     ESD.vocabulary_config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
+    ESD.vocabulary_config.event_types_idxmap = event_types_idxmap
+
+    print("Updated Vocabulary sizes by measurement:")
+    print(ESD.vocabulary_config.vocab_sizes_by_measurement)
+    print("Updated Vocabulary offsets by measurement:")
+    print(ESD.vocabulary_config.vocab_offsets_by_measurement)
+    print("Updated Event types index map:")
+    print(ESD.vocabulary_config.event_types_idxmap)
 
     print("Saving dataset...")
     ESD.save(do_overwrite=do_overwrite)
@@ -692,11 +653,26 @@ def main(use_dask=False, use_labs=False):
     print(ESD.events_df.head())
     print("Dynamic Measurements DF:")
     print(ESD.dynamic_measurements_df.head())
-    print("Inferred Measurement Configs:", ESD.inferred_measurement_configs)
 
-    print("Caching deep learning representation...")
-    ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
-    print("Deep learning representation cached.")
+    print("Contents of Parquet files in data directory:")
+    data_dir = Path("data")
+    for parquet_file in data_dir.glob("*.parquet"):
+        print(f"File: {parquet_file}")
+        df = pl.read_parquet(parquet_file)
+        print("Columns:", df.columns)
+        print("Top 5 rows:")
+        print(df.head(5))
+        print()
+
+    print("Contents of Parquet files in task_dfs directory:")
+    task_dfs_dir = data_dir / "task_dfs"
+    for parquet_file in task_dfs_dir.glob("*.parquet"):
+        print(f"File: {parquet_file}")
+        df = pl.read_parquet(parquet_file)
+        print("Columns:", df.columns)
+        print("Top 5 rows:")
+        print(df.head(5))
+        print()
 
     # Read and display the contents of the Parquet files
     print("Contents of Parquet files in DL_reps directory:")
@@ -719,8 +695,16 @@ def main(use_dask=False, use_labs=False):
     else:
         print("DL_reps directory not found.")
 
+    # Code to inspect the first 10 rows of E.pkl
+    with open('data/E.pkl', 'rb') as f:
+        E = pickle.load(f)
+        # Assuming E is a DataFrame or similar structure
+        print(E.head(10))
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--use_dask', action='store_true', help='Use Dask for processing')
+    parser = argparse.ArgumentParser(description='Process Event Stream Data.')
+    parser.add_argument('--use_labs', action='store_true', help='Include labs data in processing.')
+    parser.add_argument('--save_schema', action='store_true', help='Save dataset schema to file.')
     args = parser.parse_args()
-    main(use_dask=args.use_dask)
+
+    main(use_labs=args.use_labs, save_schema=args.save_schema)

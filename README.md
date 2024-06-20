@@ -127,7 +127,7 @@ $ python3 -m pip install "dask[complete]" --upgrade
 ```
 ## Static analyses
 
-1. Load data (arguments: `--use_dask`)
+1. Load data:
 
 ```bash
 $ cd diabetes_pred 

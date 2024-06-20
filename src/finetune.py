@@ -1,3 +1,6 @@
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
+
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
@@ -10,6 +13,7 @@ from EventStream.data.dataset_polars import Dataset
 from EventStream.data.pytorch_dataset import PytorchDataset
 from pytorch_lightning.loggers import WandbLogger
 import polars as pl
+import torch
 
 from data_utils import CustomPytorchDataset
 
@@ -37,16 +41,21 @@ def main(cfg: FinetuneConfig):
 
     DATA_DIR = Path("data")
 
+    # Load the subjects DataFrame
+    subjects_df = pl.read_parquet(DATA_DIR / "subjects_df.parquet")
+    subjects_df = subjects_df.rename({"subject_id": "subject_id_right"})
+
     # Load the split task DataFrames
     train_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_train.parquet")
     val_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_val.parquet")
     test_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_test.parquet")
 
     print(f"dl_reps_dir: {cfg.data_config.dl_reps_dir}")
-    # Create the dataset instances with the loaded task DataFrames
-    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir, task_df=train_df)
-    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, task_df=val_df)
-    held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, task_df=test_df)
+    # Create the dataset instances with the loaded task DataFrames and subjects DataFrame
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=train_df, device=device)
+    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=val_df, device=device)
+    held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=test_df, device=device)
 
     # Create the WandbLogger instance
     wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
@@ -55,12 +64,10 @@ def main(cfg: FinetuneConfig):
         save_dir=cfg.save_dir,
     )
 
-    # Pass the dataset instances to the train function
-    # Pass the WandbLogger instance to the train function
+    # Pass the dataset instances and WandbLogger instance to the train function
     try:
         _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
     except ValueError as e:
-    # ... (existing error handling code) ...
         if "Train dataset is empty" in str(e):
             print("Error: Train dataset is empty. Please ensure the dataset is properly loaded and preprocessed.")
         else:

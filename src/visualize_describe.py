@@ -6,16 +6,25 @@ from pathlib import Path
 import sys
 import polars as pl
 import plotly.express as px
-from data_utils import print_covariate_metadata, save_plot, save_plot_measurements_per_subject, save_plot_line, save_plot_heatmap, temporal_dist_pd, save_scatter_plot
+from data_utils import print_covariate_metadata, save_plot, save_plot_measurements_per_subject, save_plot_line, save_plot_heatmap, temporal_dist_pd, save_scatter_plot, plot_avg_measurements_per_patient_per_month
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 import matplotlib.dates as mdates
 
+from EventStream.data.dataset_polars import Dataset
+from EventStream.data.dataset_config import DatasetConfig
+
 DATA_DIR = Path("data")
 
-# Load the dataset
-ESD = Dataset.load(DATA_DIR)
+# Load the Dataset object
+try: 
+    ESD = Dataset.load(DATA_DIR)
+except AttributeError:
+    config = DatasetConfig(save_dir=DATA_DIR)
+    ESD = Dataset(
+        config=config,
+    )    
 
 # Split the dataset into train, validation, and test sets
 ESD.split(split_fracs=[0.7, 0.2, 0.1])
@@ -179,3 +188,23 @@ print("Columns in subjects_with_events:", subjects_with_events.columns)
 # Temporal distribution of measurements:
 temporal_distribution_measurements = temporal_dist_pd(ESD.dynamic_measurements_df, 'measurement_id')
 save_plot_line(temporal_distribution_measurements, 'day', 'count', 'temporal_distribution_measurements.png', 'Day', 'Count of Measurements', 'Temporal distribution of measurements (daily)', x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31))))
+
+# Plot average measurements per patient per month
+plot_avg_measurements_per_patient_per_month(ESD.dynamic_measurements_df)
+
+# Calculate descriptive statistics for measurements per patient per month
+measurements_per_patient_per_month_stats = (
+    dynamic_measurements_df.groupby(["subject_id", "month"])
+    .agg(pl.count("measurement_id").alias("num_measurements"))
+    .groupby("subject_id")
+    .agg(
+        pl.mean("num_measurements").alias("mean"),
+        pl.median("num_measurements").alias("median"),
+        pl.std("num_measurements").alias("std"),
+        pl.min("num_measurements").alias("min"),
+        pl.max("num_measurements").alias("max"),
+    )
+)
+
+print("Descriptive statistics for measurements per patient per month:")
+print(measurements_per_patient_per_month_stats)
