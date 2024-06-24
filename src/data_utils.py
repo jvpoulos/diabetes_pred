@@ -134,9 +134,17 @@ class CustomPytorchDataset(PytorchDataset):
         self.logger.debug(f"subjects_df shape: {subjects_df.shape}")
         self.logger.debug(f"task_df shape: {task_df.shape if task_df is not None else None}")
         
+        # Initialize cached_data as an empty DataFrame to satisfy the parent class
+        self.cached_data = pd.DataFrame()
+        
+        # Call the parent's __init__
         super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
         
+        # Now load our actual data
+        self.load_cached_data()
+        
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
+        self.logger.info(f"Dataset length: {len(self)}")
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
@@ -150,117 +158,105 @@ class CustomPytorchDataset(PytorchDataset):
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
 
-        cached_data_list = []
+        self.cached_data_list = []
         for parquet_file in parquet_files:
             self.logger.debug(f"Reading file: {parquet_file}")
             try:
                 df = pd.read_parquet(parquet_file)
-                cached_data_list.append(df)
+                self.cached_data_list.append(df)
             except Exception as e:
                 self.logger.error(f"Error reading Parquet file: {parquet_file}")
                 self.logger.error(f"Error message: {str(e)}")
                 continue
 
-        self.cached_data = pd.concat(cached_data_list, ignore_index=True)
-        self.logger.info(f"Loaded {len(self.cached_data)} rows of cached data")
+        if not self.cached_data_list:
+            self.logger.error(f"No data loaded for split: {self.split}")
+            raise ValueError(f"No data loaded for split: {self.split}")
+        else:
+            total_rows = sum(len(df) for df in self.cached_data_list)
+            self.logger.info(f"Loaded {total_rows} rows of cached data")
 
-        # Add debugging information
-        self.logger.debug(f"Cached data columns: {self.cached_data.columns.tolist()}")
-        self.logger.debug(f"Cached data dtypes: {self.cached_data.dtypes}")
-        self.logger.debug(f"Sample of cached data:\n{self.cached_data.head()}")
+        # Filter cached data to include only subjects with labels in the task DataFrame
+        if self.task_df is not None:
+            self.cached_data_list = [df[df['subject_id'].isin(self.task_df['subject_id'])] for df in self.cached_data_list]
+            total_rows = sum(len(df) for df in self.cached_data_list)
+            self.logger.info(f"Filtered cached data to {total_rows} rows with matching labels")
 
-        # Ensure required columns are present
-        required_columns = ['subject_id', 'dynamic_indices', 'dynamic_counts']
-        missing_columns = [col for col in required_columns if col not in self.cached_data.columns]
-        if missing_columns:
-            self.logger.warning(f"Missing columns: {missing_columns}")
-            for col in missing_columns:
-                if col == 'subject_id':
-                    self.cached_data[col] = range(len(self.cached_data))
-                else:
-                    self.cached_data[col] = [[]] * len(self.cached_data)
+        if total_rows == 0:
+            raise ValueError(f"No matching data found for split: {self.split}")
 
-        # Convert columns to appropriate types
-        self.cached_data['subject_id'] = self.cached_data['subject_id'].astype(int)
-        self.cached_data['dynamic_counts'] = self.cached_data['dynamic_counts'].astype(object)
+        # Set self.cached_data to satisfy the parent class
+        self.cached_data = pd.concat(self.cached_data_list, ignore_index=True)
 
-        self.logger.info(f"Cached data processed successfully for split: {self.split}")
+        # Create a dummy tensor to satisfy the parent class
+        self.cached_data_tensor = torch.tensor([1.0])  # This is a placeholder
+
+        self.logger.info(f"Cached data loaded successfully for split: {self.split}")
 
     def __len__(self):
-        return len(self.cached_data)
+        return sum(len(df) for df in self.cached_data_list)
 
     def __getitem__(self, idx):
         self.logger.debug(f"Getting item at index: {idx}")
         
-        row = self.cached_data.iloc[idx]
+        for df in self.cached_data_list:
+            if idx < len(df):
+                row = df.iloc[idx]
+                break
+            idx -= len(df)
+        else:
+            raise IndexError("Index out of range")
+        
         subject_id = row['subject_id']
         
         # Get label from task_df
         if self.task_df is not None:
-            label = self.task_df[self.task_df['subject_id'] == subject_id]['A1cGreaterThan7'].iloc[0] if len(self.task_df[self.task_df['subject_id'] == subject_id]) > 0 else None
+            label_row = self.task_df.filter(pl.col('subject_id') == subject_id)
+            if len(label_row) > 0:
+                label = label_row['label'].item()
+            else:
+                self.logger.warning(f"No label found for subject_id {subject_id}")
+                label = None
         else:
             label = None
 
-        self.logger.debug(f"Label for subject {subject_id}: {label}")
-
-        def process_column(column_name, dtype=torch.long):
-            if column_name not in row:
-                self.logger.warning(f"{column_name} not found in row. Using zeros.")
-                return torch.zeros(1, dtype=dtype)
-            
-            value = row[column_name]
-            if isinstance(value, str):
-                try:
-                    value = json.loads(value)
-                except json.JSONDecodeError:
-                    value = [value]
-            
-            if isinstance(value, (list, np.ndarray)):
-                if dtype == torch.long:
-                    value = [self.get_int_mapping(x) if isinstance(x, str) else int(x) for x in value]
-                else:
-                    value = [float(x) for x in value]
-            else:
-                value = [value]
-            
-            return torch.tensor(value, dtype=dtype)
-
-        dynamic_indices = process_column('dynamic_indices')
-        dynamic_counts = process_column('dynamic_counts', dtype=torch.float)
-
-        self.logger.debug(f"Processed dynamic_indices shape: {dynamic_indices.shape}")
-        self.logger.debug(f"Processed dynamic_counts shape: {dynamic_counts.shape}")
-
-        return {
-            'dynamic_indices': dynamic_indices.to(self.device),
-            'dynamic_counts': dynamic_counts.to(self.device),
-            'labels': torch.tensor(label, dtype=torch.float32).to(self.device) if label is not None else None
-        }
-
-    def collate_fn(self, batch):
-        self.logger.debug("Collating batch")
-        
-        valid_items = [item for item in batch if item["labels"] is not None]
-        if not valid_items:
-            self.logger.warning("No valid items in batch")
-            return None
-
-        max_seq_len = max(len(item["dynamic_indices"]) for item in valid_items)
-        self.logger.debug(f"Max sequence length in batch: {max_seq_len}")
-
-        dynamic_indices = torch.nn.utils.rnn.pad_sequence([item["dynamic_indices"] for item in valid_items], batch_first=True)
-        dynamic_counts = torch.nn.utils.rnn.pad_sequence([item["dynamic_counts"] for item in valid_items], batch_first=True)
-        labels = torch.stack([item["labels"] for item in valid_items])
-
-        self.logger.debug(f"Collated dynamic_indices shape: {dynamic_indices.shape}")
-        self.logger.debug(f"Collated dynamic_counts shape: {dynamic_counts.shape}")
-        self.logger.debug(f"Collated labels shape: {labels.shape}")
+        dynamic_indices = self.process_column(row, 'dynamic_indices')
+        dynamic_counts = self.process_column(row, 'dynamic_counts', dtype=torch.float)
 
         return {
             'dynamic_indices': dynamic_indices,
             'dynamic_counts': dynamic_counts,
-            'labels': labels
+            'labels': torch.tensor(label, dtype=torch.float32) if label is not None else None
         }
+
+    def process_column(self, row, column_name, dtype=torch.long):
+        if column_name not in row.index:
+            self.logger.warning(f"{column_name} not found in row. Using zeros.")
+            return torch.zeros(1, dtype=dtype)
+        
+        value = row[column_name]
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                value = [value]
+        
+        if isinstance(value, (list, np.ndarray)):
+            if dtype == torch.long:
+                value = [self.get_int_mapping(str(x)) if isinstance(x, (str, int, float)) else 0 for x in value]
+            else:
+                value = [float(x) if isinstance(x, (int, float, str)) else 0.0 for x in value]
+        else:
+            value = [value]
+        
+        return torch.tensor(value, dtype=dtype)
+
+    def get_int_mapping(self, value):
+        if value not in self.string_to_int_mapping:
+            self.string_to_int_mapping[value] = self.current_index
+            self.current_index += 1
+        return self.string_to_int_mapping[value]
+
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """

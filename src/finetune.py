@@ -71,6 +71,22 @@ def main(cfg: FinetuneConfig):
     tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=val_df, device=device)
     held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=test_df, device=device)
 
+    # Add these debug statements
+    logger.debug(f"Train dataset cached data shape: {train_pyd.cached_data.shape}")
+    logger.debug(f"Tuning dataset cached data shape: {tuning_pyd.cached_data.shape}")
+    logger.debug(f"Held-out dataset cached data shape: {held_out_pyd.cached_data.shape}")
+
+    # Check the first few items in each dataset
+    for i in range(min(5, len(train_pyd))):
+        logger.info(f"Train dataset item {i}: {train_pyd[i]}")
+    for i in range(min(5, len(tuning_pyd))):
+        logger.info(f"Tuning dataset item {i}: {tuning_pyd[i]}")
+    for i in range(min(5, len(held_out_pyd))):
+        logger.info(f"Held-out dataset item {i}: {held_out_pyd[i]}")
+
+    # Add this debug statement
+    logger.debug(f"Train dataset cached data shape: {train_pyd.cached_data.shape if hasattr(train_pyd, 'cached_data') else 'No cached_data attribute'}")
+
     logger.info("Creating WandbLogger instance")
     wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
     wandb_logger = WandbLogger(
