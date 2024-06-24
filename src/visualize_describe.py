@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import polars as pl
 import plotly.express as px
-from data_utils import print_covariate_metadata, save_plot, save_plot_measurements_per_subject, save_plot_line, save_plot_heatmap, temporal_dist_pd, save_scatter_plot, plot_avg_measurements_per_patient_per_month
+from data_utils import print_covariate_metadata, save_plot, save_plot_measurements_per_subject, save_plot_line, save_plot_heatmap, temporal_dist_pd, save_scatter_plot, plot_avg_measurements_per_patient_per_month, inspect_pickle_file, load_with_dill, temporal_dist_pd_monthly
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -16,15 +16,13 @@ from EventStream.data.dataset_polars import Dataset
 from EventStream.data.dataset_config import DatasetConfig
 
 DATA_DIR = Path("data")
+E_FILE = DATA_DIR / "E.pkl"
+
+print("Inspecting E.pkl file...")
+inspect_pickle_file(E_FILE)
 
 # Load the Dataset object
-try: 
-    ESD = Dataset.load(DATA_DIR)
-except AttributeError:
-    config = DatasetConfig(save_dir=DATA_DIR)
-    ESD = Dataset(
-        config=config,
-    )    
+ESD = Dataset.load(DATA_DIR)
 
 # Split the dataset into train, validation, and test sets
 ESD.split(split_fracs=[0.7, 0.2, 0.1])
@@ -182,6 +180,7 @@ print("Shape of subjects_with_events:", subjects_with_events.shape)
 
 print("Columns in subjects_with_measurements:", subjects_with_measurements.columns)
 print("Columns in subjects_with_events:", subjects_with_events.columns)
+
 # Temporal distribution of events and measurements:
 # The x-axis of both plots will be binned by day, showing the daily counts instead of individual timestamps.
 
@@ -189,12 +188,28 @@ print("Columns in subjects_with_events:", subjects_with_events.columns)
 temporal_distribution_measurements = temporal_dist_pd(ESD.dynamic_measurements_df, 'measurement_id')
 save_plot_line(temporal_distribution_measurements, 'day', 'count', 'temporal_distribution_measurements.png', 'Day', 'Count of Measurements', 'Temporal distribution of measurements (daily)', x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31))))
 
+# Temporal distribution of measurements (monthly)
+temporal_distribution_measurements = temporal_dist_pd_monthly(ESD.dynamic_measurements_df, 'measurement_id')
+temporal_distribution_measurements_pd = temporal_distribution_measurements.to_pandas()
+temporal_distribution_measurements_pd['month'] = pd.to_datetime(temporal_distribution_measurements_pd['month'])
+
+save_plot_line(
+    temporal_distribution_measurements_pd, 
+    'month', 
+    'count', 
+    'temporal_distribution_measurements_monthly.png', 
+    'Month', 
+    'Count of Measurements', 
+    'Temporal Distribution of Measurements (monthly)', 
+    x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31)))
+)
+
 # Plot average measurements per patient per month
 plot_avg_measurements_per_patient_per_month(ESD.dynamic_measurements_df)
 
 # Calculate descriptive statistics for measurements per patient per month
 measurements_per_patient_per_month_stats = (
-    dynamic_measurements_df.groupby(["subject_id", "month"])
+    ESD.dynamic_measurements_df.groupby(["subject_id", pl.col("timestamp").dt.strftime("%Y-%m").alias("month")])
     .agg(pl.count("measurement_id").alias("num_measurements"))
     .groupby("subject_id")
     .agg(
@@ -208,3 +223,9 @@ measurements_per_patient_per_month_stats = (
 
 print("Descriptive statistics for measurements per patient per month:")
 print(measurements_per_patient_per_month_stats)
+
+# Additional data validation
+print("\nAdditional Data Validation:")
+print("Number of unique subjects in dynamic_measurements_df:", ESD.dynamic_measurements_df['subject_id'].n_unique())
+print("Number of unique subjects in subjects_df:", ESD.subjects_df['subject_id'].n_unique())
+print("Number of unique events in events_df:", ESD.events_df['event_id'].n_unique())

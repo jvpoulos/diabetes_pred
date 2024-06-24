@@ -40,32 +40,53 @@ import os
 import tempfile
 import shutil
 import pickle
+from typing import Dict, Set, List
+import dill
+import logging
 
-def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
-    # Convert timestamp to month
-    dynamic_measurements_df = dynamic_measurements_df.with_columns(
-        pl.col("timestamp").dt.strftime("%Y-%m").alias("month")
-    )
+def inspect_pickle_file(file_path):
+    try:
+        with open(file_path, 'rb') as f:
+            data = pickle.load(f)
+        print(f"Successfully loaded {file_path}")
+        print(f"Type of loaded object: {type(data)}")
+        if isinstance(data, dict):
+            print("Keys in the loaded dictionary:")
+            for key in data.keys():
+                print(f"- {key}: {type(data[key])}")
+    except Exception as e:
+        print(f"Error loading {file_path}: {str(e)}")
 
-    # Calculate the number of measurements per patient per month
-    measurements_per_patient_per_month = (
-        dynamic_measurements_df.groupby(["subject_id", "month"])
-        .agg(pl.count("measurement_id").alias("num_measurements"))
-        .groupby("month")
-        .agg(pl.mean("num_measurements").alias("avg_measurements_per_patient"))
-    )
+def load_with_dill(file_path):
+    try:
+        with open(file_path, 'rb') as f:
+            data = dill.load(f)
+        print(f"Successfully loaded {file_path} with dill")
+        return data
+    except Exception as e:
+        print(f"Error loading {file_path} with dill: {str(e)}")
+        return None
 
-    # Convert to pandas DataFrame
-    measurements_per_patient_per_month_pd = measurements_per_patient_per_month.to_pandas()
+def create_code_mapping(df_dia: pl.DataFrame, df_prc: pl.DataFrame) -> Dict[str, int]:
+    """
+    Create a mapping of unique codes to indices, including both diagnosis and procedure codes.
+    """
+    unique_codes: Set[str] = set(df_dia['CodeWithType'].unique().to_list()) | set(df_prc['CodeWithType'].unique().to_list())
+    return {code: idx for idx, code in enumerate(sorted(unique_codes), start=1)}
 
-    # Create and save the plot
-    fig = px.line(
-        measurements_per_patient_per_month_pd,
-        x="month",
-        y="avg_measurements_per_patient",
-        title="Average Measurements per Patient per Month",
-    )
-    fig.write_image("data_summaries/avg_measurements_per_patient_per_month.png")
+def map_codes_to_indices(df: pl.DataFrame, code_mapping: Dict[str, int]) -> pl.DataFrame:
+    """
+    Map the CodeWithType column to indices based on the provided mapping.
+    """
+    return df.with_columns([
+        pl.col('CodeWithType').map_dict(code_mapping).alias('dynamic_indices')
+    ])
+
+def create_inverse_mapping(code_mapping: Dict[str, int]) -> Dict[int, str]:
+    """
+    Create an inverse mapping from indices to codes.
+    """
+    return {idx: code for code, idx in code_mapping.items()}
 
 def json_serial(obj):
     if isinstance(obj, datetime):
@@ -97,140 +118,149 @@ def generate_time_intervals(start_date, end_date, interval_days):
     return intervals
 
 class CustomPytorchDataset(PytorchDataset):
-    def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, subjects_df: pl.DataFrame, task_df: pl.DataFrame = None, device: torch.device = None):
-        self.string_to_int_mapping = {}
-        self.current_index = 0
+    def __init__(self, config, split, dl_reps_dir, subjects_df, task_df=None, device=None):
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
+        
         self.dl_reps_dir = Path(dl_reps_dir)
         self.subjects_df = subjects_df
         self.task_df = task_df
         self.device = device
-        super().__init__(config, split, task_df=task_df, dl_reps_dir=str(self.dl_reps_dir))
-        self.load_cached_data()
-
-    def get_int_mapping(self, s):
-        if s not in self.string_to_int_mapping:
-            self.string_to_int_mapping[s] = self.current_index
-            self.current_index += 1
-        return self.string_to_int_mapping[s]
-
-    def __getitem__(self, idx):
-        row = self.cached_data.iloc[idx]
-
-        subject_id = row['subject_id']
-        filtered_task_df = self.task_df.filter(pl.col('subject_id') == subject_id)
-
-        if not filtered_task_df.is_empty():
-            label = filtered_task_df['label'][0]
-        else:
-            label = None
-
-        # Convert dynamic_indices to a list of integers if it's an object array
-        if isinstance(row['dynamic_indices'], np.ndarray) and row['dynamic_indices'].dtype == np.object_:
-            dynamic_indices = torch.tensor([self.get_int_mapping(x) for x in row['dynamic_indices']], dtype=torch.long)
-        else:
-            dynamic_indices = torch.tensor(row['dynamic_indices'], dtype=torch.long)
-
-        # Convert dynamic_counts to a list of integers if it's an object array
-        if isinstance(row['dynamic_counts'], np.ndarray) and row['dynamic_counts'].dtype == np.object_:
-            dynamic_counts = torch.tensor([int(x) for x in row['dynamic_counts']], dtype=torch.long)
-        else:
-            dynamic_counts = torch.tensor(row['dynamic_counts'], dtype=torch.long)
-
-        # Check if 'dynamic_indices_event_type' exists in the row
-        if 'dynamic_indices_event_type' in row:
-            dynamic_indices_event_type = row['dynamic_indices_event_type']
-            if isinstance(dynamic_indices_event_type, np.ndarray) and dynamic_indices_event_type.dtype == np.object_:
-                dynamic_indices_event_type = [self.get_int_mapping(x) for x in dynamic_indices_event_type]
-            elif isinstance(dynamic_indices_event_type, str):
-                dynamic_indices_event_type = [x.strip() for x in dynamic_indices_event_type.strip('[]').split(',')]
-                dynamic_indices_event_type = [self.get_int_mapping(x) for x in dynamic_indices_event_type]
-            dynamic_indices_event_type = torch.tensor(dynamic_indices_event_type, dtype=torch.long)
-        else:
-            dynamic_indices_event_type = torch.zeros_like(dynamic_indices, dtype=torch.long)
-
-        # Check if 'dynamic_counts_event_type' exists in the row
-        if 'dynamic_counts_event_type' in row:
-            dynamic_counts_event_type = row['dynamic_counts_event_type']
-            if isinstance(dynamic_counts_event_type, np.ndarray) and dynamic_counts_event_type.dtype == np.object_:
-                dynamic_counts_event_type = [int(x) if x.isdigit() else 0 for x in dynamic_counts_event_type]
-            elif isinstance(dynamic_counts_event_type, str):
-                dynamic_counts_event_type = [x.strip() for x in dynamic_counts_event_type.strip('[]').split(',')]
-                dynamic_counts_event_type = [int(x) if x.isdigit() else 0 for x in dynamic_counts_event_type]
-            dynamic_counts_event_type = torch.tensor(dynamic_counts_event_type, dtype=torch.long)
-        else:
-            dynamic_counts_event_type = torch.zeros_like(dynamic_counts, dtype=torch.long)
-
-        return {
-            'dynamic_indices': dynamic_indices.to(self.device),
-            'dynamic_counts': dynamic_counts.to(self.device),
-            'dynamic_indices_event_type': dynamic_indices_event_type.to(self.device),
-            'dynamic_counts_event_type': dynamic_counts_event_type.to(self.device),
-            'labels': torch.tensor(label, dtype=torch.bool).to(self.device) if label is not None else None
-        }
+        self.string_to_int_mapping = {}
+        self.current_index = 0
+        
+        self.logger.debug(f"dl_reps_dir: {self.dl_reps_dir}")
+        self.logger.debug(f"subjects_df shape: {subjects_df.shape}")
+        self.logger.debug(f"task_df shape: {task_df.shape if task_df is not None else None}")
+        
+        super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
+        
+        self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
 
     def load_cached_data(self):
-        if not self.dl_reps_dir:
-            raise ValueError("The 'dl_reps_dir' attribute must be set to a valid directory path.")
+        self.logger.info(f"Loading cached data for split: {self.split}")
+        
+        if not self.dl_reps_dir.exists():
+            raise FileNotFoundError(f"Directory not found: {self.dl_reps_dir}")
 
-        cached_path = os.path.join(self.dl_reps_dir, f"{self.split}*.parquet")
-        parquet_files = [f for f in os.listdir(self.dl_reps_dir) if f.startswith(f"{self.split}") and f.endswith(".parquet")]
+        parquet_files = list(self.dl_reps_dir.glob(f"{self.split}*.parquet"))
+        self.logger.debug(f"Found {len(parquet_files)} Parquet files")
 
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
 
-        print(f"Loading Parquet files for split '{self.split}':")
         cached_data_list = []
         for parquet_file in parquet_files:
-            print(f"File: {os.path.join(self.dl_reps_dir, parquet_file)}")
+            self.logger.debug(f"Reading file: {parquet_file}")
             try:
-                df = pd.read_parquet(os.path.join(self.dl_reps_dir, parquet_file))
+                df = pd.read_parquet(parquet_file)
                 cached_data_list.append(df)
             except Exception as e:
-                print(f"Error reading Parquet file: {os.path.join(self.dl_reps_dir, parquet_file)}")
-                print(f"Error message: {str(e)}")
+                self.logger.error(f"Error reading Parquet file: {parquet_file}")
+                self.logger.error(f"Error message: {str(e)}")
                 continue
 
         self.cached_data = pd.concat(cached_data_list, ignore_index=True)
+        self.logger.info(f"Loaded {len(self.cached_data)} rows of cached data")
 
-        # Convert the string-encoded lists to actual lists
-        for col in ["dynamic_indices", "dynamic_counts", "dynamic_indices_event_type", "dynamic_counts_event_type"]:
-            if col in self.cached_data.columns:
-                self.cached_data[col] = self.cached_data[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+        # Add debugging information
+        self.logger.debug(f"Cached data columns: {self.cached_data.columns.tolist()}")
+        self.logger.debug(f"Cached data dtypes: {self.cached_data.dtypes}")
+        self.logger.debug(f"Sample of cached data:\n{self.cached_data.head()}")
 
-        print(f"Loaded cached data from {self.dl_reps_dir} for split '{self.split}'.")
-        print(f"Cached data shape: {self.cached_data.shape}")
+        # Ensure required columns are present
+        required_columns = ['subject_id', 'dynamic_indices', 'dynamic_counts']
+        missing_columns = [col for col in required_columns if col not in self.cached_data.columns]
+        if missing_columns:
+            self.logger.warning(f"Missing columns: {missing_columns}")
+            for col in missing_columns:
+                if col == 'subject_id':
+                    self.cached_data[col] = range(len(self.cached_data))
+                else:
+                    self.cached_data[col] = [[]] * len(self.cached_data)
 
-    def collate(self, batch):
+        # Convert columns to appropriate types
+        self.cached_data['subject_id'] = self.cached_data['subject_id'].astype(int)
+        self.cached_data['dynamic_counts'] = self.cached_data['dynamic_counts'].astype(object)
+
+        self.logger.info(f"Cached data processed successfully for split: {self.split}")
+
+    def __len__(self):
+        return len(self.cached_data)
+
+    def __getitem__(self, idx):
+        self.logger.debug(f"Getting item at index: {idx}")
+        
+        row = self.cached_data.iloc[idx]
+        subject_id = row['subject_id']
+        
+        # Get label from task_df
+        if self.task_df is not None:
+            label = self.task_df[self.task_df['subject_id'] == subject_id]['A1cGreaterThan7'].iloc[0] if len(self.task_df[self.task_df['subject_id'] == subject_id]) > 0 else None
+        else:
+            label = None
+
+        self.logger.debug(f"Label for subject {subject_id}: {label}")
+
+        def process_column(column_name, dtype=torch.long):
+            if column_name not in row:
+                self.logger.warning(f"{column_name} not found in row. Using zeros.")
+                return torch.zeros(1, dtype=dtype)
+            
+            value = row[column_name]
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = [value]
+            
+            if isinstance(value, (list, np.ndarray)):
+                if dtype == torch.long:
+                    value = [self.get_int_mapping(x) if isinstance(x, str) else int(x) for x in value]
+                else:
+                    value = [float(x) for x in value]
+            else:
+                value = [value]
+            
+            return torch.tensor(value, dtype=dtype)
+
+        dynamic_indices = process_column('dynamic_indices')
+        dynamic_counts = process_column('dynamic_counts', dtype=torch.float)
+
+        self.logger.debug(f"Processed dynamic_indices shape: {dynamic_indices.shape}")
+        self.logger.debug(f"Processed dynamic_counts shape: {dynamic_counts.shape}")
+
+        return {
+            'dynamic_indices': dynamic_indices.to(self.device),
+            'dynamic_counts': dynamic_counts.to(self.device),
+            'labels': torch.tensor(label, dtype=torch.float32).to(self.device) if label is not None else None
+        }
+
+    def collate_fn(self, batch):
+        self.logger.debug("Collating batch")
+        
         valid_items = [item for item in batch if item["labels"] is not None]
         if not valid_items:
+            self.logger.warning("No valid items in batch")
             return None
 
         max_seq_len = max(len(item["dynamic_indices"]) for item in valid_items)
-        max_n_data = max(max(len(v) for v in item["dynamic_indices"]) for item in valid_items)
+        self.logger.debug(f"Max sequence length in batch: {max_seq_len}")
 
-        dynamic_indices = torch.zeros((len(valid_items), max_seq_len, max_n_data), dtype=torch.long)
-        dynamic_counts = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
-        dynamic_indices_event_type = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
-        dynamic_counts_event_type = torch.zeros((len(valid_items), max_seq_len), dtype=torch.long)
-        labels = torch.zeros((len(valid_items),), dtype=torch.bool)
+        dynamic_indices = torch.nn.utils.rnn.pad_sequence([item["dynamic_indices"] for item in valid_items], batch_first=True)
+        dynamic_counts = torch.nn.utils.rnn.pad_sequence([item["dynamic_counts"] for item in valid_items], batch_first=True)
+        labels = torch.stack([item["labels"] for item in valid_items])
 
-        for i, item in enumerate(valid_items):
-            seq_len = len(item["dynamic_indices"])
-            if seq_len > 0:
-                dynamic_indices[i, :seq_len, :len(item["dynamic_indices"][0])] = torch.tensor(item["dynamic_indices"], dtype=torch.long)
-                dynamic_counts[i, :seq_len] = torch.tensor(item["dynamic_counts"], dtype=torch.long)
-                dynamic_indices_event_type[i, :seq_len] = torch.tensor(item["dynamic_indices_event_type"], dtype=torch.long)
-                dynamic_counts_event_type[i, :seq_len] = torch.tensor(item["dynamic_counts_event_type"], dtype=torch.long)
-            labels[i] = item["labels"]
+        self.logger.debug(f"Collated dynamic_indices shape: {dynamic_indices.shape}")
+        self.logger.debug(f"Collated dynamic_counts shape: {dynamic_counts.shape}")
+        self.logger.debug(f"Collated labels shape: {labels.shape}")
 
         return {
             'dynamic_indices': dynamic_indices,
             'dynamic_counts': dynamic_counts,
-            'dynamic_indices_event_type': dynamic_indices_event_type,
-            'dynamic_counts_event_type': dynamic_counts_event_type,
             'labels': labels
         }
-
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """
@@ -279,6 +309,36 @@ def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
     plt.savefig(f'data_summaries/{filename}', dpi=300, bbox_inches='tight')
     plt.close(fig)
 
+def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
+    # Convert timestamp to month
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(
+        pl.col("timestamp").dt.strftime("%Y-%m").alias("month")
+    )
+
+    # Calculate the number of measurements per patient per month
+    measurements_per_patient_per_month = (
+        dynamic_measurements_df.groupby(["subject_id", "month"])
+        .agg(pl.count("measurement_id").alias("num_measurements"))
+        .groupby("month")
+        .agg(pl.mean("num_measurements").alias("avg_measurements_per_patient"))
+    )
+
+    # Convert to pandas DataFrame and sort by month
+    measurements_per_patient_per_month_pd = measurements_per_patient_per_month.sort("month").to_pandas()
+    measurements_per_patient_per_month_pd['month'] = pd.to_datetime(measurements_per_patient_per_month_pd['month'])
+
+    # Create and save the plot
+    save_plot_line(
+        measurements_per_patient_per_month_pd, 
+        'month', 
+        'avg_measurements_per_patient', 
+        'avg_measurements_per_patient_per_month.png', 
+        'Month', 
+        'Average Measurements per Patient', 
+        'Average Measurements per Patient per Month',
+        x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31)))
+    )
+
 def temporal_dist_pd(df, measure, event_type_col=None):
     df = df.sort('timestamp').to_pandas()
     df['day'] = df['timestamp'].dt.date
@@ -292,6 +352,12 @@ def temporal_dist_pd(df, measure, event_type_col=None):
         else:
             daily_counts.columns = ['day', event_type_col, 'count']
     return daily_counts
+
+def temporal_dist_pd_monthly(df, measure):
+    df = df.sort('timestamp')
+    df = df.with_columns(pl.col('timestamp').dt.strftime('%Y-%m').alias('month'))
+    monthly_counts = df.groupby('month').agg(pl.count(measure).alias('count'))
+    return monthly_counts.sort('month')
 
 def save_scatter_plot(data, x_col, y_col, title, y_label, file_path, x_range=None, x_label=None, x_scale=None):
     """

@@ -21,7 +21,7 @@ config:
   structured_event_processing_mode: conditionally_independent
   num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
-  seq_window_size: 32
+  seq_window_size: 168
   TTE_generation_layer_type: exponential
   head_dim: 8
   num_attention_heads: 4
@@ -51,7 +51,7 @@ data_config:
   save_dir: "./data"
   dl_reps_dir: "data/DL_reps"
   dataset_path: null
-  max_seq_len: 128
+  max_seq_len: 228
   subsequence_sampling_strategy: to_end
   min_seq_len: 4
   train_subset_size: 0.95

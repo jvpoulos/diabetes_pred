@@ -14,11 +14,17 @@ from EventStream.data.pytorch_dataset import PytorchDataset
 from pytorch_lightning.loggers import WandbLogger
 import polars as pl
 import torch
+import logging
 
 from data_utils import CustomPytorchDataset
 
 @hydra.main(version_base=None, config_path=".", config_name="finetune_config")
 def main(cfg: FinetuneConfig):
+    logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
+    
+    logger.info("Starting main function")
+    
     if isinstance(cfg, DictConfig):
         cfg = OmegaConf.to_container(cfg, resolve=True)
 
@@ -27,7 +33,7 @@ def main(cfg: FinetuneConfig):
 
     if data_config_path:
         data_config_fp = Path(data_config_path)
-        print(f"Loading data_config from {data_config_fp}")
+        logger.info(f"Loading data_config from {data_config_fp}")
         reloaded_data_config = PytorchDatasetConfig.from_json_file(data_config_fp)
         cfg["data_config"] = reloaded_data_config
         cfg["config"]["problem_type"] = cfg["config"]["problem_type"]
@@ -36,48 +42,58 @@ def main(cfg: FinetuneConfig):
         cfg = FinetuneConfig(**cfg)
 
     cfg.data_config.dl_reps_dir = Path("data/DL_reps")
-    print("Loaded FinetuneConfig:")
-    print(cfg)
+    logger.info("Loaded FinetuneConfig:")
+    logger.info(str(cfg))
 
     DATA_DIR = Path("data")
-
-    # Load the subjects DataFrame
+    
+    logger.info("Loading subjects DataFrame")
     subjects_df = pl.read_parquet(DATA_DIR / "subjects_df.parquet")
     subjects_df = subjects_df.rename({"subject_id": "subject_id_right"})
+    logger.debug(f"Subjects DataFrame shape: {subjects_df.shape}")
 
-    # Load the split task DataFrames
+    logger.info("Loading task DataFrames")
     train_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_train.parquet")
     val_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_val.parquet")
     test_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_test.parquet")
+    
+    logger.debug(f"Train DataFrame shape: {train_df.shape}")
+    logger.debug(f"Validation DataFrame shape: {val_df.shape}")
+    logger.debug(f"Test DataFrame shape: {test_df.shape}")
 
-    print(f"dl_reps_dir: {cfg.data_config.dl_reps_dir}")
-    # Create the dataset instances with the loaded task DataFrames and subjects DataFrame
+    logger.info(f"dl_reps_dir: {cfg.data_config.dl_reps_dir}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    logger.info("Creating CustomPytorchDataset instances")
     train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=train_df, device=device)
     tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=val_df, device=device)
     held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=test_df, device=device)
 
-    # Create the WandbLogger instance
+    logger.info("Creating WandbLogger instance")
     wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
     wandb_logger = WandbLogger(
         **wandb_logger_kwargs,
         save_dir=cfg.save_dir,
     )
 
-    # Pass the dataset instances and WandbLogger instance to the train function
+    logger.info("Starting training process")
     try:
         _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
     except ValueError as e:
-        if "Train dataset is empty" in str(e):
-            print("Error: Train dataset is empty. Please ensure the dataset is properly loaded and preprocessed.")
-        else:
-            print(f"Error during training: {e}")
+        logger.error(f"Error during training: {e}")
+        logger.error(f"Train dataset length: {len(train_pyd)}")
+        logger.error(f"Tuning dataset length: {len(tuning_pyd)}")
+        logger.error(f"Held-out dataset length: {len(held_out_pyd)}")
     else:
-        print("Training completed successfully.")
+        logger.info("Training completed successfully.")
         if tuning_metrics is not None:
-            print(f"Tuning metrics: {tuning_metrics}")
+            logger.info(f"Tuning metrics: {tuning_metrics}")
         if held_out_metrics is not None:
-            print(f"Held-out metrics: {held_out_metrics}")
+            logger.info(f"Held-out metrics: {held_out_metrics}")
+
+    logger.info("Main function completed")
 
 if __name__ == "__main__":
     main()

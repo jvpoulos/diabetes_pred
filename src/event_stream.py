@@ -48,7 +48,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -92,18 +92,27 @@ def main(use_labs=False, save_schema=False):
     # Add the subject_id column
     subjects_df = subjects_df.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
-    # Print the new shape of subjects_df
     print("Shape of subjects_df after aggregation:", subjects_df.shape)
     print("Number of unique EMPIs:", subjects_df['EMPI'].n_unique())
 
+    print("Processing diagnosis and procedure data...")
     df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
     df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
 
+    print("Creating code mapping...")
+    code_mapping = create_code_mapping(df_dia, df_prc)
+    print(f"Total unique codes: {len(code_mapping)}")
+
+    print("Creating inverse_mapping...")
+    inverse_mapping = {idx: code for code, idx in code_mapping.items()}
+    print(f"Total unique codes in inverse_mapping: {len(inverse_mapping)}")
+
+    print("Mapping codes to indices...")
+    df_dia = map_codes_to_indices(df_dia, code_mapping)
+    df_prc = map_codes_to_indices(df_prc, code_mapping)
+    
     if use_labs:
         df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=90000, min_frequency=ceil(subjects_df.height*0.01))
-
-    # Get the union of unique codes from df_dia and df_prc
-    unique_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
 
     # Build measurement_configs and track input schemas
     subject_id_col = 'EMPI'
@@ -151,7 +160,6 @@ def main(use_labs=False, save_schema=False):
 
                         measurement_config_kwargs.update(m_dict)
 
-                    # Refactored code without match-case
                     if isinstance(m, str) and modality == DataModality.UNIVARIATE_REGRESSION:
                         add_to_container(m, InputDataType.FLOAT, data_schema)
                     elif isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and isinstance(m[1], str) and modality == DataModality.MULTIVARIATE_REGRESSION:
@@ -429,11 +437,33 @@ def main(use_labs=False, save_schema=False):
     if use_labs:
         df_labs_empi = df_labs['EMPI'].unique()
 
-    print("Processing events and measurements data...")
-    print_memory_usage()
+    print("Building dataset config...")
+    # Build Config
+    split = (0.7, 0.2, 0.1)
+    seed = 42
+    do_overwrite = True
+    DL_chunk_size = 20000
 
-    print("df_dia schema:", df_dia.schema)
-    print("df_prc schema:", df_prc.schema)
+    config = DatasetConfig(
+        measurement_configs={
+            'dynamic_indices': MeasurementConfig(
+                temporality=TemporalityType.DYNAMIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+            ),
+        },
+        normalizer_config={'cls': 'standard_scaler'},
+        save_dir=Path("data")
+    )
+
+    print("Processing events and measurements data...")
+    temp_dataset = Dataset(config)
+
+    events_df_dia, dynamic_measurements_df_dia = temp_dataset._process_events_and_measurements_df(
+        df_dia, "DIAGNOSIS", {"CodeWithType": ("CodeWithType", InputDataType.CATEGORICAL), "dynamic_indices": ("dynamic_indices", InputDataType.CATEGORICAL)}
+    )
+    events_df_prc, dynamic_measurements_df_prc = temp_dataset._process_events_and_measurements_df(
+        df_prc, "PROCEDURE", {"CodeWithType": ("CodeWithType", InputDataType.CATEGORICAL), "dynamic_indices": ("dynamic_indices", InputDataType.CATEGORICAL)}
+    )
 
     events_df = pl.concat([df_dia, df_prc], how='diagonal')
     events_df = events_df.with_columns([
@@ -447,7 +477,10 @@ def main(use_labs=False, save_schema=False):
     events_df = events_df.join(subjects_df.select(['EMPI', 'subject_id']), on='EMPI', how='inner')
     events_df = events_df.with_row_index('event_id')
 
-    # Replace the dynamic_measurements_df creation
+    dynamic_measurements_df = pl.concat([dynamic_measurements_df_dia, dynamic_measurements_df_prc], how="diagonal")
+
+    print("Columns in dynamic_measurements_df:", dynamic_measurements_df.columns)
+
     dynamic_measurements_df = pl.concat([
         df_dia.select('EMPI', 'CodeWithType', 'Date'),
         df_prc.select('EMPI', 'CodeWithType', 'Date')
@@ -456,7 +489,7 @@ def main(use_labs=False, save_schema=False):
     dynamic_measurements_df = dynamic_measurements_df.with_columns([
         pl.col('EMPI').alias('subject_id').cast(pl.UInt32),
         pl.col('Date').alias('timestamp'),
-        pl.col('CodeWithType').alias('dynamic_indices'),
+        pl.col('CodeWithType').alias('dynamic_indices'),  # Keep as string
         pl.lit(1).cast(pl.Int32).alias('dynamic_counts'),
         pl.when(pl.col('EMPI').is_in(df_dia['EMPI']))
         .then(pl.lit('DIAGNOSIS'))
@@ -476,9 +509,6 @@ def main(use_labs=False, save_schema=False):
 
     dynamic_measurements_df = dynamic_measurements_df.with_row_index('event_id')
 
-    # Get the union of unique codes from df_dia and df_prc
-    unique_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
-
     subjects_df = subjects_df.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
 
     print("Shape of subjects_df:", subjects_df.shape)
@@ -497,23 +527,36 @@ def main(use_labs=False, save_schema=False):
         )
 
     event_types = events_df['event_type'].unique().to_list()
-    event_types_idxmap = {event_type: idx + 1 for idx, event_type in enumerate(event_types)}
-    event_types_idxmap['UNKNOWN'] = len(event_types_idxmap) + 1
+    event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
+
+    config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
 
     print("Event types index map:")
     print(event_types_idxmap)
 
-    unique_codes = set(dynamic_measurements_df['dynamic_indices'].unique())
-
+    # Update the vocab_sizes_by_measurement and vocab_offsets_by_measurement
     vocab_sizes_by_measurement = {
-        'event_type': len(event_types_idxmap) + 1,  # Add 1 for the unknown token
-        'dynamic_indices': len(unique_codes) + 1,  # Add 1 for the unknown token
+        'event_type': len(event_types_idxmap),
+        'dynamic_indices': len(code_mapping),
     }
 
     vocab_offsets_by_measurement = {
-        'event_type': 0,
-        'dynamic_indices': len(event_types_idxmap) + 1,
+        'event_type': 1,
+        'dynamic_indices': len(event_types_idxmap),
     }
+
+    print("Updated Vocabulary sizes by measurement:", vocab_sizes_by_measurement)
+    print("Updated Vocabulary offsets by measurement:", vocab_offsets_by_measurement)
+
+    print(f"Number of unique mapped diagnosis codes: {df_dia['dynamic_indices'].n_unique()}")
+    print(f"Number of unique mapped procedures codes: {df_prc['dynamic_indices'].n_unique()}")
+
+    print("Checking for null or UNKNOWN_CODE values in dynamic_measurements_df")
+    null_count = dynamic_measurements_df.filter(pl.col('dynamic_indices').is_null()).shape[0]
+    unknown_count = dynamic_measurements_df.filter(pl.col('dynamic_indices') == 'UNKNOWN_CODE').shape[0]
+    print(f"Null values: {null_count}")
+    print(f"UNKNOWN_CODE values: {unknown_count}")
+    print(f"Sample of dynamic_measurements_df:\n{dynamic_measurements_df.head()}")
 
     print_memory_usage()
 
@@ -547,37 +590,20 @@ def main(use_labs=False, save_schema=False):
             with open(config.save_dir / "input_schema.json", "w") as f:
                 json.dump(dataset_schema_dict, f, default=json_serial)
 
-    print("Building dataset config...")
-    # Build Config
-    split = (0.7, 0.2, 0.1)
-    seed = 42
-    do_overwrite = True
-    DL_chunk_size = 20000
-
-    config = DatasetConfig(
-        measurement_configs={
-            'dynamic_indices': MeasurementConfig(
-                temporality=TemporalityType.DYNAMIC,
-                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
-            ),
-        },
-        normalizer_config={'cls': 'standard_scaler'},
-        save_dir=Path("data")  # Modify this line
-    )
-    config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
+    # Create the Dataset object with eager DataFrames
+    print("Creating Dataset object...")
 
     # Before creating the Dataset object
     subjects_df = subjects_df.collect() if isinstance(subjects_df, pl.LazyFrame) else subjects_df
     events_df = events_df.collect() if isinstance(events_df, pl.LazyFrame) else events_df
     dynamic_measurements_df = dynamic_measurements_df.collect() if isinstance(dynamic_measurements_df, pl.LazyFrame) else dynamic_measurements_df
 
-    # Create the Dataset object with eager DataFrames
-    print("Creating Dataset object...")
     ESD = Dataset(
         config=config,
         subjects_df=subjects_df,
         events_df=events_df,
-        dynamic_measurements_df=dynamic_measurements_df
+        dynamic_measurements_df=dynamic_measurements_df,
+        code_mapping=code_mapping
     )
 
     print("Dataset object created.")
@@ -628,7 +654,7 @@ def main(use_labs=False, save_schema=False):
         (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp_with_epsilon')
     ])
 
-    # Assign the updated vocabulary sizes and offsets to the Dataset's vocabulary_config
+    # Update the vocabulary configuration
     ESD.vocabulary_config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
     ESD.vocabulary_config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
     ESD.vocabulary_config.event_types_idxmap = event_types_idxmap
@@ -640,9 +666,22 @@ def main(use_labs=False, save_schema=False):
     print("Updated Event types index map:")
     print(ESD.vocabulary_config.event_types_idxmap)
 
+    print("Checking dynamic_indices in ESD.dynamic_measurements_df")
+    null_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices').is_null()).shape[0]
+    unknown_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices') == 'UNKNOWN_CODE').shape[0]
+    print(f"Null values: {null_count}")
+    print(f"UNKNOWN_CODE values: {unknown_count}")
+    print(f"Sample of ESD.dynamic_measurements_df:\n{ESD.dynamic_measurements_df.head()}")
+
     print("Saving dataset...")
+    print(type(ESD))
     ESD.save(do_overwrite=do_overwrite)
     print("Dataset saved.")
+
+    # Print final vocabulary information
+    print("Final Vocabulary sizes by measurement:", ESD.vocabulary_config.vocab_sizes_by_measurement)
+    print("Final Vocabulary offsets by measurement:", ESD.vocabulary_config.vocab_offsets_by_measurement)
+    print("Final Event types index map:", ESD.vocabulary_config.event_types_idxmap)
 
     # Print the contents of ESD
     print("Contents of ESD after saving:")
@@ -694,12 +733,6 @@ def main(use_labs=False, save_schema=False):
                 print(f"No Parquet files found for split '{split}'.")
     else:
         print("DL_reps directory not found.")
-
-    # Code to inspect the first 10 rows of E.pkl
-    with open('data/E.pkl', 'rb') as f:
-        E = pickle.load(f)
-        # Assuming E is a DataFrame or similar structure
-        print(E.head(10))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process Event Stream Data.')
