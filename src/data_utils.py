@@ -197,59 +197,68 @@ class CustomPytorchDataset(PytorchDataset):
         return sum(len(df) for df in self.cached_data_list)
 
     def __getitem__(self, idx):
-        self.logger.debug(f"Getting item at index: {idx}")
-        
-        for df in self.cached_data_list:
-            if idx < len(df):
-                row = df.iloc[idx]
-                break
-            idx -= len(df)
-        else:
-            raise IndexError("Index out of range")
-        
-        subject_id = row['subject_id']
-        
-        # Get label from task_df
-        if self.task_df is not None:
-            label_row = self.task_df.filter(pl.col('subject_id') == subject_id)
-            if len(label_row) > 0:
-                label = label_row['label'].item()
+        try:
+            self.logger.debug(f"Getting item at index: {idx}")
+            
+            for df in self.cached_data_list:
+                if idx < len(df):
+                    row = df.iloc[idx]
+                    break
+                idx -= len(df)
             else:
-                self.logger.warning(f"No label found for subject_id {subject_id}")
-                label = None
-        else:
-            label = None
+                raise IndexError("Index out of range")
+            
+            subject_id = row['subject_id']
+            
+            # Get label from task_df
+            if self.task_df is not None:
+                label_row = self.task_df.filter(pl.col('subject_id') == subject_id)
+                if len(label_row) > 0:
+                    label = label_row['label'].item()
+                else:
+                    self.logger.warning(f"No label found for subject_id {subject_id}")
+                    return None
+            else:
+                self.logger.warning(f"No task_df provided for subject_id {subject_id}")
+                return None
 
-        dynamic_indices = self.process_column(row, 'dynamic_indices')
-        dynamic_counts = self.process_column(row, 'dynamic_counts', dtype=torch.float)
+            dynamic_indices = self.process_column(row, 'dynamic_indices')
+            dynamic_counts = self.process_column(row, 'dynamic_counts', dtype=torch.float)
 
-        return {
-            'dynamic_indices': dynamic_indices,
-            'dynamic_counts': dynamic_counts,
-            'labels': torch.tensor(label, dtype=torch.float32) if label is not None else None
-        }
+            return {
+                'dynamic_indices': dynamic_indices,
+                'dynamic_counts': dynamic_counts,
+                'labels': torch.tensor(label, dtype=torch.float32)
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting item at index {idx}: {str(e)}")
+            return None
 
     def process_column(self, row, column_name, dtype=torch.long):
-        if column_name not in row.index:
-            self.logger.warning(f"{column_name} not found in row. Using zeros.")
-            return torch.zeros(1, dtype=dtype)
-        
-        value = row[column_name]
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError:
-                value = [value]
-        
-        if isinstance(value, (list, np.ndarray)):
-            if dtype == torch.long:
-                value = [self.get_int_mapping(str(x)) if isinstance(x, (str, int, float)) else 0 for x in value]
+        try:
+            if column_name not in row.index:
+                self.logger.warning(f"{column_name} not found in row. Using zeros.")
+                return torch.zeros(1, dtype=dtype)
+            
+            value = row[column_name]
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = [value]
+            
+            if isinstance(value, (list, np.ndarray)):
+                if dtype == torch.long:
+                    value = [self.get_int_mapping(str(x)) if isinstance(x, (str, int, float)) else 0 for x in value]
+                else:
+                    value = [float(x) if isinstance(x, (int, float, str)) else 0.0 for x in value]
             else:
-                value = [float(x) if isinstance(x, (int, float, str)) else 0.0 for x in value]
-        else:
-            value = [value]
-        
-        return torch.tensor(value, dtype=dtype)
+                value = [value]
+            
+            return torch.tensor(value, dtype=dtype)
+        except Exception as e:
+            self.logger.error(f"Error processing column {column_name}: {str(e)}")
+            return torch.zeros(1, dtype=dtype)
 
     def get_int_mapping(self, value):
         if value not in self.string_to_int_mapping:
