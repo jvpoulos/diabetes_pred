@@ -218,7 +218,7 @@ $ python3 src/pretrain.py +config_name=pretrain_config
 Train the transformer from scratch:
 
 ```bash
-$ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 pretrain_config_path="./experiments/pretrain/2024-06-04_13-03-18/pretrain_config.yaml" do_overwrite=True config.problem_type="single_label_classification"
+$ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune"
 ```
 
 or fine-tune the pre-trained model:

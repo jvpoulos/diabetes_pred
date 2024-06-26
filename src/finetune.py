@@ -1,6 +1,9 @@
 import multiprocessing
 multiprocessing.set_start_method('spawn', force=True)
 
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
@@ -15,6 +18,7 @@ from pytorch_lightning.loggers import WandbLogger
 import polars as pl
 import torch
 import logging
+import wandb
 
 from data_utils import CustomPytorchDataset
 
@@ -72,6 +76,18 @@ def main(cfg: FinetuneConfig):
         tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=val_df, device=device)
         held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, task_df=test_df, device=device)
 
+        # Calculate max_index using the datasets
+        max_index = max(
+            train_pyd.get_max_index(),
+            tuning_pyd.get_max_index(),
+            held_out_pyd.get_max_index()
+        )
+
+        # Set the vocab_size to be at least the maximum index + 1
+        current_vocab_size = getattr(cfg.config, "vocab_size", 1)
+        cfg.config.vocab_size = max(current_vocab_size, max_index + 1)
+        logger.info(f"Set vocab_size to {cfg.config.vocab_size}")
+                    
         logger.debug(f"Train dataset cached data shape: {train_pyd.cached_data.shape if hasattr(train_pyd, 'cached_data') else 'No cached_data attribute'}")
         logger.debug(f"Tuning dataset cached data shape: {tuning_pyd.cached_data.shape if hasattr(tuning_pyd, 'cached_data') else 'No cached_data attribute'}")
         logger.debug(f"Held-out dataset cached data shape: {held_out_pyd.cached_data.shape if hasattr(held_out_pyd, 'cached_data') else 'No cached_data attribute'}")
@@ -85,6 +101,7 @@ def main(cfg: FinetuneConfig):
 
         logger.info("Starting training process")
         try:
+            wandb.init(config=cfg.to_dict())
             _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
         except Exception as e:
             logger.exception(f"Error during training: {str(e)}")

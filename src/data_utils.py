@@ -43,6 +43,7 @@ import pickle
 from typing import Dict, Set, List
 import dill
 import logging
+import ast
 
 def inspect_pickle_file(file_path):
     try:
@@ -129,6 +130,7 @@ class CustomPytorchDataset(PytorchDataset):
         self.device = device
         self.string_to_int_mapping = {}
         self.current_index = 0
+        self.max_index = 0
         
         self.logger.debug(f"dl_reps_dir: {self.dl_reps_dir}")
         self.logger.debug(f"subjects_df shape: {subjects_df.shape}")
@@ -196,6 +198,12 @@ class CustomPytorchDataset(PytorchDataset):
     def __len__(self):
         return sum(len(df) for df in self.cached_data_list)
 
+    def handle_nan_values(self, item):
+        if 'dynamic_counts' in item and torch.isnan(item['dynamic_counts']).any():
+            self.logger.warning(f"NaN values found in dynamic_counts for subject_id {item.get('subject_id', 'unknown')}")
+            item['dynamic_counts'] = torch.nan_to_num(item['dynamic_counts'], nan=0.0)
+        return item
+
     def __getitem__(self, idx):
         try:
             self.logger.debug(f"Getting item at index: {idx}")
@@ -225,47 +233,58 @@ class CustomPytorchDataset(PytorchDataset):
             dynamic_indices = self.process_column(row, 'dynamic_indices')
             dynamic_counts = self.process_column(row, 'dynamic_counts', dtype=torch.float)
 
-            return {
+            # Check for empty tensors
+            if dynamic_indices.numel() == 0 or dynamic_counts.numel() == 0:
+                self.logger.warning(f"Empty tensor found for subject_id {subject_id}")
+                return None
+
+            # Ensure dynamic_indices and dynamic_counts have the same shape
+            if dynamic_indices.shape != dynamic_counts.shape:
+                self.logger.warning(f"Mismatched shapes for subject_id {subject_id}: indices {dynamic_indices.shape}, counts {dynamic_counts.shape}")
+                min_length = min(dynamic_indices.numel(), dynamic_counts.numel())
+                dynamic_indices = dynamic_indices[:min_length]
+                dynamic_counts = dynamic_counts[:min_length]
+
+            item = {
+                'subject_id': subject_id,
                 'dynamic_indices': dynamic_indices,
                 'dynamic_counts': dynamic_counts,
                 'labels': torch.tensor(label, dtype=torch.float32)
             }
+
+            # Handle NaN values
+            item = self.handle_nan_values(item)
+
+            return item
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
             return None
 
     def process_column(self, row, column_name, dtype=torch.long):
         try:
-            if column_name not in row.index:
-                self.logger.warning(f"{column_name} not found in row. Using zeros.")
-                return torch.zeros(1, dtype=dtype)
-            
-            value = row[column_name]
-            if isinstance(value, str):
+            data = row[column_name]
+            if isinstance(data, (list, np.ndarray)):
+                return torch.tensor(data, dtype=dtype)
+            elif isinstance(data, str):
+                # Parse the string format "code_type"
+                code, _ = data.split('_')
                 try:
-                    value = json.loads(value)
-                except json.JSONDecodeError:
-                    value = [value]
-            
-            if isinstance(value, (list, np.ndarray)):
-                if dtype == torch.long:
-                    value = [self.get_int_mapping(str(x)) if isinstance(x, (str, int, float)) else 0 for x in value]
-                else:
-                    value = [float(x) if isinstance(x, (int, float, str)) else 0.0 for x in value]
+                    # Try to convert the code to a float first
+                    return torch.tensor([float(code)], dtype=dtype)
+                except ValueError:
+                    # If conversion to float fails, hash the string to an integer
+                    return torch.tensor([hash(code) % (2**31-1)], dtype=dtype)
+            elif isinstance(data, (int, float, np.integer, np.floating)):
+                return torch.tensor([data], dtype=dtype)
             else:
-                value = [value]
-            
-            return torch.tensor(value, dtype=dtype)
+                self.logger.warning(f"Unexpected data type for {column_name}: {type(data)}")
+                return torch.tensor([], dtype=dtype)
         except Exception as e:
             self.logger.error(f"Error processing column {column_name}: {str(e)}")
-            return torch.zeros(1, dtype=dtype)
+            return torch.tensor([], dtype=dtype)
 
-    def get_int_mapping(self, value):
-        if value not in self.string_to_int_mapping:
-            self.string_to_int_mapping[value] = self.current_index
-            self.current_index += 1
-        return self.string_to_int_mapping[value]
-
+    def get_max_index(self):
+        return self.max_index
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """
