@@ -30,8 +30,8 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 from datetime import datetime
 import matplotlib.dates as mdates
-from EventStream.data.pytorch_dataset import PytorchDataset
-from EventStream.data.dataset_config import DatasetConfig
+from EventStreamGPT.EventStream.data.pytorch_dataset import PytorchDataset
+from EventStreamGPT.EventStream.data.dataset_config import DatasetConfig
 from pathlib import Path
 import pyarrow.parquet as pq
 from datetime import datetime, timedelta
