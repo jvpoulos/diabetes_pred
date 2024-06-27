@@ -8,8 +8,8 @@ config:
   num_labels: 2
   do_use_learnable_sinusoidal_ATE: true
   do_split_embeddings: false
-  categorical_embedding_dim: 32
-  numerical_embedding_dim: 16
+  categorical_embedding_dim: 64
+  numerical_embedding_dim: 32
   static_embedding_mode: sum_all
   categorical_embedding_weight: 0.3
   numerical_embedding_weight: 0.5
@@ -17,35 +17,34 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 4
+  num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   seq_window_size: 168
-  head_dim: 8
+  head_dim: 16
   num_attention_heads: 16
   max_grad_norm: 1.0
   intermediate_dropout: 0.4
   attention_dropout: 0.4
   input_dropout: 0.4
   resid_dropout: 0.4
-  hidden_size: 128  # 8 * 16 = 128, consistent with head_dim and num_attention_heads
-  intermediate_size: 128
+  hidden_size: 256  # 16 * 16 = 256, consistent with head_dim and num_attention_heads
+  intermediate_size: 256
   task_specific_params:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 1e-4  # Initial learning rate
-  end_lr: 1e-5   # Final learning rate
-  end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
+  init_lr: 1e-2  # Initial learning rate
+  end_lr: 1e-4   # Final learning rate
+  end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
   max_epochs: 100
-  batch_size: 32
-  validation_batch_size: 32
+  batch_size: 128
+  validation_batch_size: 128
   lr_frac_warmup_steps: 0.1
-  lr_decay_power: 1.0
+  lr_decay_power: 0.01
   weight_decay: 0.01
   patience: 10
-  gradient_accumulation: 8
-  gradient_accumulation_steps: 1
-  num_dataloader_workers: 4
+  gradient_accumulation: 4
+  num_dataloader_workers: 6
   lr_num_warmup_steps: 100  
   max_training_steps: 10000
   use_lr_scheduler: true

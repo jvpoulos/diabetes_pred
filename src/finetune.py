@@ -83,11 +83,10 @@ def main(cfg: FinetuneConfig):
             held_out_pyd.get_max_index()
         )
 
-        # Set the vocab_size to be at least the maximum index + 1
-        current_vocab_size = getattr(cfg.config, "vocab_size", 1)
-        cfg.config.vocab_size = max(current_vocab_size, max_index + 1)
+        # Set the vocab_size to be the maximum index + 1 (for padding/unknown token)
+        cfg.config.vocab_size = max_index + 1
         logger.info(f"Set vocab_size to {cfg.config.vocab_size}")
-                    
+        
         logger.debug(f"Train dataset cached data shape: {train_pyd.cached_data.shape if hasattr(train_pyd, 'cached_data') else 'No cached_data attribute'}")
         logger.debug(f"Tuning dataset cached data shape: {tuning_pyd.cached_data.shape if hasattr(tuning_pyd, 'cached_data') else 'No cached_data attribute'}")
         logger.debug(f"Held-out dataset cached data shape: {held_out_pyd.cached_data.shape if hasattr(held_out_pyd, 'cached_data') else 'No cached_data attribute'}")
