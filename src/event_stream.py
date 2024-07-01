@@ -68,6 +68,25 @@ def print_memory_usage():
     print(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
 
 def main(use_labs=False, save_schema=False):
+
+    print("Building dataset config...")
+    # Build Config
+    split = (0.7, 0.2, 0.1)
+    seed = 42
+    do_overwrite = True
+    DL_chunk_size = 20000
+
+    config = DatasetConfig(
+        measurement_configs={
+            'dynamic_indices': MeasurementConfig(
+                temporality=TemporalityType.DYNAMIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+            ),
+        },
+        normalizer_config={'cls': 'standard_scaler'},
+        save_dir=Path("data")
+    )
+
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
@@ -99,17 +118,76 @@ def main(use_labs=False, save_schema=False):
     df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
     df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(subjects_df.height*0.01), chunk_size=90000)
 
-    print("Creating code mapping...")
-    code_mapping = create_code_mapping(df_dia, df_prc)
-    print(f"Total unique codes: {len(code_mapping)}")
+    print("Creating events dataframe...")
+    events_df = pl.concat([df_dia, df_prc], how='diagonal')
+    events_df = events_df.with_columns([
+        pl.col('EMPI').alias('subject_id').cast(pl.UInt32),
+        pl.col('Date').alias('timestamp'),
+        pl.when(pl.col('EMPI').is_in(df_dia['EMPI']))
+        .then(pl.lit('DIAGNOSIS'))
+        .otherwise(pl.lit('PROCEDURE'))
+        .alias('event_type').cast(pl.Categorical)
+    ])
+    events_df = events_df.join(subjects_df.select(['EMPI', 'subject_id']), on='EMPI', how='inner')
+    events_df = events_df.with_row_index('event_id')
 
-    print("Creating inverse_mapping...")
-    inverse_mapping = {idx: code for code, idx in code_mapping.items()}
-    print(f"Total unique codes in inverse_mapping: {len(inverse_mapping)}")
+    print("Creating event types index map...")
+    event_types = events_df['event_type'].unique().to_list()
+    event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
+
+    print("Updating config with event types index map...")
+    config.event_types_idxmap = event_types_idxmap
+
+    print("Event types index map:")
+    print(event_types_idxmap)
+
+    print("Events dataframe created.")
+    print(f"Shape of events_df: {events_df.shape}")
+    print(f"Columns of events_df: {events_df.columns}")
+
+    print("Creating code mapping...")
+    code_to_index = create_code_mapping(df_dia, df_prc)
+
+    print("Creating inverse mapping...")
+    index_to_code = {idx: code for code, idx in code_to_index.items()}
+
+    print(f"Total unique codes: {len(code_to_index)}")
 
     print("Mapping codes to indices...")
-    df_dia = map_codes_to_indices(df_dia, code_mapping)
-    df_prc = map_codes_to_indices(df_prc, code_mapping)
+    df_dia = map_codes_to_indices(df_dia, code_to_index)
+    df_prc = map_codes_to_indices(df_prc, code_to_index)
+
+    print("Save df_dia and df_prc as Parquet files")
+    df_dia.write_parquet("data/df_dia.parquet")
+    df_prc.write_parquet("data/df_prc.parquet")
+
+    # Update these definitions
+    vocab_sizes_by_measurement = {
+        'event_type': len(event_types_idxmap),
+        'dynamic_indices': len(code_to_index),  # Changed from code_mapping to code_to_index
+    }
+
+    vocab_offsets_by_measurement = {
+        'event_type': 1,
+        'dynamic_indices': len(event_types_idxmap),
+    }
+
+    print("Updating config with vocabulary sizes and offsets...")
+    config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
+    config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
+
+    print("Updated Vocabulary sizes by measurement:", vocab_sizes_by_measurement)
+    print("Updated Vocabulary offsets by measurement:", vocab_offsets_by_measurement)
+
+    # Save mappings to disk as JSON files
+    print("Saving mappings to disk...")
+    with open('data/code_to_index.json', 'w') as f:
+        json.dump(code_to_index, f)
+
+    with open('data/index_to_code.json', 'w') as f:
+        json.dump(index_to_code, f)
+
+    print("Mappings saved successfully.")
     
     if use_labs:
         df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=90000, min_frequency=ceil(subjects_df.height*0.01))
@@ -437,24 +515,6 @@ def main(use_labs=False, save_schema=False):
     if use_labs:
         df_labs_empi = df_labs['EMPI'].unique()
 
-    print("Building dataset config...")
-    # Build Config
-    split = (0.7, 0.2, 0.1)
-    seed = 42
-    do_overwrite = True
-    DL_chunk_size = 20000
-
-    config = DatasetConfig(
-        measurement_configs={
-            'dynamic_indices': MeasurementConfig(
-                temporality=TemporalityType.DYNAMIC,
-                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
-            ),
-        },
-        normalizer_config={'cls': 'standard_scaler'},
-        save_dir=Path("data")
-    )
-
     print("Processing events and measurements data...")
     temp_dataset = Dataset(config)
 
@@ -464,18 +524,6 @@ def main(use_labs=False, save_schema=False):
     events_df_prc, dynamic_measurements_df_prc = temp_dataset._process_events_and_measurements_df(
         df_prc, "PROCEDURE", {"CodeWithType": ("CodeWithType", InputDataType.CATEGORICAL), "dynamic_indices": ("dynamic_indices", InputDataType.CATEGORICAL)}
     )
-
-    events_df = pl.concat([df_dia, df_prc], how='diagonal')
-    events_df = events_df.with_columns([
-        pl.col('EMPI').alias('subject_id').cast(pl.UInt32),
-        pl.col('Date').alias('timestamp'),
-        pl.when(pl.col('EMPI').is_in(df_dia['EMPI']))
-        .then(pl.lit('DIAGNOSIS'))
-        .otherwise(pl.lit('PROCEDURE'))
-        .alias('event_type').cast(pl.Categorical)
-    ])
-    events_df = events_df.join(subjects_df.select(['EMPI', 'subject_id']), on='EMPI', how='inner')
-    events_df = events_df.with_row_index('event_id')
 
     dynamic_measurements_df = pl.concat([dynamic_measurements_df_dia, dynamic_measurements_df_prc], how="diagonal")
 
@@ -529,15 +577,13 @@ def main(use_labs=False, save_schema=False):
     event_types = events_df['event_type'].unique().to_list()
     event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
 
-    config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
-
     print("Event types index map:")
     print(event_types_idxmap)
 
-    # Update the vocab_sizes_by_measurement and vocab_offsets_by_measurement
+    print("Updating vocabulary sizes and offsets...")
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
-        'dynamic_indices': len(code_mapping),
+        'dynamic_indices': len(code_to_index),
     }
 
     vocab_offsets_by_measurement = {
@@ -545,8 +591,9 @@ def main(use_labs=False, save_schema=False):
         'dynamic_indices': len(event_types_idxmap),
     }
 
-    print("Updated Vocabulary sizes by measurement:", vocab_sizes_by_measurement)
-    print("Updated Vocabulary offsets by measurement:", vocab_offsets_by_measurement)
+    print("Updating config with vocabulary sizes and offsets...")
+    config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
+    config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
 
     print(f"Number of unique mapped diagnosis codes: {df_dia['dynamic_indices'].n_unique()}")
     print(f"Number of unique mapped procedures codes: {df_prc['dynamic_indices'].n_unique()}")
@@ -603,7 +650,7 @@ def main(use_labs=False, save_schema=False):
         subjects_df=subjects_df,
         events_df=events_df,
         dynamic_measurements_df=dynamic_measurements_df,
-        code_mapping=code_mapping
+        code_mapping=code_to_index  # Changed from code_mapping to code_to_index
     )
 
     print("Dataset object created.")

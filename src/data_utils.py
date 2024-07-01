@@ -17,14 +17,8 @@ import scipy.sparse as sp
 from scipy.sparse import csr_matrix, hstack, vstack, lil_matrix
 from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_sparse
 from joblib import Parallel, delayed
-import multiprocessing
-import concurrent.futures
 import argparse
 import dask
-import dask.dataframe as dd
-import dask.array as da
-from dask.diagnostics import ProgressBar
-from dask.distributed import Client, as_completed
 import polars as pl
 import pandas as pd
 import plotly.express as px
@@ -41,10 +35,11 @@ import os
 import tempfile
 import shutil
 import pickle
-from typing import Dict, Set, List
+from typing import Dict, Set, List, Any
 import dill
 import logging
 import ast
+import psutil
 
 def inspect_pickle_file(file_path):
     try:
@@ -69,43 +64,12 @@ def load_with_dill(file_path):
         print(f"Error loading {file_path} with dill: {str(e)}")
         return None
 
-def create_code_mapping(self):
-    all_codes = set()
-    for df in self.cached_data_list:
-        if 'dynamic_indices' in df.columns:
-            all_codes.update(df['dynamic_indices'].explode().unique())
-
-    # Separate numeric and non-numeric codes
-    numeric_codes = []
-    non_numeric_codes = []
-    for code in all_codes:
-        try:
-            numeric_codes.append(float(code))
-        except ValueError:
-            non_numeric_codes.append(str(code))
-
-    # Sort numeric and non-numeric codes separately
-    sorted_numeric_codes = sorted(numeric_codes)
-    sorted_non_numeric_codes = sorted(non_numeric_codes)
-
-    # Combine sorted codes
-    sorted_codes = [str(code) for code in sorted_numeric_codes] + sorted_non_numeric_codes
-
-    self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
-    self.index_to_code = {idx: code for code, idx in self.code_to_index.items()}
-    self.logger.info(f"Created code mapping with {len(self.code_to_index)} unique codes")
-
-    # Log some sample mappings for debugging
-    sample_codes = list(self.code_to_index.keys())[:10]  # First 10 codes
-    for code in sample_codes:
-        self.logger.debug(f"Code: {code}, Index: {self.code_to_index[code]}")
-
-def map_codes_to_indices(df: pl.DataFrame, code_mapping: Dict[str, int]) -> pl.DataFrame:
+def map_codes_to_indices(df: pl.DataFrame, code_to_index: Dict[str, int]) -> pl.DataFrame:
     """
     Map the CodeWithType column to indices based on the provided mapping.
     """
     return df.with_columns([
-        pl.col('CodeWithType').map_dict(code_mapping).alias('dynamic_indices')
+        pl.col('CodeWithType').map_dict(code_to_index).alias('dynamic_indices')
     ])
 
 def create_inverse_mapping(code_mapping: Dict[str, int]) -> Dict[int, str]:
@@ -142,26 +106,58 @@ def generate_time_intervals(start_date, end_date, interval_days):
         intervals.append((current_date, next_date))
         current_date = next_date
     return intervals
+
+def create_code_mapping(df_dia, df_prc):
+    """
+    Create a mapping of unique codes to indices, including both diagnosis and procedure codes.
+    """
+    all_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
     
+    # Separate numeric and non-numeric codes
+    numeric_codes = []
+    non_numeric_codes = []
+    for code in all_codes:
+        try:
+            numeric_codes.append(float(code))
+        except ValueError:
+            non_numeric_codes.append(str(code))
+
+    # Sort numeric and non-numeric codes separately
+    sorted_numeric_codes = sorted(numeric_codes)
+    sorted_non_numeric_codes = sorted(non_numeric_codes)
+
+    # Combine sorted codes
+    sorted_codes = [str(code) for code in sorted_numeric_codes] + sorted_non_numeric_codes
+
+    # Create mappings
+    code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
+    
+    print(f"Created code mapping with {len(code_to_index)} unique codes")
+    # Print some sample mappings for debugging
+    sample_codes = list(code_to_index.keys())[:10]  # First 10 codes
+    for code in sample_codes:
+        print(f"Code: {code}, Index: {code_to_index[code]}")
+
+    return code_to_index
+
 class CustomPytorchDataset(PytorchDataset):
-    def __init__(self, config, split, dl_reps_dir, subjects_df, task_df=None, device=None):
-        # Set up logger first
+    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, task_df=None, device=None):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
 
-        # Initialize other attributes
+        super().__init__(config, split, task_df=task_df, dl_reps_dir=dl_reps_dir)
+
+        self.split = split
         self.dl_reps_dir = Path(dl_reps_dir)
         self.subjects_df = subjects_df
         self.task_df = task_df
+        self.df_dia = df_dia
+        self.df_prc = df_prc
         self.device = device
-        self.string_to_int_mapping = {}
-        self.current_index = 0
-        self.max_index = 0
 
         self.has_task = task_df is not None
         if self.has_task:
-            # Assume 'label' is the task column if task_df has only one column (besides 'subject_id')
             task_columns = [col for col in task_df.columns if col != 'subject_id']
             if len(task_columns) == 1:
                 self.tasks = ['label']
@@ -172,66 +168,58 @@ class CustomPytorchDataset(PytorchDataset):
         else:
             self.tasks = []
             self.task_types = {}
-        
-        self.logger.debug(f"dl_reps_dir: {self.dl_reps_dir}")
-        self.logger.debug(f"subjects_df shape: {subjects_df.shape}")
-        self.logger.debug(f"task_df shape: {task_df.shape if task_df is not None else None}")
-        self.logger.debug(f"tasks: {self.tasks}")
-        self.logger.debug(f"task_types: {self.task_types}")
-        
-        # Initialize cached_data as an empty DataFrame
-        self.cached_data = pd.DataFrame()
 
-        # Call parent's __init__ after setting up our own attributes
-        super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
-        
-        # Initialize cached_data_list
-        self.cached_data_list = []
-        
-        # Load the actual data
         self.load_cached_data()
-        
-        # Create code mapping after loading data
-        self.create_code_mapping()
-        
+        self.create_code_mapping()  # This creates self.code_to_index
+
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
-        self.logger.info(f"Dataset length: {len(self)}")
+        self.logger.info(f"Dataset length: {len(self.cached_data)}")
         self.logger.info(f"Has task: {self.has_task}")
 
-    def get_max_index(self):
-        return len(self.code_to_index)
-
     def create_code_mapping(self):
-        all_codes = set()
-        for df in self.cached_data_list:
-            if 'dynamic_indices' in df.columns:
-                codes = df['dynamic_indices'].explode().dropna()
-                all_codes.update(codes)
-
-        # Separate numeric and non-numeric codes
-        numeric_codes = []
-        non_numeric_codes = []
-        for code in all_codes:
-            try:
-                numeric_codes.append(float(code))
-            except ValueError:
-                non_numeric_codes.append(str(code))
-
-        # Sort numeric and non-numeric codes separately
-        sorted_numeric_codes = sorted(numeric_codes)
-        sorted_non_numeric_codes = sorted(non_numeric_codes)
-
-        # Combine sorted codes
-        sorted_codes = [str(code) for code in sorted_numeric_codes] + sorted_non_numeric_codes
-
-        self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
+        all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
+        sorted_codes = sorted(map(str, all_codes))
+        self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}  # Start from 1
         self.index_to_code = {idx: code for code, idx in self.code_to_index.items()}
         self.logger.info(f"Created code mapping with {len(self.code_to_index)} unique codes")
 
-        # Log some sample mappings for debugging
-        sample_codes = list(self.code_to_index.keys())[:10]  # First 10 codes
-        for code in sample_codes:
-            self.logger.debug(f"Code: {code}, Index: {self.code_to_index[code]}")
+    def process_dynamic_indices(self, indices):
+        if indices is None or (isinstance(indices, (list, str)) and len(indices) == 0):
+            self.logger.warning(f"Received empty or None for dynamic_indices, using default value")
+            return torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
+        
+        if isinstance(indices, str):
+            try:
+                codes = json.loads(indices)
+            except json.JSONDecodeError:
+                codes = indices.split(',') if ',' in indices else [indices]
+        elif isinstance(indices, list):
+            codes = indices
+        elif isinstance(indices, (int, float)):
+            codes = [int(indices)]
+        else:
+            self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
+            return torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
+        
+        processed_indices = [self.code_to_index.get(str(code).strip().split('_')[0], 1) for code in codes]
+        return torch.tensor(processed_indices, dtype=torch.long)
+
+    def get_max_index(self):
+        return max(self.code_to_index.values())
+
+    def _load_code_mapping(self):
+        # Load the code mapping from a file or create it if it doesn't exist
+        mapping_file = Path("data/code_mapping.json")
+        if mapping_file.exists():
+            with open(mapping_file, 'r') as f:
+                return json.load(f)
+        else:
+            # Create a new mapping if it doesn't exist
+            all_codes = set(self.dynamic_measurements_df['dynamic_indices'].unique())
+            mapping = {code: idx for idx, code in enumerate(sorted(all_codes), start=1)}
+            with open(mapping_file, 'w') as f:
+                json.dump(mapping, f)
+            return mapping
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
@@ -244,146 +232,126 @@ class CustomPytorchDataset(PytorchDataset):
 
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
-
-        self.cached_data_list = []
+        
+        dfs = []
+        total_rows = 0
         for parquet_file in parquet_files:
             self.logger.debug(f"Reading file: {parquet_file}")
             try:
-                df = pd.read_parquet(parquet_file)
-                self.cached_data_list.append(df)
+                df = pl.read_parquet(parquet_file)
+                self.logger.debug(f"File {parquet_file} shape: {df.shape}")
+                if self.task_df is not None:
+                    df = df.join(self.task_df, on='subject_id', how='inner')
+                dfs.append(df)
+                total_rows += df.shape[0]
             except Exception as e:
                 self.logger.error(f"Error reading Parquet file: {parquet_file}")
                 self.logger.error(f"Error message: {str(e)}")
                 continue
 
-        if not self.cached_data_list:
+        if not dfs:
             self.logger.error(f"No data loaded for split: {self.split}")
             raise ValueError(f"No data loaded for split: {self.split}")
-        else:
-            total_rows = sum(len(df) for df in self.cached_data_list)
-            self.logger.info(f"Loaded {total_rows} rows of cached data")
 
-        # Filter cached data to include only subjects with labels in the task DataFrame
-        if self.task_df is not None:
-            self.cached_data_list = [df[df['subject_id'].isin(self.task_df['subject_id'])] for df in self.cached_data_list]
-            total_rows = sum(len(df) for df in self.cached_data_list)
-            self.logger.info(f"Filtered cached data to {total_rows} rows with matching labels")
+        self.logger.info(f"Loaded {total_rows} rows of cached data")
 
         if total_rows == 0:
             raise ValueError(f"No matching data found for split: {self.split}")
 
-        # Set self.cached_data to satisfy the parent class
-        self.cached_data = pd.concat(self.cached_data_list, ignore_index=True)
-
+        self.cached_data = pl.concat(dfs)
+    
+        # Filter out rows with empty dynamic_indices
+        self.cached_data = self.cached_data.filter(pl.col('dynamic_indices').is_not_null() & (pl.col('dynamic_indices') != '[]') & (pl.col('dynamic_indices') != ''))
+        
+        self.logger.info(f"Cached data loaded and filtered. New shape: {self.cached_data.shape}")
         self.logger.info(f"Cached data loaded successfully for split: {self.split}")
+        self.logger.info(f"Cached data columns: {self.cached_data.columns}")
+
 
     def __len__(self):
-        return sum(len(df) for df in self.cached_data_list)
-
-    def handle_nan_values(self, item):
-        if 'dynamic_counts' in item and torch.isnan(item['dynamic_counts']).any():
-            self.logger.warning(f"NaN values found in dynamic_counts for subject_id {item.get('subject_id', 'unknown')}")
-            item['dynamic_counts'] = torch.nan_to_num(item['dynamic_counts'], nan=0.0)
-        return item
+        return len(self.cached_data)
 
     def __getitem__(self, idx):
         try:
-            self.logger.debug(f"Getting item at index: {idx}")
-            
-            for df in self.cached_data_list:
-                if idx < len(df):
-                    row = df.iloc[idx]
-                    break
-                idx -= len(df)
-            else:
-                raise IndexError("Index out of range")
-            
-            subject_id = row['subject_id']
-            
-            # Get label from task_df
-            if self.task_df is not None:
-                label_row = self.task_df.filter(pl.col('subject_id') == subject_id)
-                if len(label_row) > 0:
-                    label = label_row['label'].item()
-                else:
-                    self.logger.warning(f"No label found for subject_id {subject_id}")
-                    return None
-            else:
-                self.logger.warning(f"No task_df provided for subject_id {subject_id}")
-                return None
+            row = self.cached_data.row(idx)
+            subject_id = row[self.cached_data.columns.index('subject_id')]
 
-            dynamic_indices = self.process_column(row, 'dynamic_indices', dtype=torch.long)
-            dynamic_counts = self.process_column(row, 'dynamic_counts', dtype=torch.float)
+            dynamic_indices = self.process_dynamic_indices(row[self.cached_data.columns.index('dynamic_indices')])
+            dynamic_counts = self.process_dynamic_counts(row[self.cached_data.columns.index('dynamic_counts')])
 
-            # Ensure tensors are not empty and have the same shape
-            if dynamic_indices.numel() == 0 or dynamic_counts.numel() == 0:
-                # Use a default value (e.g., [0]) instead of empty tensor
-                dynamic_indices = torch.tensor([0], dtype=torch.long)
-                dynamic_counts = torch.tensor([0.0], dtype=torch.float)
-            
-            # Ensure same shape
-            if dynamic_indices.shape != dynamic_counts.shape:
-                max_len = max(dynamic_indices.numel(), dynamic_counts.numel())
-                dynamic_indices = torch.nn.functional.pad(dynamic_indices, (0, max_len - dynamic_indices.numel()), value=0)
-                dynamic_counts = torch.nn.functional.pad(dynamic_counts, (0, max_len - dynamic_counts.numel()), value=0.0)
+            # Ensure dynamic_indices is not empty
+            if dynamic_indices.numel() == 0:
+                dynamic_indices = torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
+                dynamic_counts = torch.tensor([1.0], dtype=torch.float32)
 
             item = {
                 'subject_id': subject_id,
                 'dynamic_indices': dynamic_indices,
                 'dynamic_counts': dynamic_counts,
-                'labels': torch.tensor(label, dtype=torch.float32)
+                'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32) if self.has_task else None,
             }
 
-            return item
+            static_features = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+            for feature in static_features:
+                item[feature] = self.process_static_feature(row, feature)
+
+            if 'A1cGreaterThan7' in self.cached_data.columns:
+                item['A1cGreaterThan7'] = self.process_static_feature(row, 'A1cGreaterThan7', dtype=torch.float32)
+            else:
+                item['A1cGreaterThan7'] = torch.tensor(0.0, dtype=torch.float32)
+
+            return self.handle_nan_values(item)
+
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
-            # Return a default item instead of None
-            return {
-                'subject_id': -1,
-                'dynamic_indices': torch.tensor([0], dtype=torch.long),
-                'dynamic_counts': torch.tensor([0.0], dtype=torch.float),
-                'labels': torch.tensor(0.0, dtype=torch.float32)
-            }
+            return self.get_default_item()
 
-    def process_column(self, row, column_name, dtype=torch.long):
-        try:
-            data = row[column_name]
+    def process_dynamic_counts(self, counts):
+        if counts is None:
+            return torch.tensor([0.0], dtype=torch.float32)
+        if isinstance(counts, str):
+            try:
+                counts = json.loads(counts)
+            except json.JSONDecodeError:
+                counts = [float(x) for x in counts.split(',')]
+        if isinstance(counts, (int, float)):
+            counts = [float(counts)]
+        return torch.tensor(counts, dtype=torch.float32)
 
-            if column_name == 'dynamic_indices':
-                if isinstance(data, (list, np.ndarray)):
-                    # Convert codes to indices using the mapping
-                    indices = [self.code_to_index.get(str(code), 0) for code in data]
-                    tensor_data = torch.tensor(indices, dtype=torch.long)
-                else:
-                    # Handle single code
-                    index = self.code_to_index.get(str(data), 0)
-                    tensor_data = torch.tensor([index], dtype=torch.long)
-            elif column_name == 'dynamic_counts':
-                if isinstance(data, (list, np.ndarray)):
-                    tensor_data = torch.tensor(data, dtype=torch.float32)
-                else:
-                    tensor_data = torch.tensor([float(data)], dtype=torch.float32)
-            else:
-                # For other columns, try to convert to float
-                try:
-                    if isinstance(data, (list, np.ndarray)):
-                        tensor_data = torch.tensor(data, dtype=torch.float32)
-                    else:
-                        tensor_data = torch.tensor([float(data)], dtype=torch.float32)
-                except ValueError:
-                    self.logger.warning(f"Could not convert {column_name} to float: {data}")
-                    tensor_data = torch.tensor([0], dtype=torch.float32)
+    def process_static_feature(self, row, feature, dtype=None):
+        if dtype is None:
+            dtype = torch.float32 if feature in ['InitialA1c', 'AgeYears', 'SDI_score'] else torch.long
+        value = row[self.cached_data.columns.index(feature)] if feature in self.cached_data.columns else None
+        if value is None:
+            value = 0.0 if dtype == torch.float32 else 0
+        return torch.tensor(value, dtype=dtype)
 
-            # Handle NaN values
-            tensor_data = torch.nan_to_num(tensor_data, nan=0.0)
+    def handle_nan_values(self, item):
+        for key, value in item.items():
+            if isinstance(value, torch.Tensor) and torch.isnan(value).any():
+                self.logger.warning(f"NaN values found in {key} for subject_id {item['subject_id']}")
+                item[key] = torch.nan_to_num(value, nan=0.0)
+        return item
 
-            if column_name == 'dynamic_indices':
-                self.max_index = max(self.max_index, tensor_data.max().item())
+    def get_default_item(self):
+        return {
+            'subject_id': -1,
+            'dynamic_indices': torch.tensor([1], dtype=torch.long),
+            'dynamic_counts': torch.tensor([1.0], dtype=torch.float32),
+            'labels': torch.tensor(0.0, dtype=torch.float32) if self.has_task else None,
+            'InitialA1c': torch.tensor(0.0, dtype=torch.float32),
+            'Female': torch.tensor(0, dtype=torch.long),
+            'Married': torch.tensor(0, dtype=torch.long),
+            'GovIns': torch.tensor(0, dtype=torch.long),
+            'English': torch.tensor(0, dtype=torch.long),
+            'AgeYears': torch.tensor(0.0, dtype=torch.float32),
+            'SDI_score': torch.tensor(0.0, dtype=torch.float32),
+            'Veteran': torch.tensor(0, dtype=torch.long),
+            'A1cGreaterThan7': torch.tensor(0.0, dtype=torch.float32)
+        }
 
-            return tensor_data.to(dtype)
-        except Exception as e:
-            self.logger.error(f"Error processing column {column_name}: {str(e)}")
-            return torch.tensor([0], dtype=torch.long if column_name == 'dynamic_indices' else torch.float32)
+    def get_max_index(self):
+        return max(self.code_to_index.values())
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """

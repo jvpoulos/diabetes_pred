@@ -48,9 +48,6 @@ GPUs: GeForce RTX 2080 (2)
 - `finetune.py` [temporal analyses]
 	- Fine-tunes a transformer (from scratch) on the binary classification task. Utilizes the `pretrain_config.yaml` config file.
 
-- `pretrain.py` [temporal analyses]
-	- Pre-trains a model from scratch. Utilizes the `pretrain_config.yaml` config file to pre-train the model on the binary classification task.
-
 - `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
@@ -182,13 +179,13 @@ $ python3 src/test.py  --dataset_type 'test' --model_type ResNet --dim 128 --dep
 
 ## Temporal analyses
 
-1. Create data files (arguments: `--use_dask`):
+1. Create data files (arguments: `--use_dask`, `--use_labs`, `--use_labs`):
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
-$ python3 src/event_stream.py 
+$ python3 src/event_stream.py use_labs
 ```
 
-Create the task-specific DataFrame (data/task_dfs/a1c_greater_than_7.parquet):
+Create the task-specific data splits (data/task_dfs/a1c_greater_than_7_{split}.parquet):
 
 ```bash
 $ python3 src/build_task.py 
@@ -218,11 +215,5 @@ $ python3 src/pretrain.py +config_name=pretrain_config
 Train the transformer from scratch:
 
 ```bash
-$ python3 src/finetune.py experiment_dir="./experiments" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune"
-```
-
-or fine-tune the pre-trained model:
-
-```bash
-$ python3 src/finetune.py experiment_dir="./experiments" load_from_model_dir="./experiments/pretrain/2024-05-14_16-08-59/pretrained_weights" task_df_name='single_label_binary_classification' save_dir="./experiments/finetune" data_config.min_seq_len=2 data_config.max_seq_len=256 data_config_path="./experiments/pretrain/2024-05-14_16-08-59/data_config.json"
+$ python3 src/finetune.py
 ```
