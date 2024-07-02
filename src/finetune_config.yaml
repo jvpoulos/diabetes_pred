@@ -20,14 +20,14 @@ config:
   num_hidden_layers: 4
   seq_attention_types: ["global", "local"]
   seq_window_size: 168
-  head_dim: 8
+  head_dim: 16
   num_attention_heads: 8
   max_grad_norm: 5
-  intermediate_dropout: 0.3
-  attention_dropout: 0.3
-  input_dropout: 0.3
-  resid_dropout: 0.3
-  hidden_size: 64  # 8 * 8 = 64, consistent with head_dim and num_attention_heads
+  intermediate_dropout: 0.4
+  attention_dropout: 0.4
+  input_dropout: 0.4
+  resid_dropout: 0.4
+  hidden_size: 128  # 16 * 8 = 128, consistent with head_dim and num_attention_heads
   intermediate_size: 256
   task_specific_params:
     pooling_method: mean
@@ -36,17 +36,17 @@ optimization_config:
   init_lr: 5e-3  # Initial learning rate
   end_lr: 5e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
-  max_epochs: 100
+  max_epochs: 20000 # this is in steps (training samples/batch size)
   batch_size: 128
   validation_batch_size: 128
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.02
-  patience: 10
+  patience: 2000
   gradient_accumulation: 2
   num_dataloader_workers: 0
   lr_num_warmup_steps: 100  
-  max_training_steps: 10000
+  max_training_steps: 20000
   use_lr_scheduler: true
   lr_scheduler_type: "one_cycle"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau"
   

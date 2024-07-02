@@ -107,46 +107,21 @@ def generate_time_intervals(start_date, end_date, interval_days):
         current_date = next_date
     return intervals
 
-def create_code_mapping(df_dia, df_prc):
-    """
-    Create a mapping of unique codes to indices, including both diagnosis and procedure codes.
-    """
-    all_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
-    
-    # Separate numeric and non-numeric codes
-    numeric_codes = []
-    non_numeric_codes = []
-    for code in all_codes:
-        try:
-            numeric_codes.append(float(code))
-        except ValueError:
-            non_numeric_codes.append(str(code))
+import json
+import logging
+from pathlib import Path
+import torch
+import polars as pl
+import numpy as np
 
-    # Sort numeric and non-numeric codes separately
-    sorted_numeric_codes = sorted(numeric_codes)
-    sorted_non_numeric_codes = sorted(non_numeric_codes)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
-    # Combine sorted codes
-    sorted_codes = [str(code) for code in sorted_numeric_codes] + sorted_non_numeric_codes
-
-    # Create mappings
-    code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
-    
-    print(f"Created code mapping with {len(code_to_index)} unique codes")
-    # Print some sample mappings for debugging
-    sample_codes = list(code_to_index.keys())[:10]  # First 10 codes
-    for code in sample_codes:
-        print(f"Code: {code}, Index: {code_to_index[code]}")
-
-    return code_to_index
-
-class CustomPytorchDataset(PytorchDataset):
+class CustomPytorchDataset(torch.utils.data.Dataset):
     def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, task_df=None, device=None):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
-
-        super().__init__(config, split, task_df=task_df, dl_reps_dir=dl_reps_dir)
 
         self.split = split
         self.dl_reps_dir = Path(dl_reps_dir)
@@ -169,8 +144,8 @@ class CustomPytorchDataset(PytorchDataset):
             self.tasks = []
             self.task_types = {}
 
+        self.create_code_mapping()  # Create code mapping before loading cached data
         self.load_cached_data()
-        self.create_code_mapping()  # This creates self.code_to_index
 
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
         self.logger.info(f"Dataset length: {len(self.cached_data)}")
@@ -178,48 +153,19 @@ class CustomPytorchDataset(PytorchDataset):
 
     def create_code_mapping(self):
         all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
-        sorted_codes = sorted(map(str, all_codes))
-        self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}  # Start from 1
-        self.index_to_code = {idx: code for code, idx in self.code_to_index.items()}
+        
+        sorted_codes = sorted(all_codes)
+        self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
+        
         self.logger.info(f"Created code mapping with {len(self.code_to_index)} unique codes")
-
-    def process_dynamic_indices(self, indices):
-        if indices is None or (isinstance(indices, (list, str)) and len(indices) == 0):
-            self.logger.warning(f"Received empty or None for dynamic_indices, using default value")
-            return torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
+        sample_codes = list(self.code_to_index.items())[:10]
+        self.logger.debug(f"Code mapping sample: {dict(sample_codes)}")
         
-        if isinstance(indices, str):
-            try:
-                codes = json.loads(indices)
-            except json.JSONDecodeError:
-                codes = indices.split(',') if ',' in indices else [indices]
-        elif isinstance(indices, list):
-            codes = indices
-        elif isinstance(indices, (int, float)):
-            codes = [int(indices)]
-        else:
-            self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
-            return torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
-        
-        processed_indices = [self.code_to_index.get(str(code).strip().split('_')[0], 1) for code in codes]
-        return torch.tensor(processed_indices, dtype=torch.long)
+        self.logger.debug(f"Full code mapping: {self.code_to_index}")
 
-    def get_max_index(self):
-        return max(self.code_to_index.values())
-
-    def _load_code_mapping(self):
-        # Load the code mapping from a file or create it if it doesn't exist
-        mapping_file = Path("data/code_mapping.json")
-        if mapping_file.exists():
-            with open(mapping_file, 'r') as f:
-                return json.load(f)
-        else:
-            # Create a new mapping if it doesn't exist
-            all_codes = set(self.dynamic_measurements_df['dynamic_indices'].unique())
-            mapping = {code: idx for idx, code in enumerate(sorted(all_codes), start=1)}
-            with open(mapping_file, 'w') as f:
-                json.dump(mapping, f)
-            return mapping
+        # Save the code mapping to a file
+        with open("data/code_mapping.json", 'w') as f:
+            json.dump(self.code_to_index, f)
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
@@ -259,29 +205,37 @@ class CustomPytorchDataset(PytorchDataset):
             raise ValueError(f"No matching data found for split: {self.split}")
 
         self.cached_data = pl.concat(dfs)
-    
+
+        # Print some information about the loaded data
+        self.logger.info(f"Loaded {self.cached_data.shape[0]} rows of cached data")
+        self.logger.info(f"Cached data columns: {self.cached_data.columns}")
+        self.logger.info(f"Sample of dynamic_indices: {self.cached_data['dynamic_indices'].head(5)}")
+
         # Filter out rows with empty dynamic_indices
         self.cached_data = self.cached_data.filter(pl.col('dynamic_indices').is_not_null() & (pl.col('dynamic_indices') != '[]') & (pl.col('dynamic_indices') != ''))
         
-        self.logger.info(f"Cached data loaded and filtered. New shape: {self.cached_data.shape}")
-        self.logger.info(f"Cached data loaded successfully for split: {self.split}")
-        self.logger.info(f"Cached data columns: {self.cached_data.columns}")
-
+        self.logger.info(f"After filtering, {self.cached_data.shape[0]} rows remain")
+        self.logger.info(f"Sample of dynamic_indices after filtering: {self.cached_data['dynamic_indices'].head(5)}")
 
     def __len__(self):
-        return len(self.cached_data)
+        return self.cached_data.shape[0]
 
     def __getitem__(self, idx):
         try:
             row = self.cached_data.row(idx)
             subject_id = row[self.cached_data.columns.index('subject_id')]
 
-            dynamic_indices = self.process_dynamic_indices(row[self.cached_data.columns.index('dynamic_indices')])
+            raw_dynamic_indices = row[self.cached_data.columns.index('dynamic_indices')]
+            self.logger.debug(f"Raw dynamic_indices for subject {subject_id}: {raw_dynamic_indices}")
+
+            dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices)
+            self.logger.debug(f"Processed dynamic_indices for subject {subject_id}: {dynamic_indices}")
+
             dynamic_counts = self.process_dynamic_counts(row[self.cached_data.columns.index('dynamic_counts')])
 
             # Ensure dynamic_indices is not empty
             if dynamic_indices.numel() == 0:
-                dynamic_indices = torch.tensor([1], dtype=torch.long)  # Use 1 as a default index
+                dynamic_indices = torch.tensor([0], dtype=torch.long)  # Use 0 for padding
                 dynamic_counts = torch.tensor([1.0], dtype=torch.float32)
 
             item = {
@@ -291,6 +245,7 @@ class CustomPytorchDataset(PytorchDataset):
                 'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32) if self.has_task else None,
             }
 
+            # Add static features
             static_features = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
             for feature in static_features:
                 item[feature] = self.process_static_feature(row, feature)
@@ -305,6 +260,30 @@ class CustomPytorchDataset(PytorchDataset):
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
             return self.get_default_item()
+
+    def process_dynamic_indices(self, indices):
+        if indices is None or (isinstance(indices, (list, str)) and len(indices) == 0):
+            self.logger.warning(f"Received empty or None for dynamic_indices, using default value")
+            return torch.tensor([0], dtype=torch.long)
+        
+        if isinstance(indices, str):
+            codes = [indices]  # Single code as a string
+        elif isinstance(indices, list):
+            codes = indices
+        else:
+            self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
+            return torch.tensor([0], dtype=torch.long)
+        
+        processed_indices = []
+        for code in codes:
+            code_str = str(code).strip()
+            index = self.code_to_index.get(code_str, 0)
+            self.logger.debug(f"Code: {code_str}, Index: {index}")
+            processed_indices.append(index)
+        
+        self.logger.debug(f"Raw codes: {codes}")
+        self.logger.debug(f"Processed indices: {processed_indices}")
+        return torch.tensor(processed_indices, dtype=torch.long)
 
     def process_dynamic_counts(self, counts):
         if counts is None:
