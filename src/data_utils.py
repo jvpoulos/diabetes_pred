@@ -226,10 +226,10 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             subject_id = row[self.cached_data.columns.index('subject_id')]
 
             raw_dynamic_indices = row[self.cached_data.columns.index('dynamic_indices')]
-            self.logger.debug(f"Raw dynamic_indices for subject {subject_id}: {raw_dynamic_indices}")
+            # self.logger.debug(f"Raw dynamic_indices for subject {subject_id}: {raw_dynamic_indices}")
 
             dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices)
-            self.logger.debug(f"Processed dynamic_indices for subject {subject_id}: {dynamic_indices}")
+            # self.logger.debug(f"Processed dynamic_indices for subject {subject_id}: {dynamic_indices}")
 
             dynamic_counts = self.process_dynamic_counts(row[self.cached_data.columns.index('dynamic_counts')])
 
@@ -278,11 +278,11 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         for code in codes:
             code_str = str(code).strip()
             index = self.code_to_index.get(code_str, 0)
-            self.logger.debug(f"Code: {code_str}, Index: {index}")
+            # self.logger.debug(f"Code: {code_str}, Index: {index}")
             processed_indices.append(index)
         
-        self.logger.debug(f"Raw codes: {codes}")
-        self.logger.debug(f"Processed indices: {processed_indices}")
+        # self.logger.debug(f"Raw codes: {codes}")
+        # self.logger.debug(f"Processed indices: {processed_indices}")
         return torch.tensor(processed_indices, dtype=torch.long)
 
     def process_dynamic_counts(self, counts):
