@@ -1,6 +1,6 @@
 outcomes_columns = {
-'studyID': 'int32',
-'EMPI': 'int32',
+#changed to StudyID
+'StudyID': 'object', #object or string?
 'IndexDate': 'object',
 'InitialA1c': 'float32',
 'A1cAfter12Months': 'float32',
@@ -22,49 +22,52 @@ outcomes_columns = {
 'Veteran': 'int32'
 }
 
-dia_columns = {
-'EMPI': 'int32',
+dia_columns = { #change cols
+'StudyID': 'object', #object or string?
 'Date': 'object', 
+'Code': 'object',
 'Code_Type': 'object', 
-'Code': 'object', 
 'IndexDate': 'object', 
 'CodeWithType': 'object'
 }
 
-prc_columns = {
-'EMPI': 'int32',
+prc_columns = { #change cols
+'StudyID': 'object', #object or string?
 'Date': 'object', 
+'Code': 'object',
 'Code_Type': 'object', 
-'Code': 'object', 
 'IndexDate': 'object', 
 'CodeWithType': 'object'
 }
 
-labs_columns = {
-'EMPI': 'int32',
+labs_columns = { #change to cols in table
+'StudyID': 'object', #object or string?
 'Date': 'object', 
 'Code': 'object', 
-'Result': 'float32', 
-'ValType': 'object',
+'Result': 'object', 
+#'ValType': 'object',
 'Source': 'object',
-'dtype': 'object'
+#'dtype': 'object'
 }
 
-# Select columns to read in each dataset (temporal analyses)
+# Select columns to read in each dataset (temporal analyses) #change too
 
-outcomes_columns_select = ['EMPI', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
+#outcome variable is a1c>7
+#all static
 
-dia_columns_select = ['EMPI', 'Date', 'CodeWithType']
+outcomes_columns_select = ['StudyID', 'IndexDate', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
 
-prc_columns_select = ['EMPI', 'Date', 'CodeWithType']
+dia_columns_select = ['StudyID', 'Date', 'IndexDate', 'CodeWithType']
 
-labs_columns_select = ['EMPI', 'Date', 'Code', 'Result']
+prc_columns_select = ['StudyID', 'Date', 'IndexDate', 'CodeWithType']
+
+labs_columns_select = ['StudyID', 'Date', 'IndexDate', 'Code', 'Result']
 
 
 # static analyses
 
-dia_columns_select_static = ['EMPI', 'CodeWithType']
+dia_columns_select_static = ['StudyID', 'CodeWithType']
 
-prc_columns_select_static = ['EMPI', 'CodeWithType']
+prc_columns_select_static = ['StudyID', 'CodeWithType']
 
-labs_columns_select_static = ['EMPI', 'Code', 'Result']
+labs_columns_select_static = ['StudyID', 'Code', 'Result']

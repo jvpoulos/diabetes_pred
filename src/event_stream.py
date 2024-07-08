@@ -59,12 +59,22 @@ import shutil
 import pyarrow.parquet as pq
 
 #sujay
+<<<<<<< Updated upstream
 def main(use_dask=False, use_labs=False):
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/Diagnoses.txt'
     procedures_file_path = 'data/Procedures.txt'
     if use_labs:
         labs_file_path = 'data/Labs.txt'
+=======
+def main(use_dask=False, use_labs=True):
+    outcomes_file_path = '/home/sbanerjee/diabetes_pred/data/DiabetesOutcomes.txt'
+    diagnoses_file_path = '/home/sbanerjee/diabetes_pred/data/Diagnoses_3yr.txt'
+    procedures_file_path = '/home/sbanerjee/diabetes_pred/data/Procedures_3yr.txt'
+
+    if use_labs:
+        labs_file_path = '/home/sbanerjee/diabetes_pred/data/Labs_3yr.txt'
+>>>>>>> Stashed changes
 
     df_outcomes = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
     df_outcomes = df_outcomes if isinstance(df_outcomes, pl.DataFrame) else pl.from_pandas(df_outcomes)
@@ -74,27 +84,40 @@ def main(use_dask=False, use_labs=False):
     if df_outcomes.is_empty():
         raise ValueError("Outcomes DataFrame is empty.")
 
+<<<<<<< Updated upstream
     df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(38960*0.01))
+=======
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select)# deleting min freq)
+>>>>>>> Stashed changes
     df_dia = df_dia if isinstance(df_dia, pl.DataFrame) else pl.from_pandas(df_dia)
 
     if df_dia.is_empty():
         raise ValueError("Diagnoses DataFrame is empty.")
 
+<<<<<<< Updated upstream
     df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(38960*0.01))
+=======
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select) # deleting min freq)
+>>>>>>> Stashed changes
     df_prc = df_prc if isinstance(df_prc, pl.DataFrame) else pl.from_pandas(df_prc)
 
     if df_prc.is_empty():
         raise ValueError("Procedures DataFrame is empty.")
 
     if use_labs:
+<<<<<<< Updated upstream
         df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=700000, min_frequency=ceil(38960*0.01))
+=======
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, chunk_size=200000) # deleting min freq)
+>>>>>>> Stashed changes
         df_labs = df_labs if isinstance(df_labs, pl.DataFrame) else pl.from_pandas(df_labs)
 
         if df_labs.is_empty():
             raise ValueError("Labs DataFrame is empty.")
         
     # Build measurement_configs and track input schemas
-    subject_id_col = 'EMPI'
+    #changed EMPI to StudyID
+    subject_id_col = 'StudyID'
     measurements_by_temporality = {
         TemporalityType.STATIC: {
             'outcomes': {
@@ -165,7 +188,8 @@ def main(use_dask=False, use_labs=False):
                         measurement_configs[m] = MeasurementConfig(**measurement_config_kwargs)
 
     # Add the columns to the 'col_schema' dictionary for the 'outcomes' input schema
-    static_sources['outcomes']['EMPI'] = InputDataType.CATEGORICAL
+    #changed EMPI to StudyID
+    static_sources['outcomes']['StudyID'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['InitialA1c'] = InputDataType.FLOAT
     static_sources['outcomes']['Female'] = InputDataType.CATEGORICAL
     static_sources['outcomes']['Married'] = InputDataType.CATEGORICAL
@@ -177,9 +201,9 @@ def main(use_dask=False, use_labs=False):
 
     static_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
     static_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
-
-    static_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
-    static_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
+    #changed EMPI to StudyID
+    static_sources['procedures']['StudyID'] = InputDataType.CATEGORICAL
+    static_sources['diagnoses']['StudyID'] = InputDataType.CATEGORICAL
 
     # Build DatasetSchema
     connection_uri = None
@@ -292,12 +316,13 @@ def main(use_dask=False, use_labs=False):
             raise ValueError("Unhandled `must_have` type")
        
         return InputDFSchema(**input_schema_kwargs, **extra_kwargs)
-
+    
+    #changed EMPI to StudyID
     inputs = {
         'outcomes': {
             'input_df': outcomes_file_path,
             'columns': {
-                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
                 'InitialA1c': ('InitialA1c', InputDataType.FLOAT),
                 'Female': ('Female', InputDataType.CATEGORICAL),
                 'Married': ('Married', InputDataType.CATEGORICAL),
@@ -310,28 +335,39 @@ def main(use_dask=False, use_labs=False):
         },
         'diagnoses': {
             'input_df': diagnoses_file_path,
-            'columns': {
-                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+            'columns': { #change from EMPI to StudyID
+                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
+                'Date': ('Date', InputDataType.TIMESTAMP),
+                'Code': ('Code', InputDataType.CATEGORICAL),
+                'Code_Type': ('Code_Type', InputDataType.CATEGORICAL),
+                'IndexDate': ('IndexDate', InputDataType.TIMESTAMP),
                 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
+
             }
         },
         'procedures': {
             'input_df': procedures_file_path,
             'columns': {
-                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
+                'Date': ('Date', InputDataType.TIMESTAMP),
+                'Code': ('Code', InputDataType.CATEGORICAL),
+                'Code_Type': ('Code_Type', InputDataType.CATEGORICAL),
+                'IndexDate': ('IndexDate', InputDataType.TIMESTAMP),
                 'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
             }
-        },
+        }, #fix all these
         'labs': {
             'input_df': labs_file_path,
             'event_type': 'LAB',
             'ts_col': 'Date',
             'ts_format': '%Y-%m-%d %H:%M:%S',
             'columns': {
-                'EMPI': ('EMPI', InputDataType.CATEGORICAL),
+                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
+                'Date': ('Date', InputDataType.TIMESTAMP),
                 'Code': ('Code', InputDataType.CATEGORICAL),
-                'Result': ('Result', InputDataType.FLOAT),
-                'Date': ('Date', InputDataType.TIMESTAMP)
+                'Result': ('Result', InputDataType.CATEGORICAL),
+                'Source': ('CodeWithType', InputDataType.CATEGORICAL),
+                'IndexDate': ('IndexDate', InputDataType.TIMESTAMP)
             }
         } if use_labs else []
     }
@@ -340,8 +376,9 @@ def main(use_dask=False, use_labs=False):
     dynamic_sources['procedures']['dynamic_indices'] = InputDataType.CATEGORICAL
 
     # Add the 'EMPI' column to the 'col_schema' dictionary for all dynamic input schemas
-    dynamic_sources['diagnoses']['EMPI'] = InputDataType.CATEGORICAL
-    dynamic_sources['procedures']['EMPI'] = InputDataType.CATEGORICAL
+    #changed to StudyID
+    dynamic_sources['diagnoses']['StudyID'] = InputDataType.CATEGORICAL
+    dynamic_sources['procedures']['StudyID'] = InputDataType.CATEGORICAL
 
     # Add the 'Date' column to the 'col_schema' dictionary for all dynamic input schemas
     dynamic_sources['diagnoses']['Date'] = InputDataType.TIMESTAMP
@@ -349,16 +386,28 @@ def main(use_dask=False, use_labs=False):
 
     if use_labs:
         # Add the 'EMPI' column to the 'col_schema' dictionary for all dynamic input schemas
-        dynamic_sources['labs']['EMPI'] = InputDataType.CATEGORICAL
+        dynamic_sources['labs']['StudyID'] = InputDataType.CATEGORICAL
+        #dynamic_sources['labs']['EMPI'] = InputDataType.CATEGORICAL
+
+
 
         # Add the 'Date' column to the 'col_schema' dictionary for all dynamic input schemas
         dynamic_sources['labs']['Date'] = InputDataType.TIMESTAMP
+
 
         # Add the 'Result' column to the 'col_schema' dictionary for the 'labs' input schema
         dynamic_sources['labs']['Result'] = InputDataType.FLOAT
 
         # Add the 'Code' column to the 'col_schema' dictionary for the 'labs' input schema
         dynamic_sources['labs']['Code'] = InputDataType.CATEGORICAL
+
+        dynamic_sources['labs']['Source'] = InputDataType.CATEGORICAL
+
+        dynamic_sources['labs']['IndexDate'] = InputDataType.TIMESTAMP
+
+
+        
+
 
     # Build DatasetSchema
     dynamic_input_schemas = []
@@ -380,6 +429,7 @@ def main(use_dask=False, use_labs=False):
                 type=InputDFType.EVENT
             )
         )
+<<<<<<< Updated upstream
         events_dfs.append(df_dia.select('EMPI', 'Date').rename({'EMPI': 'subject_id'}))
 
     if not df_dia.is_empty():
@@ -387,6 +437,16 @@ def main(use_dask=False, use_labs=False):
 
     if not df_prc.is_empty():
         events_dfs.append(df_prc.select('EMPI', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'}))
+=======
+        #StudyID
+        events_dfs.append(df_dia.select('StudyID', 'Date').rename({'StudyID': 'subject_id'}))
+
+    if not df_dia.is_empty():
+        events_dfs.append(df_dia.select('StudyID', 'Date').rename({'StudyID': 'subject_id', 'Date': 'timestamp'}))
+
+    if not df_prc.is_empty():
+        events_dfs.append(df_prc.select('StudyID', 'Date').rename({'StudyID': 'subject_id', 'Date': 'timestamp'}))
+>>>>>>> Stashed changes
     
     dynamic_input_schemas.extend([
         InputDFSchema(
@@ -415,9 +475,12 @@ def main(use_dask=False, use_labs=False):
                 input_df=df_labs,
                 subject_id_col=None,
                 data_schema={
-                    'Code': InputDataType.CATEGORICAL,
-                    'Result': InputDataType.FLOAT,
-                    'timestamp': InputDataType.TIMESTAMP
+                    'StudyID': ('StudyID', InputDataType.CATEGORICAL),
+                    'Date': ('Date', InputDataType.TIMESTAMP),
+                    'Code': ('Code', InputDataType.CATEGORICAL),
+                    'Result': ('Result', InputDataType.CATEGORICAL),
+                    'Source': ('CodeWithType', InputDataType.CATEGORICAL),
+                    'IndexDate': ('IndexDate', InputDataType.TIMESTAMP)
                 },
                 event_type='LAB',
                 ts_col='timestamp',
@@ -427,17 +490,32 @@ def main(use_dask=False, use_labs=False):
         )
 
     # Collect the 'EMPI' column from the DataFrames
+<<<<<<< Updated upstream
     df_dia_empi = df_dia.lazy().select('EMPI').collect()['EMPI']
     df_prc_empi = df_prc.lazy().select('EMPI').collect()['EMPI']
     if use_labs:
         df_labs_empi = df_labs.lazy().select('EMPI').collect()['EMPI']
+=======
+    #changed to StudyID
+    df_dia_studyid = df_dia.lazy().select('StudyID').collect()['StudyID']
+    df_prc_studyid = df_prc.lazy().select('StudyID').collect()['StudyID']
+    if use_labs:
+        df_labs_studyid = df_labs.lazy().select('StudyID').collect()['StudyID']
+>>>>>>> Stashed changes
 
     # Process events and measurements data in a streaming fashion
     events_df = pl.concat(events_dfs, how='diagonal')
     events_df = events_df.with_columns(
+<<<<<<< Updated upstream
         pl.col('subject_id').cast(pl.UInt32),
         pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
         pl.when(pl.col('subject_id').is_in(df_dia_empi) & pl.col('subject_id').is_in(df_prc_empi))
+=======
+        pl.col('subject_id').cast(pl.Utf8), #changed Uint32 to Utf8
+        pl.col('Date').map_elements(lambda s: pl.datetime(s, fmt='%Y-%m-%d %H:%M:%S') if isinstance(s, str) else s, return_dtype=pl.Datetime).alias('timestamp'),
+        #changed EMPI to StudyID
+        pl.when(pl.col('subject_id').is_in(df_dia_studyid) & pl.col('subject_id').is_in(df_prc_studyid))
+>>>>>>> Stashed changes
         .then(pl.lit('DIAGNOSIS').cast(pl.Categorical))
         # .when(pl.col('subject_id').is_in(df_prc_empi))
         # .then(pl.lit('PROCEDURE').cast(pl.Categorical))
@@ -448,11 +526,20 @@ def main(use_dask=False, use_labs=False):
     # Print the unique values and null count of the 'subject_id' column
     print("Unique values in subject_id column of events_df:", events_df['subject_id'].unique())
     print("Number of null values in subject_id column of events_df:", events_df['subject_id'].null_count())
+<<<<<<< Updated upstream
 
     # Update the event_types_idxmap
     event_types_idxmap = {
         'DIAGNOSIS': 1,
         'PROCEDURE': 2
+=======
+    
+    # Update the event_types_idxmap
+    event_types_idxmap = {
+        'DIAGNOSIS': 1,
+        'PROCEDURE': 2,
+        'LAB': 3
+>>>>>>> Stashed changes
     }
 
     vocab_sizes_by_measurement = {
@@ -468,7 +555,12 @@ def main(use_dask=False, use_labs=False):
     # Add the 'event_id' column to the 'events_df' DataFrame
     events_df = events_df.with_row_index(name='event_id')
 
+<<<<<<< Updated upstream
     df_outcomes = df_outcomes.with_columns(pl.col('EMPI').cast(pl.UInt32).alias('subject_id'))
+=======
+    df_outcomes = df_outcomes.with_columns(pl.col('StudyID').cast(pl.Utf8).alias('subject_id')) #changed Uint32 to Utf8
+    #changed to StudyID
+>>>>>>> Stashed changes
 
     # Print the unique values and null count of the 'subject_id' column
     print("Unique values in subject_id column of df_outcomes:", df_outcomes['subject_id'].unique())
@@ -478,9 +570,13 @@ def main(use_dask=False, use_labs=False):
     print("Columns of df_outcomes:", df_outcomes.columns)
 
     # Add the 'event_id' column to the 'dynamic_measurements_df' DataFrame
+<<<<<<< Updated upstream
+=======
+    #changed EMPI to StudyID
+>>>>>>> Stashed changes
     if use_labs:
-        dynamic_measurements_df = df_labs.select('EMPI', 'Code', 'Result', 'Date').rename({'EMPI': 'subject_id', 'Date': 'timestamp'})
-        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
+        dynamic_measurements_df = df_labs.select('StudyID', 'Date', 'Code', 'Result', 'Source', 'IndexDate').rename({'StudyID': 'subject_id', 'Date': 'timestamp'})
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.Utf8)) #changed Uint32 to Utf8
         dynamic_measurements_df = (
             dynamic_measurements_df
             .group_by(['subject_id', 'timestamp'])
@@ -491,6 +587,7 @@ def main(use_dask=False, use_labs=False):
         )
 
     if not use_labs:
+<<<<<<< Updated upstream
         dynamic_measurements_df = pl.concat([
             df_dia.select('EMPI', 'CodeWithType', 'Date'),
             df_prc.select('EMPI', 'CodeWithType', 'Date')
@@ -500,6 +597,19 @@ def main(use_dask=False, use_labs=False):
             pl.col('subject_id').cast(pl.UInt32),
             pl.col('timestamp').cast(pl.Datetime),
      #       pl.col('dynamic_indices').cast(pl.Categorical)
+=======
+        #changed EMPI to StudyID
+        dynamic_measurements_df = pl.concat([
+            df_dia.select('StudyID', 'CodeWithType', 'Date'),
+            df_prc.select('StudyID', 'CodeWithType', 'Date')
+        ], how='diagonal')
+        #changed EMPI to StudyID
+        dynamic_measurements_df = dynamic_measurements_df.rename({'StudyID': 'subject_id', 'Date': 'timestamp', 'CodeWithType': 'dynamic_indices'})
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(
+            pl.col('subject_id').cast(pl.Utf8), #changed Uint32 to Utf8
+            pl.col('timestamp').cast(pl.Datetime),
+            pl.col('dynamic_indices').cast(pl.Categorical)
+>>>>>>> Stashed changes
         )
         dynamic_measurements_df = (
             dynamic_measurements_df
@@ -524,7 +634,11 @@ def main(use_dask=False, use_labs=False):
         print(f"{col}: {dynamic_measurements_df[col].dtype}")
 
     dynamic_measurements_df = dynamic_measurements_df.with_columns(
+<<<<<<< Updated upstream
     pl.col('subject_id').cast(pl.UInt32),
+=======
+    pl.col('subject_id').cast(pl.Utf8), #changed Uint32 to Utf8
+>>>>>>> Stashed changes
     pl.col('timestamp').cast(pl.Datetime),
     pl.col('dynamic_indices').cast(pl.Categorical)
 )
@@ -584,7 +698,12 @@ def main(use_dask=False, use_labs=False):
             ),
         },
         normalizer_config={'cls': 'standard_scaler'},
+<<<<<<< Updated upstream
         save_dir=Path("data")  # Modify this line
+=======
+        #save_dir=Path("data")  # Modify this line -- should this be /home/sbanerjee/diabetes_pred/data?
+        save_dir=Path("/home/sbanerjee/diabetes_pred/data")
+>>>>>>> Stashed changes
     )
     config.event_types_idxmap = event_types_idxmap  # Assign event_types_idxmap to the config object
 
@@ -626,6 +745,7 @@ def main(use_dask=False, use_labs=False):
         # Append the processed intervals to the final DataFrames
         processed_events_df = pl.concat([processed_events_df, interval_events_df])
         processed_dynamic_measurements_df = pl.concat([processed_dynamic_measurements_df, interval_dynamic_measurements_df])
+<<<<<<< Updated upstream
 
     # Drop duplicate event_id values from the processed_events_df
     processed_events_df = processed_events_df.unique(subset=['event_id'])
@@ -634,6 +754,16 @@ def main(use_dask=False, use_labs=False):
     events_df = processed_events_df
     dynamic_measurements_df = processed_dynamic_measurements_df
 
+=======
+
+    # Drop duplicate event_id values from the processed_events_df
+    processed_events_df = processed_events_df.unique(subset=['event_id'])
+
+    # Update the events_df and dynamic_measurements_df with the processed data
+    events_df = processed_events_df
+    dynamic_measurements_df = processed_dynamic_measurements_df
+
+>>>>>>> Stashed changes
     print(f"Final shape of events_df: {events_df.shape}")
     print(f"Final shape of dynamic_measurements_df: {dynamic_measurements_df.shape}")
 

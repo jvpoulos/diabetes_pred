@@ -30,8 +30,13 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 from datetime import datetime
 import matplotlib.dates as mdates
+<<<<<<< Updated upstream
 from EventStreamGPT.EventStream.data.pytorch_dataset import PytorchDataset
 from EventStreamGPT.EventStream.data.dataset_config import DatasetConfig
+=======
+#from EventStream.data.pytorch_dataset import PytorchDataset
+#from EventStream.data.dataset_config import DatasetConfig
+>>>>>>> Stashed changes
 from pathlib import Path
 import pyarrow.parquet as pq
 from datetime import datetime, timedelta
@@ -70,11 +75,19 @@ def generate_time_intervals(start_date, end_date, interval_days):
         current_date = next_date
     return intervals
 
+<<<<<<< Updated upstream
 class CustomPytorchDataset(PytorchDataset):
     def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, task_df: pl.DataFrame = None):
         self.dl_reps_dir = Path(dl_reps_dir)  # Convert dl_reps_dir to a Path object
         super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
         self.load_cached_data()
+=======
+# class CustomPytorchDataset(PytorchDataset):
+#     def __init__(self, config: DatasetConfig, split: str, dl_reps_dir: str, task_df: pl.DataFrame = None):
+#         self.dl_reps_dir = Path(dl_reps_dir)  # Convert dl_reps_dir to a Path object
+#         super().__init__(config, split, task_df=task_df, dl_reps_dir=self.dl_reps_dir)
+#         self.load_cached_data()
+>>>>>>> Stashed changes
 
     def load_cached_data(self):
         if not self.dl_reps_dir:
@@ -266,6 +279,72 @@ def print_covariate_metadata(covariates, ESD):
         else:
             print(f"{covariate} is not available in measurement configs.")
 
+<<<<<<< Updated upstream
+=======
+# def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, min_frequency=None):
+#     df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
+    
+#     print(f"{df_name} DataFrame shape: {df.shape}")
+    
+#     df = pl.from_pandas(df)
+    
+#     print(f"{df_name} Polars DataFrame shape: {df.shape}")
+    
+#     print(f"Preprocess {df_name.lower()} data")
+#     print(f"Original {df_name} DataFrame shape: {df.shape}")
+    
+#     # Convert 'A1cGreaterThan7' to a float
+#     if df_name == 'Outcomes':
+#         df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float64))
+    
+#     if df_name in ['Diagnoses', 'Procedures']:
+#         # Parse the 'Date' column as datetime
+#         #df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
+#         #modified to include labs and strict=False
+#         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False))
+    
+#     if df_name in ['Diagnoses', 'Procedures']:
+#         # Drop rows with missing/null values in Date or CodeWithType
+#         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
+        
+#         if min_frequency is not None:
+#             # Count the occurrences of each CodeWithType
+#             code_counts = df.select('CodeWithType').groupby('CodeWithType').count().sort('count', descending=True)
+            
+#             # Determine the infrequent categories based on min_frequency
+#             if isinstance(min_frequency, int):
+#                 infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['CodeWithType']
+#             else:
+#                 min_count_threshold = min_frequency * len(df)
+#                 infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['CodeWithType']
+            
+#             # Filter out infrequent categories
+#             df = df.filter(~pl.col('CodeWithType').is_in(infrequent_categories))
+    
+#     elif df_name == 'Labs':
+#         # Drop rows with missing/null values in Date, Code, or Result
+#         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
+        
+#         if min_frequency is not None:
+#             # Count the occurrences of each CodeWithType
+#             code_counts = df.select('Code').groupby('Code').count().sort('count', descending=True)
+            
+#             # Determine the infrequent categories based on min_frequency
+#             if isinstance(min_frequency, int):
+#                 infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['Code']
+#             else:
+#                 min_count_threshold = min_frequency * len(df)
+#                 infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['Code']
+            
+#             # Filter out infrequent categories
+#             df = df.filter(~pl.col('Code').is_in(infrequent_categories))
+    
+#     if min_frequency is not None:
+#         print(f"Reduced {df_name} DataFrame shape: {df.shape}")
+    
+#     return df
+
+>>>>>>> Stashed changes
 def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=50000, min_frequency=None):
     df = read_file(file_path, columns, selected_columns, chunk_size=chunk_size)
     
@@ -282,6 +361,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
     if df_name == 'Outcomes':
         df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float64))
     
+<<<<<<< Updated upstream
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         # Parse the 'Date' column as datetime
         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S"))
@@ -321,6 +401,47 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_si
             
             # Filter out infrequent categories
             df = df.filter(~pl.col('Code').is_in(infrequent_categories))
+=======
+    if df_name == 'Labs':
+        # Parse the 'Date' column as datetime for Labs
+        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S.%f", strict=False))
+        # Drop rows with missing/null values in Date, Code, or Result
+        df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
+        
+        if min_frequency is not None:
+            # Count the occurrences of each Code
+            code_counts = df.select('Code').groupby('Code').count().sort('count', descending=True)
+            
+            # Determine the infrequent categories based on min_frequency
+            if isinstance(min_frequency, int):
+                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['Code']
+            else:
+                min_count_threshold = min_frequency * len(df)
+                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['Code']
+            
+            # Filter out infrequent categories
+            df = df.filter(~pl.col('Code').is_in(infrequent_categories))
+    
+    elif df_name in ['Diagnoses', 'Procedures']:
+        # Parse the 'Date' column as datetime for Diagnoses and Procedures
+        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False))
+        # Drop rows with missing/null values in Date or CodeWithType
+        df = df.drop_nulls(subset=['Date', 'CodeWithType'])
+        
+        if min_frequency is not None:
+            # Count the occurrences of each CodeWithType
+            code_counts = df.select('CodeWithType').groupby('CodeWithType').count().sort('count', descending=True)
+            
+            # Determine the infrequent categories based on min_frequency
+            if isinstance(min_frequency, int):
+                infrequent_categories = code_counts.filter(pl.col('count') < min_frequency)['CodeWithType']
+            else:
+                min_count_threshold = min_frequency * len(df)
+                infrequent_categories = code_counts.filter(pl.col('count') < min_count_threshold)['CodeWithType']
+            
+            # Filter out infrequent categories
+            df = df.filter(~pl.col('CodeWithType').is_in(infrequent_categories))
+>>>>>>> Stashed changes
     
     if min_frequency is not None:
         print(f"Reduced {df_name} DataFrame shape: {df.shape}")
