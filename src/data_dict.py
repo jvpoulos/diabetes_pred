@@ -1,6 +1,5 @@
 outcomes_columns = {
-'studyID': 'int32',
-'EMPI': 'int32',
+'studyID': 'object',
 'IndexDate': 'object',
 'InitialA1c': 'float32',
 'A1cAfter12Months': 'float32',
@@ -23,7 +22,7 @@ outcomes_columns = {
 }
 
 dia_columns = {
-'EMPI': 'int32',
+'StudyID': 'object',
 'Date': 'object', 
 'Code_Type': 'object', 
 'Code': 'object', 
@@ -32,7 +31,7 @@ dia_columns = {
 }
 
 prc_columns = {
-'EMPI': 'int32',
+'StudyID': 'object',
 'Date': 'object', 
 'Code_Type': 'object', 
 'Code': 'object', 
@@ -41,30 +40,27 @@ prc_columns = {
 }
 
 labs_columns = {
-'EMPI': 'int32',
+'StudyID': 'object',
 'Date': 'object', 
 'Code': 'object', 
-'Result': 'float32', 
-'ValType': 'object',
-'Source': 'object',
-'dtype': 'object'
+'Result': 'object', 
 }
 
 # Select columns to read in each dataset (temporal analyses)
 
-outcomes_columns_select = ['EMPI', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
+outcomes_columns_select = ['StudyID', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
 
-dia_columns_select = ['EMPI', 'Date', 'CodeWithType']
+dia_columns_select = ['StudyID', 'Date', 'CodeWithType']
 
-prc_columns_select = ['EMPI', 'Date', 'CodeWithType']
+prc_columns_select = ['StudyID', 'Date', 'CodeWithType']
 
-labs_columns_select = ['EMPI', 'Date', 'Code', 'Result']
+labs_columns_select = ['StudyID', 'Date', 'Code', 'Result']
 
 
 # static analyses
 
-dia_columns_select_static = ['EMPI', 'CodeWithType']
+dia_columns_select_static = ['StudyID', 'CodeWithType']
 
-prc_columns_select_static = ['EMPI', 'CodeWithType']
+prc_columns_select_static = ['StudyID', 'CodeWithType']
 
-labs_columns_select_static = ['EMPI', 'Code', 'Result']
+labs_columns_select_static = ['StudyID', 'Code', 'Result']

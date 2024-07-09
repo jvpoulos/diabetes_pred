@@ -20,7 +20,6 @@ from joblib import Parallel, delayed
 import argparse
 import dask
 import polars as pl
-import pandas as pd
 import plotly.express as px
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -40,6 +39,14 @@ import dill
 import logging
 import ast
 import psutil
+import chardet
+import io
+import chardet
+from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
 
 def inspect_pickle_file(file_path):
     try:
@@ -68,9 +75,16 @@ def map_codes_to_indices(df: pl.DataFrame, code_to_index: Dict[str, int]) -> pl.
     """
     Map the CodeWithType column to indices based on the provided mapping.
     """
-    return df.with_columns([
-        pl.col('CodeWithType').map_dict(code_to_index).alias('dynamic_indices')
-    ])
+    if 'CodeWithType' in df.columns:
+        return df.with_columns([
+            pl.col('CodeWithType').map_dict(code_to_index).alias('dynamic_indices')
+        ])
+    elif 'Code' in df.columns:  # For labs data
+        return df.with_columns([
+            pl.col('Code').map_dict(code_to_index).alias('dynamic_indices')
+        ])
+    else:
+        raise ValueError("Neither 'CodeWithType' nor 'Code' column found in the dataframe")
 
 def create_inverse_mapping(code_mapping: Dict[str, int]) -> Dict[int, str]:
     """
@@ -107,15 +121,17 @@ def generate_time_intervals(start_date, end_date, interval_days):
         current_date = next_date
     return intervals
 
-import json
-import logging
-from pathlib import Path
-import torch
-import polars as pl
-import numpy as np
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+def create_code_mapping(df_dia, df_prc, df_labs=None):
+    """
+    Create a mapping from codes to indices for diagnoses, procedures, and labs.
+    """
+    all_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
+    
+    if df_labs is not None:
+        all_codes |= set(df_labs['Code'].unique())
+    
+    sorted_codes = sorted(all_codes)
+    return {code: idx for idx, code in enumerate(sorted_codes, start=1)}
 
 class CustomPytorchDataset(torch.utils.data.Dataset):
     def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, task_df=None, device=None):
@@ -512,16 +528,92 @@ def print_covariate_metadata(covariates, ESD):
         else:
             print(f"{covariate} is not available in measurement configs.")
 
-def preprocess_dataframe(df_name, file_path, columns, selected_columns, chunk_size=10000, min_frequency=None):
-    chunks = []
-    for chunk in pd.read_csv(file_path, sep='|', chunksize=chunk_size):
-        chunk = read_file(file_path, columns, selected_columns, chunk_size=chunk_size, parse_dates=None)
-        chunk = process_chunk(df_name, chunk, columns, selected_columns, min_frequency)
-        chunks.append(chunk)
+def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_frequency=None, debug=False):
+    # Detect file encoding
+    with open(file_path, 'rb') as file:
+        raw_data = file.read(100000)  # Read the first 100000 bytes
+        result = chardet.detect(raw_data)
+        encoding = result['encoding']
+        confidence = result['confidence']
 
-    df = pd.concat(chunks, ignore_index=True)
-    return pl.from_pandas(df)
+    print(f"Detected encoding: {encoding} (confidence: {confidence})")
 
+    # If confidence is low or encoding is ASCII, use a fallback encoding
+    if confidence < 0.9 or encoding == 'ascii':
+        encoding = 'iso-8859-1'
+        print(f"Using fallback encoding: {encoding}")
+
+    # If in debug mode, only process 0.05% of the data
+    if debug:
+        with open(file_path, 'r', encoding=encoding, errors='replace') as file:
+            total_rows = sum(1 for _ in file)
+        nrows = int(total_rows * 0.0005)  # 0.05% of the data
+        print(f"Debug mode: Processing {nrows} rows out of {total_rows}")
+    else:
+        nrows = None
+
+    # Use Polars to read the CSV file
+    try:
+        df = pl.read_csv(file_path, separator='|', columns=selected_columns, n_rows=nrows, encoding=encoding)
+    except UnicodeDecodeError:
+        print(f"Error with {encoding}, trying with 'iso-8859-1'")
+        df = pl.read_csv(file_path, separator='|', columns=selected_columns, n_rows=nrows, encoding='iso-8859-1')
+
+    # Process the data based on df_name
+    if df_name == 'Outcomes':
+        df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float32))
+
+    if df_name in ['Diagnoses', 'Procedures', 'Labs']:
+        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False))
+
+    if df_name in ['Diagnoses', 'Procedures']:
+        df = df.drop_nulls(subset=['Date', 'CodeWithType'])
+        if min_frequency is not None:
+            code_counts = df.group_by('CodeWithType').agg(pl.count('CodeWithType').alias('count'))
+            if isinstance(min_frequency, int):
+                frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['CodeWithType']
+            else:
+                min_count_threshold = min_frequency * df.height
+                frequent_codes = code_counts.filter(pl.col('count') >= min_count_threshold)['CodeWithType']
+            df = df.filter(pl.col('CodeWithType').is_in(frequent_codes))
+
+    elif df_name == 'Labs':
+        df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
+        if min_frequency is not None:
+            code_counts = df.group_by('Code').agg(pl.count('Code').alias('count'))
+            if isinstance(min_frequency, int):
+                frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['Code']
+            else:
+                min_count_threshold = min_frequency * df.height
+                frequent_codes = code_counts.filter(pl.col('count') >= min_count_threshold)['Code']
+            df = df.filter(pl.col('Code').is_in(frequent_codes))
+
+    # Optimize memory usage
+    df = df.with_columns([
+        pl.col(pl.Float64).cast(pl.Float32),
+        pl.col(pl.Int64).cast(pl.Int32),
+        pl.col(pl.Utf8).cast(pl.Utf8)  # Ensure strings are Utf8
+    ])
+
+    return df
+
+def optimize_labs_data(df_labs):
+    # Convert 'Date' to datetime if it's not already
+    if df_labs['Date'].dtype != pl.Datetime:
+        df_labs = df_labs.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False))
+    
+    # Keep 'Result' and 'Code' as string (Utf8)
+    df_labs = df_labs.with_columns([
+        pl.col('Result').cast(pl.Utf8),
+        pl.col('Code').cast(pl.Utf8)  # Ensure 'Code' is string, not categorical
+    ])
+    
+    # Categorize 'Source' column if it exists
+    if 'Source' in df_labs.columns:
+        df_labs = df_labs.with_columns(pl.col('Source').cast(pl.Categorical))
+    
+    return df_labs
+    
 def process_chunk(df_name, chunk, columns, selected_columns, min_frequency):
     chunk = chunk[selected_columns]
 
@@ -622,7 +714,7 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
         encoded_features = encoded_features.map_partitions(multiply_features, result_series, meta=encoded_features._meta)
 
         # Concatenate the original DataFrame with the encoded features
-        encoded_df = dd.concat([ddf[['EMPI', 'Code', 'Result']], encoded_features], axis=1)
+        encoded_df = dd.concat([ddf[['StudyID', 'Code', 'Result']], encoded_features], axis=1)
 
         # Return the encoded Dask DataFrame, the fitted scaler if fit=True, and the feature names
         if fit:
@@ -695,7 +787,7 @@ def custom_one_hot_encoder(df, scaler=None, fit=True, use_dask=False, chunk_size
             encoded_features = encoded_features.tocsr()
 
             # Concatenate the original chunk with the encoded features
-            encoded_chunk = pd.concat([chunk[['EMPI', 'Code', 'Result']], pd.DataFrame(encoded_features.toarray())], axis=1)
+            encoded_chunk = pd.concat([chunk[['StudyID', 'Code', 'Result']], pd.DataFrame(encoded_features.toarray())], axis=1)
 
             # Append the encoded chunk to the list
             encoded_chunks.append(encoded_chunk)

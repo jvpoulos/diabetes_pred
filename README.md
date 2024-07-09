@@ -17,19 +17,21 @@ The conditionally independent point process transformer is similar to a GPT Neo-
 
 ## Requirements
 
-This code has been tested on Python 3.10 on Ubuntu 22.04.4 LTS.
+This code has been tested on:
 
-Requires PyTorch 2.2.1 compiled for CUDA 12.1 and cuDNN 8.9.7 ([Instructions for Pytorch 2 and CUDA 11.8](https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba#file-cuda_11-8_installation_on_ubuntu_22-04)) ([CUDA 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=deb_network)) ([cuDNN v8.9.7](https://developer.nvidia.com/rdp/cudnn-archive)) ([cuDNN instructions](https://docs.nvidia.com/deeplearning/cudnn/archives/cudnn-897/install-guide/index.html)). 
+- Ubuntu 22.04.4 LTS
+- Python 3.10.12
+- PyTorch 2.2.1 compiled for CUDA 12.1 and cuDNN 8.9.7 ([Instructions for Pytorch 2 and CUDA 11.8](https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba#file-cuda_11-8_installation_on_ubuntu_22-04)) ([CUDA 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=22.04&target_type=deb_network)) ([cuDNN v8.9.7](https://developer.nvidia.com/rdp/cudnn-archive)) ([cuDNN instructions](https://docs.nvidia.com/deeplearning/cudnn/archives/cudnn-897/install-guide/index.html)) or PyTorch 2.3.1 compiled for CUDA 12.4 and cuDNN 9.2.0. 
 
 Note: it is recommended to install PyTorch in a python virtual environment (see Getting started).
 
 ## Hardware
 
-NVIDIA Driver Version: 550.54.15
+NVIDIA Driver Version: 550.54.15 or 550.90.07
 
-CUDA Version: 12.1
+CUDA Version: 12.1 or 12.4
 
-GPUs: GeForce RTX 2080 (2)
+GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 
 ## Code Files in `src/`
 
@@ -95,6 +97,7 @@ $ source env10/bin/activate #Activate virtualenv for linux/MacOS
 ```bash
 # CUDA 12.1
 $ pip3 install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu121
+# CUDA 12.4: https://github.com/pytorch/pytorch#from-source
 ```
 
 4. Clone project repo and install other dependencies from `requirements.txt` file:
@@ -103,11 +106,11 @@ $ git clone https://github.com/jvpoulos/diabetes_pred.git
 $ pip3 install -r diabetes_pred/requirements.txt
 ```
 
-5. Install git repo [TabTransformer](https://github.com/jvpoulos/TabTransformer), forked from [tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch):
+5. (Optional, for static analyses) Install git repo [TabTransformer](https://github.com/jvpoulos/TabTransformer), forked from [tab-transformer-pytorch](https://github.com/lucidrains/tab-transformer-pytorch):
 ```bash
 $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
-Additionally, follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
+Optionally,  follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
 6. Clone forked version of git repo [EventStreamGPT](https://github.com/mmcdermott/EventStreamGPT), outside of project directory:
 ```bash
@@ -179,10 +182,10 @@ $ python3 src/test.py  --dataset_type 'test' --model_type ResNet --dim 128 --dep
 
 ## Temporal analyses
 
-1. Create data files (arguments: `--use_dask`, `--use_labs`, `--use_labs`):
+1. Create data files (arguments: `--use_dask`, `--use_labs`):
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
-$ python3 src/event_stream.py use_labs
+$ python3 src/event_stream.py --use_labs
 ```
 
 Create the task-specific data splits (data/task_dfs/a1c_greater_than_7_{split}.parquet):

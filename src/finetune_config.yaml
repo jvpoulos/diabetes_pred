@@ -7,9 +7,9 @@ config:
   problem_type: "single_label_classification"
   num_labels: 2
   do_use_learnable_sinusoidal_ATE: true
-  do_split_embeddings: false
+  do_split_embeddings: true
   categorical_embedding_dim: 64
-  numerical_embedding_dim: 32
+  numerical_embedding_dim: 64
   static_embedding_mode: sum_all
   categorical_embedding_weight: 0.3
   numerical_embedding_weight: 0.5
@@ -17,38 +17,40 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 4
+  num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   seq_window_size: 168
   head_dim: 16
-  num_attention_heads: 8
-  max_grad_norm: 10
-  intermediate_dropout: 0.3
-  attention_dropout: 0.3
-  input_dropout: 0.3
-  resid_dropout: 0.3
-  hidden_size: 128  # 16 * 8 = 128, consistent with head_dim and num_attention_heads
+  num_attention_heads: 16
+  max_grad_norm: 1
+  intermediate_dropout: 0.1
+  attention_dropout: 0.1
+  input_dropout: 0.1
+  resid_dropout: 0.1
+  hidden_size: 256  # 16**2 = 256, consistent with head_dim and num_attention_heads
   intermediate_size: 256
   task_specific_params:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 5e-3  # Initial learning rate
-  end_lr: 5e-5   # Final learning rate
+  init_lr: 1e-3  # Initial learning rate
+  end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
   max_epochs: 633100  # this is in steps (steps per epoch = training samples/effective batch size)
-  batch_size: 32
+  batch_size: 64
   validation_batch_size: 64
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
-  weight_decay: 0.02
+  weight_decay: 0.01
+  clip_grad_value: 1  # Default value for grad_value clipping
+  use_grad_value_clipping: True  # Flag to enable grad_value clipping
   patience: 94965
-  gradient_accumulation: 4
+  gradient_accumulation: 2
   num_dataloader_workers: 0
-  lr_num_warmup_steps: 100  
-  max_training_steps: 633100
+  lr_num_warmup_steps: 200  
+  max_training_steps: 633000
   use_lr_scheduler: true
-  lr_scheduler_type: "one_cycle"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau"
+  lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau"
   
 data_config:
   save_dir: "./data"
@@ -69,7 +71,7 @@ trainer_config:
   accelerator: auto
   devices: 2
   detect_anomaly: false
-  log_every_n_steps: 50
+  log_every_n_steps: 100
   strategy: "ddp_find_unused_parameters_true"
 
 experiment_dir: "./experiments"
