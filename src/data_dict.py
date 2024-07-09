@@ -45,8 +45,7 @@ labs_columns = { #change to cols in table
 'Date': 'object', 
 'Code': 'object', 
 'Result': 'object', 
-#'ValType': 'object',
-'Source': 'object',
+'Source': 'object'
 #'dtype': 'object'
 }
 
@@ -61,7 +60,7 @@ dia_columns_select = ['StudyID', 'Date', 'IndexDate', 'CodeWithType']
 
 prc_columns_select = ['StudyID', 'Date', 'IndexDate', 'CodeWithType']
 
-labs_columns_select = ['StudyID', 'Date', 'IndexDate', 'Code', 'Result']
+labs_columns_select = ['StudyID', 'Date', 'IndexDate', 'Code', 'Result', 'Source']
 
 
 # static analyses
