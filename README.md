@@ -182,7 +182,7 @@ $ python3 src/test.py  --dataset_type 'test' --model_type ResNet --dim 128 --dep
 
 ## Temporal analyses
 
-1. Create data files (arguments: `--use_dask`, `--use_labs`):
+1. Create data files (arguments: `--use_dask`, `--use_labs`, `--debug`):
 ```bash
 $ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
 $ python3 src/event_stream.py --use_labs
@@ -207,16 +207,10 @@ $ wandb agent <sweep_id> # Start the agent(s) to run the sweep. Replace <sweep_i
 ```
 The agent(s) will run the `hp_sweep.py` script with different hyperparameter configurations sampled from the ranges specified in the sweep configuration file. The training results and metrics will be logged to Weights and Biases for each run.
 
-4. Pretrain the transformer:
+4. Train the transformer from scratch:
 
 ```bash
 $ export CUDA_LAUNCH_BLOCKING=1
 $ export CUDA_VISIBLE_DEVICES=0,1
-$ python3 src/pretrain.py +config_name=pretrain_config
-```
-
-Train the transformer from scratch:
-
-```bash
 $ python3 src/finetune.py
 ```

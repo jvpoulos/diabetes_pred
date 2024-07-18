@@ -6,6 +6,7 @@ import polars as pl
 
 
 from EventStream.data.dataset_polars import Dataset
+from EventStream.tasks import summarize_binary_task
 from EventStream.data.dataset_config import DatasetConfig
 from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, inspect_pickle_file, load_with_dill
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
@@ -60,3 +61,7 @@ test_df = a1c_greater_than_7_df.filter(pl.col("subject_id").is_in(ESD.split_subj
 train_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_train.parquet")
 val_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_val.parquet")
 test_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_test.parquet")
+
+# Summarize
+
+summarize_binary_task(train_df)

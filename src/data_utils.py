@@ -47,7 +47,6 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-
 def inspect_pickle_file(file_path):
     try:
         with open(file_path, 'rb') as f:
@@ -77,12 +76,12 @@ def map_codes_to_indices(df: pl.DataFrame, code_to_index: Dict[str, int]) -> pl.
     """
     if 'CodeWithType' in df.columns:
         return df.with_columns([
-            pl.col('CodeWithType').map_dict(code_to_index).alias('dynamic_indices')
-        ])
+            pl.col('CodeWithType').map_dict(code_to_index, default=0).alias('dynamic_indices')
+        ]).filter(pl.col('dynamic_indices') != 0)
     elif 'Code' in df.columns:  # For labs data
         return df.with_columns([
-            pl.col('Code').map_dict(code_to_index).alias('dynamic_indices')
-        ])
+            pl.col('Code').map_dict(code_to_index, default=0).alias('dynamic_indices')
+        ]).filter(pl.col('dynamic_indices') != 0)
     else:
         raise ValueError("Neither 'CodeWithType' nor 'Code' column found in the dataframe")
 
@@ -123,16 +122,32 @@ def generate_time_intervals(start_date, end_date, interval_days):
 
 def create_code_mapping(df_dia, df_prc, df_labs=None):
     """
-    Create a mapping from codes to indices for diagnoses, procedures, and labs.
+    Create a mapping from codes to indices for diagnoses, procedures, and optionally labs.
+    
+    Args:
+    df_dia: DataFrame containing diagnosis codes
+    df_prc: DataFrame containing procedure codes
+    df_labs: Optional DataFrame containing lab codes
+    
+    Returns:
+    A dictionary mapping codes to indices
     """
     all_codes = set(df_dia['CodeWithType'].unique()) | set(df_prc['CodeWithType'].unique())
     
     if df_labs is not None:
         all_codes |= set(df_labs['Code'].unique())
     
+    # Remove any None or empty string values
+    all_codes = {code for code in all_codes if code and str(code).strip()}
+    
     sorted_codes = sorted(all_codes)
-    return {code: idx for idx, code in enumerate(sorted_codes, start=1)}
-
+    code_to_index = {str(code): idx for idx, code in enumerate(sorted_codes, start=1)}
+    
+    print(f"Total unique codes: {len(code_to_index)}")
+    print(f"Sample of code_to_index: {dict(list(code_to_index.items())[:5])}")
+    
+    return code_to_index
+    
 class CustomPytorchDataset(torch.utils.data.Dataset):
     def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, task_df=None, device=None):
         self.logger = logging.getLogger(__name__)
@@ -166,22 +181,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
         self.logger.info(f"Dataset length: {len(self.cached_data)}")
         self.logger.info(f"Has task: {self.has_task}")
-
-    def create_code_mapping(self):
-        all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
-        
-        sorted_codes = sorted(all_codes)
-        self.code_to_index = {code: idx for idx, code in enumerate(sorted_codes, start=1)}
-        
-        self.logger.info(f"Created code mapping with {len(self.code_to_index)} unique codes")
-        sample_codes = list(self.code_to_index.items())[:10]
-        self.logger.debug(f"Code mapping sample: {dict(sample_codes)}")
-        
-        self.logger.debug(f"Full code mapping: {self.code_to_index}")
-
-        # Save the code mapping to a file
-        with open("data/code_mapping.json", 'w') as f:
-            json.dump(self.code_to_index, f)
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
@@ -564,7 +563,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
         df = df.with_columns(pl.col('A1cGreaterThan7').cast(pl.Float32))
 
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
-        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False))
+        df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False).cast(pl.Datetime('us')))
 
     if df_name in ['Diagnoses', 'Procedures']:
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
@@ -591,21 +590,22 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
     # Optimize memory usage
     df = df.with_columns([
         pl.col(pl.Float64).cast(pl.Float32),
-        pl.col(pl.Int64).cast(pl.Int32),
-        pl.col(pl.Utf8).cast(pl.Utf8)  # Ensure strings are Utf8
+        pl.col(pl.Int64).cast(pl.Int64),
+        pl.col(pl.UInt32).cast(pl.Int64),
+        pl.col(pl.Utf8).cast(pl.Utf8)
     ])
 
     return df
 
 def optimize_labs_data(df_labs):
-    # Convert 'Date' to datetime if it's not already
-    if df_labs['Date'].dtype != pl.Datetime:
-        df_labs = df_labs.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False))
+    # Add event_id column
+    df_labs = df_labs.with_row_count("event_id")
     
-    # Keep 'Result' and 'Code' as string (Utf8)
+    # Keep 'Date' as datetime, 'Result' and 'Code' as string
     df_labs = df_labs.with_columns([
+        pl.col('Date').cast(pl.Datetime),
         pl.col('Result').cast(pl.Utf8),
-        pl.col('Code').cast(pl.Utf8)  # Ensure 'Code' is string, not categorical
+        pl.col('Code').cast(pl.Utf8)
     ])
     
     # Categorize 'Source' column if it exists

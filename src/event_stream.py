@@ -37,11 +37,8 @@ from EventStream.data.config import (
     MeasurementConfig,
 )
 from EventStream.data.dataset_config import DatasetConfig
-
 from EventStream.data.dataset_schema import DatasetSchema
-
 from EventStream.data.dataset_polars import Dataset
-
 from EventStream.data.types import (
     DataModality,
     InputDataType,
@@ -62,6 +59,12 @@ import pyarrow.parquet as pq
 
 import psutil
 
+def try_convert_to_float(x):
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return None
+        
 def print_memory_usage():
     process = psutil.Process()
     memory_info = process.memory_info()
@@ -69,6 +72,14 @@ def print_memory_usage():
 
 def main(use_labs=False, save_schema=False, debug=False):
     print("Building dataset config...")
+
+    if use_labs:
+        if not os.path.exists("data/labs"):
+            os.makedirs("data/labs")
+        data_dir = Path("data/labs")
+    else:
+        data_dir = Path("data")
+
     # Build Config
     split = (0.7, 0.2, 0.1)
     seed = 42
@@ -83,7 +94,7 @@ def main(use_labs=False, save_schema=False, debug=False):
             ),
         },
         normalizer_config={'cls': 'standard_scaler'},
-        save_dir=Path("data")
+        save_dir=data_dir
     )
 
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
@@ -108,12 +119,14 @@ def main(use_labs=False, save_schema=False, debug=False):
     ])
 
     # Create a mapping from StudyID to integer subject_id
-    subject_id_mapping = {study_id: idx for idx, study_id in enumerate(subjects_df['StudyID'].unique())}
+    subject_id_mapping = {study_id: idx for idx, study_id in enumerate(subjects_df['StudyID'].unique(), start=1)}
 
     # Add the subject_id column
     subjects_df = subjects_df.with_columns([
-        pl.col('StudyID').map_dict(subject_id_mapping).alias('subject_id')
+        pl.col('StudyID').replace(subject_id_mapping).alias('subject_id')
     ])
+
+    subjects_df = subjects_df.with_columns([pl.col('subject_id').cast(pl.UInt32)])
 
     print("Shape of subjects_df after aggregation:", subjects_df.shape)
     print("Number of unique EMPIs:", subjects_df['StudyID'].n_unique())
@@ -138,38 +151,189 @@ def main(use_labs=False, save_schema=False, debug=False):
     if use_labs:
         print(f"Number of unique mapped lab codes: {df_labs['Code'].n_unique()}")
 
-    print("Unique mapped codes in df_dia:")
-    print(df_dia['CodeWithType'].unique().sort().to_list())
+    print("Creating code mapping...")
+    code_to_index = create_code_mapping(df_dia, df_prc, df_labs if use_labs else None)
 
-    print("Unique mapped codes in df_prc:")
-    print(df_prc['CodeWithType'].unique().sort().to_list())
+    # Create the inverse mapping
+    index_to_code = {idx: code for code, idx in code_to_index.items()}
 
-    if use_labs:
-        print("Unique mapped codes in df_labs:")
-        print(df_labs['Code'].unique().sort().to_list())
+    print(f"Sample of index_to_code: {dict(list(index_to_code.items())[:5])}")
 
     print("Creating events dataframe...")
-    events_df = pl.concat([df_dia, df_prc], how='diagonal')
+    # Create an instance of the Dataset class
+    dataset = Dataset(config=config)
 
+    # Process each dataframe separately
+    df_dia_events, df_dia_dynamic = dataset._process_events_and_measurements_df(df_dia, "DIAGNOSIS", dia_columns_select, code_to_index, subject_id_mapping)
+    df_prc_events, df_prc_dynamic = dataset._process_events_and_measurements_df(df_prc, "PROCEDURE", prc_columns_select, code_to_index, subject_id_mapping)
     if use_labs:
-        # Ensure df_labs has the same structure as events_df
-        df_labs_events = df_labs.with_columns([
-            pl.col('Code').alias('CodeWithType'),
-            pl.lit('LAB').alias('event_type').cast(pl.Categorical)
-        ])
-        events_df = pl.concat([events_df, df_labs_events], how='diagonal')
+        df_labs_events, df_labs_dynamic = dataset._process_events_and_measurements_df(df_labs, "LAB", labs_columns_select, code_to_index, subject_id_mapping)
 
-    events_df = events_df.with_columns([
-        pl.col('Date').alias('timestamp'),
-        pl.when(pl.col('event_type').is_null())
-        .then(pl.when(pl.col('StudyID').is_in(df_dia['StudyID']))
-              .then(pl.lit('DIAGNOSIS'))
-              .otherwise(pl.lit('PROCEDURE')))
-        .otherwise(pl.col('event_type'))
-        .alias('event_type').cast(pl.Categorical)
+    # Concatenate events dataframes
+    if use_labs:
+        events_df = pl.concat([df_dia_events, df_prc_events, df_labs_events], how='vertical')
+    else:
+        events_df = pl.concat([df_dia_events, df_prc_events], how='vertical')
+
+    # Sort events by subject_id and timestamp
+    events_df = events_df.sort(['subject_id', 'timestamp'])
+
+    # First, let's check the content of the event_type column
+    print(events_df.select(pl.col("event_type")).head())
+
+    # Now, let's modify our aggregation to handle potential null values and list structure
+    events_df = events_df.group_by(['subject_id', 'timestamp', 'event_id']).agg([
+        pl.col('event_type').filter(pl.col('event_type').is_not_null()).alias('event_types')
     ])
 
-    events_df = events_df.with_row_count('event_id')
+    # Join event types with '&' and keep only unique combinations
+    events_df = events_df.with_columns([
+        pl.when(pl.col('event_types').list.len() > 0)
+        .then(
+            pl.col('event_types')
+            .cast(pl.List(pl.Utf8))  # Convert Categorical to String within the list
+            .list.unique()
+            .list.join('&')
+        )
+        .otherwise(None)
+        .alias('event_type')
+    ]).drop('event_types')
+
+    # Check the result
+    print(events_df.head())
+
+    print("Event types after combining:")
+    print(events_df['event_type'].value_counts())
+
+    print("Columns in df_dia_dynamic:", df_dia_dynamic.columns)
+    print("Columns in df_prc_dynamic:", df_prc_dynamic.columns)
+    if use_labs:
+        print("Columns in df_labs_dynamic:", df_labs_dynamic.columns)
+
+    def align_columns(df, subject_id_mapping):
+        required_columns = ['subject_id', 'timestamp', 'dynamic_indices', 'dynamic_counts']
+        if use_labs:
+            required_columns.append('dynamic_values')
+        
+        # If 'subject_id' is not in the dataframe, create it from 'StudyID'
+        if 'subject_id' not in df.columns:
+            if 'StudyID' in df.columns:
+                df = df.with_columns([
+                    pl.col('StudyID').cast(pl.Utf8).replace(subject_id_mapping).alias('subject_id').cast(pl.UInt32)
+                ])
+            else:
+                raise ValueError("Neither 'subject_id' nor 'StudyID' column found in the dataframe")
+        
+        for col in required_columns:
+            if col not in df.columns:
+                if col == 'dynamic_values' and use_labs:
+                    df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
+                elif col == 'dynamic_counts':
+                    df = df.with_columns(pl.lit(1).cast(pl.UInt32).alias(col))
+        
+        return df.select(required_columns)
+
+    df_dia_dynamic = align_columns(df_dia_dynamic, subject_id_mapping)
+    df_prc_dynamic = align_columns(df_prc_dynamic, subject_id_mapping)
+    if use_labs:
+        df_labs_dynamic = align_columns(df_labs_dynamic, subject_id_mapping)
+
+    print("df_dia_dynamic:")
+    print(f"Shape: {df_dia_dynamic.shape}")
+    print(f"Columns: {df_dia_dynamic.columns}")
+    print(df_dia_dynamic.head())
+
+    print("\ndf_prc_dynamic:")
+    print(f"Shape: {df_prc_dynamic.shape}")
+    print(f"Columns: {df_prc_dynamic.columns}")
+    print(df_prc_dynamic.head())
+
+    if use_labs:
+        print("\ndf_labs_dynamic:")
+        print(f"Shape: {df_labs_dynamic.shape}")
+        print(f"Columns: {df_labs_dynamic.columns}")
+        print(df_labs_dynamic.head())
+
+    # Concatenate dynamic measurements dataframes
+    if use_labs:
+        dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic, df_labs_dynamic], how='vertical')
+    else:
+        dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic], how='vertical')
+
+    print("After concatenation:")
+    print(f"Shape: {dynamic_measurements_df.shape}")
+    print(f"Columns: {dynamic_measurements_df.columns}")
+    print(dynamic_measurements_df.head())
+
+    print("Columns in concatenated dynamic_measurements_df:", dynamic_measurements_df.columns)
+
+    print("Sample of dynamic_indices before mapping:")
+    print(dynamic_measurements_df.select('dynamic_indices').head())
+    print("Sample of code_to_index:")
+    print(dict(list(code_to_index.items())[:10]))
+
+    # Sort and add event_id
+    dynamic_measurements_df = (
+        dynamic_measurements_df
+        .sort(['subject_id', 'timestamp'])
+        .with_row_count("event_id")
+        .with_columns(pl.col('event_id').cast(pl.Int64))
+    )
+
+    print("Final columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("\nData types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    # Ensure event_id is unique across the entire events_df
+    if 'event_id' not in events_df.columns:
+        events_df = events_df.with_row_count("event_id")
+    events_df = events_df.with_columns(pl.col('event_id').cast(pl.Int64))
+
+    if use_labs:
+        CHUNK_SIZE = 1_000_000  # Adjust this based on your memory constraints
+
+        def process_in_chunks(df, chunk_size, process_func, *args):
+            processed_chunks = []
+            for chunk in df.iter_slices(chunk_size):
+                processed_chunk = process_func(chunk, *args)
+                processed_chunks.append(processed_chunk)
+            return pl.concat(processed_chunks)
+                   
+        def join_with_events(chunk_df, events_df):
+            return chunk_df.join(
+                events_df.select('subject_id', 'timestamp', 'event_id'),
+                on=['subject_id', 'timestamp'],
+                how='left'
+            )
+
+        print("Processing dynamic_measurements_df in chunks...")
+        dynamic_measurements_df = process_in_chunks(
+            dynamic_measurements_df, 
+            CHUNK_SIZE, 
+            join_with_events, 
+            events_df
+        )
+
+        if 'event_id' in dynamic_measurements_df.columns:
+            dynamic_measurements_df = dynamic_measurements_df.drop('event_id')
+
+        # Sort and add new event_id
+        print("Sorting and adding new event_id...")
+        dynamic_measurements_df = (
+            dynamic_measurements_df
+            .sort(['subject_id', 'timestamp'])
+            .with_row_count("event_id")
+            .with_columns(pl.col('event_id').cast(pl.Int64))
+        )
+    else:
+        # Update dynamic_measurements_df with the new event_ids
+        dynamic_measurements_df = dynamic_measurements_df.join(
+            events_df.select('subject_id', 'timestamp', 'event_id'),
+            on=['subject_id', 'timestamp'],
+            how='left'
+        )
 
     print("Creating event types index map...")
     event_types = events_df['event_type'].unique().to_list()
@@ -185,519 +349,231 @@ def main(use_labs=False, save_schema=False, debug=False):
     print(f"Shape of events_df: {events_df.shape}")
     print(f"Columns of events_df: {events_df.columns}")
 
-    print("Creating code mapping...")
-    code_to_index = create_code_mapping(df_dia, df_prc, df_labs if use_labs else None)
+    print("Dynamic measurements dataframe created.")
+    print(f"Shape of dynamic_measurements_df: {dynamic_measurements_df.shape}")
+    print(f"Columns of dynamic_measurements_df: {dynamic_measurements_df.columns}")
 
-    print("Creating inverse mapping...")
-    index_to_code = {idx: code for code, idx in code_to_index.items()}
-
-    print(f"Total unique codes: {len(code_to_index)}")
-
-    print("Mapping codes to indices...")
-    df_dia = map_codes_to_indices(df_dia, code_to_index)
-    df_prc = map_codes_to_indices(df_prc, code_to_index)
     if use_labs:
-        df_labs = map_codes_to_indices(df_labs, code_to_index)
+        # Ensure dynamic_values column exists and is of the correct type
+        if 'dynamic_values' not in dynamic_measurements_df.columns:
+            dynamic_measurements_df = dynamic_measurements_df.with_columns([
+                pl.lit(None).cast(pl.Utf8).alias('dynamic_values')
+            ])
+        else:
+            dynamic_measurements_df = dynamic_measurements_df.with_columns([
+                pl.col('dynamic_values').cast(pl.Utf8)
+            ])
 
-    print("Creating dynamic measurements dataframe...")
-    # Add event_id if it doesn't exist, then ensure it's UInt32
-    df_dia = df_dia.with_row_index("event_id") if "event_id" not in df_dia.columns else df_dia
-    df_dia = df_dia.with_columns([
-        pl.col('event_id').cast(pl.UInt32),
-        pl.col('subject_id').cast(pl.UInt32)
-    ])
-    
-    df_prc = df_prc.with_row_index("event_id") if "event_id" not in df_prc.columns else df_prc
-    df_prc = df_prc.with_columns([
-        pl.col('event_id').cast(pl.UInt32),
-        pl.col('subject_id').cast(pl.UInt32)
-    ])
-    
-    if use_labs:
-        df_labs = df_labs.with_row_index("event_id") if "event_id" not in df_labs.columns else df_labs
-        df_labs = df_labs.with_columns([
-            pl.col('event_id').cast(pl.UInt32),
-            pl.col('subject_id').cast(pl.UInt32)
+    # Ensure dynamic_counts column exists and is of the correct type
+    if 'dynamic_counts' not in dynamic_measurements_df.columns:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.lit(1).cast(pl.UInt32).alias('dynamic_counts')
+        ])
+    else:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('dynamic_counts').fill_null(1).cast(pl.UInt32)
         ])
 
-    dynamic_measurements_df = pl.concat([df_dia, df_prc], how='diagonal')
+    print("Final sample of dynamic_measurements_df:")
+    print(dynamic_measurements_df.head())
+    print("\nFinal columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("\nData types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    def process_df(df, code_col, value_col=None, event_type=None):
+        base_cols = [
+            'subject_id',
+            pl.col('Date').alias('timestamp'),
+            pl.col(code_col).alias('code'),  # Keep original code
+            pl.lit(1).cast(pl.UInt32).alias('dynamic_counts'),
+            pl.col(value_col).cast(pl.Utf8).alias('dynamic_values') if value_col else pl.lit(None).cast(pl.Utf8).alias('dynamic_values'),
+            pl.lit(event_type).alias('event_type')
+        ]
+        return df.select(base_cols)
+
+    print("Creating dynamic measurements dataframe...")
+    df_dia_dynamic = process_df(df_dia, 'CodeWithType', event_type='DIAGNOSIS')
+    df_prc_dynamic = process_df(df_prc, 'CodeWithType', event_type='PROCEDURE')
     if use_labs:
-        dynamic_measurements_df = pl.concat([dynamic_measurements_df, df_labs], how='diagonal')
+        df_labs_dynamic = process_df(df_labs, 'Code', 'Result', event_type='LAB')
 
-    # Create a mapping dictionary from StudyID to subject_id
-    subject_id_map = subjects_df.select(['StudyID', 'subject_id']).to_dict(as_series=False)
-    subject_id_map = dict(zip(subject_id_map['StudyID'], subject_id_map['subject_id']))
+    # Concatenate the dataframes
+    if use_labs:
+        dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic, df_labs_dynamic], how='vertical')
+    else:
+        dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic], how='vertical')
 
-    # Convert subject_id_map values to UInt32 using Polars Series
-    subject_id_series = pl.Series(list(subject_id_map.values())).cast(pl.UInt32)
-    subject_id_map = dict(zip(subject_id_map.keys(), subject_id_series))
+    # Create a unified code_to_index mapping
+    all_codes = set(dynamic_measurements_df['code'].unique())
+    code_to_index = {code: idx for idx, code in enumerate(sorted(all_codes), start=1)}
 
+    # Ensure UNKNOWN is in the mapping
+    if 'UNKNOWN' not in code_to_index:
+        code_to_index['UNKNOWN'] = len(code_to_index) + 1
+
+    # Map the codes to indices
+    unknown_index = code_to_index['UNKNOWN']
     dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col('StudyID').map_dict(subject_id_map).alias('subject_id').cast(pl.UInt32),
-        pl.col('Date').alias('timestamp'),
-        pl.col('CodeWithType').alias('dynamic_indices'),
-        pl.when(pl.col('StudyID').is_in(df_dia['StudyID']))
-        .then(pl.lit('DIAGNOSIS'))
-        .otherwise(pl.when(pl.col('StudyID').is_in(df_prc['StudyID']))
-                   .then(pl.lit('PROCEDURE'))
-                   .otherwise(pl.lit('LAB')))
-        .alias('dynamic_indices_event_type').cast(pl.Categorical)
+        pl.col('code').replace(code_to_index, default=unknown_index).alias('dynamic_indices')
     ])
 
-    # Ensure event_id is present and UInt32
-    if 'event_id' not in dynamic_measurements_df.columns:
-        dynamic_measurements_df = dynamic_measurements_df.with_row_index('event_id')
-    
-    dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col('event_id').cast(pl.UInt32),
-        pl.col('subject_id').cast(pl.UInt32)
+    # Sort and add event_id
+    dynamic_measurements_df = (
+        dynamic_measurements_df
+        .sort(['subject_id', 'timestamp'])
+        .with_row_count("event_id")
+        .with_columns(pl.col('event_id').cast(pl.Int64))
+    )
+
+    # Ensure correct data types
+    dynamic_measurements_columns = [
+        pl.col('event_id').cast(pl.Int64),
+        pl.col('subject_id').cast(pl.UInt32),
+        pl.col('dynamic_indices').cast(pl.UInt32),
+        pl.col('dynamic_counts').fill_null(1).cast(pl.UInt32),
+        pl.col('timestamp').cast(pl.Datetime),
+    ]
+    if use_labs:
+        dynamic_measurements_columns.append(pl.col('dynamic_values').cast(pl.Utf8))
+
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(dynamic_measurements_columns)
+
+    # Drop the original 'code' column
+    dynamic_measurements_df = dynamic_measurements_df.drop('code')
+
+    print("Final sample of dynamic_measurements_df:")
+    print(dynamic_measurements_df.head())
+    print("\nFinal columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("\nData types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    print("Add epsilon to concurrent timestamps")
+    eps = np.finfo(float).eps
+    default_timestamp = datetime(2000, 1, 1)
+
+    # Apply timestamp adjustment to events_df
+    events_df = events_df.with_columns([
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('event_id').cast(pl.Int64),
+        pl.col('event_type').cast(pl.Utf8)  # Convert Categorical to String
+    ]).with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
     ])
 
-    print("Save measurements data as Parquet files")
-    df_dia.write_parquet("data/df_dia.parquet")
-    df_prc.write_parquet("data/df_prc.parquet")
-    if use_labs:
-        df_labs.write_parquet("data/df_labs.parquet")
+    # Apply timestamp adjustment to dynamic_measurements_df
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('event_id').cast(pl.Int64),
+        pl.col('event_type').cast(pl.Utf8)  # Convert Categorical to String
+    ]).with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
+    ])
 
-    # Update these definitions
+    # Ensure event_type is not a combination
+    events_df = events_df.with_columns([
+        pl.col('event_type').str.split('&').list.first().alias('event_type')
+    ])
+
+    # Count of events by type
+    event_type_counts = dynamic_measurements_df.group_by('event_type').count()
+    print("\nCount of events by type:")
+    print(event_type_counts)
+
+    print("Sample of dynamic_measurements_df after processing:")
+    print(dynamic_measurements_df.head())
+    print("\nColumns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("\nData types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    # Update vocabulary configuration
     vocab_sizes_by_measurement = {
-        'event_type': len(event_types_idxmap),
-        'dynamic_indices': len(code_to_index),  # Changed from code_mapping to code_to_index
+        'event_type': len(set(dynamic_measurements_df['event_type'].to_list())),
+        'dynamic_indices': len(code_to_index),
     }
 
     vocab_offsets_by_measurement = {
         'event_type': 1,
-        'dynamic_indices': len(event_types_idxmap),
+        'dynamic_indices': vocab_sizes_by_measurement['event_type'] + 1,
     }
 
-    print("Updating config with vocabulary sizes and offsets...")
     config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
     config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
 
-    print("Updated Vocabulary sizes by measurement:", vocab_sizes_by_measurement)
-    print("Updated Vocabulary offsets by measurement:", vocab_offsets_by_measurement)
+    print("Updated Vocabulary sizes by measurement:")
+    print(vocab_sizes_by_measurement)
+    print("Updated Vocabulary offsets by measurement:")
+    print(vocab_offsets_by_measurement)
 
     # Save mappings to disk as JSON files
     print("Saving mappings to disk...")
-    with open('data/code_to_index.json', 'w') as f:
+    with open(data_dir / 'code_to_index.json', 'w') as f:
         json.dump(code_to_index, f)
 
-    with open('data/index_to_code.json', 'w') as f:
+    with open(data_dir / 'index_to_code.json', 'w') as f:
         json.dump(index_to_code, f)
 
     print("Mappings saved successfully.")
-    
-    if use_labs:
-        print("Processing labs data...")
-        # Check if 'event_id' already exists in df_labs
-        if 'event_id' not in df_labs.columns:
-            df_labs = df_labs.with_row_index('event_id')
-        
-        # Ensure 'event_id' is of type UInt32
-        df_labs = df_labs.with_columns([
-            pl.col('event_id').cast(pl.UInt32),
-            pl.col('subject_id').cast(pl.UInt32)
-        ])
-
-        df_labs = df_labs.with_columns([
-            pl.col('StudyID'),
-            pl.col('Date'),
-            pl.col('Code').alias('CodeWithType'),
-            pl.lit('LAB').alias('event_type').cast(pl.Categorical)
-        ])
-        df_labs = df_labs.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
-
-        # Ensure column names and types match with events_df
-        df_labs = df_labs.select([
-            pl.col('event_id').cast(events_df['event_id'].dtype),
-            'StudyID',
-            pl.col('Date').cast(events_df['Date'].dtype),
-            'CodeWithType',
-            pl.col('subject_id').cast(events_df['subject_id'].dtype),
-            'Code',
-            'Result',
-            pl.col('event_type').cast(events_df['event_type'].dtype),
-            pl.col('Date').alias('timestamp').cast(events_df['timestamp'].dtype)
-        ])
-
-        # Add labs data to events_df and dynamic_measurements_df
-        events_df = pl.concat([events_df, df_labs])
-        
-        # Update dynamic_measurements_df with labs data
-        df_labs_measurements = df_labs.with_columns([
-            pl.col('CodeWithType').alias('dynamic_indices'),
-            pl.col('event_type').alias('dynamic_indices_event_type')
-        ])
-        dynamic_measurements_df = pl.concat([
-            dynamic_measurements_df, 
-            df_labs_measurements.select(dynamic_measurements_df.columns)
-        ], how='diagonal')
-
-    # Build measurement_configs and track input schemas
-    subject_id_col = 'StudyID'
-    measurements_by_temporality = {
-        TemporalityType.STATIC: {
-            'outcomes': {
-                DataModality.UNIVARIATE_REGRESSION: ['InitialA1c', 'SDI_score'],
-                DataModality.SINGLE_LABEL_CLASSIFICATION: ['Female', 'Married', 'GovIns', 'English', 'AgeYears', 'Veteran']
-            }
-        },
-        TemporalityType.DYNAMIC: {
-            'diagnoses': {
-                DataModality.MULTI_LABEL_CLASSIFICATION: ['CodeWithType'],
-            },
-            'procedures': {
-                DataModality.MULTI_LABEL_CLASSIFICATION: ['CodeWithType'],
-            },
-        }
-    }
-    static_sources = defaultdict(dict)
-    dynamic_sources = defaultdict(dict)
-    measurement_configs = {}
-
-    for temporality, sources_by_modality in measurements_by_temporality.items():
-        schema_source = static_sources if temporality == TemporalityType.STATIC else dynamic_sources
-        for source_name, modalities_by_measurement in sources_by_modality.items():
-            for modality, measurements in modalities_by_measurement.items():
-                if not measurements:
-                    continue
-                data_schema = schema_source[source_name]
-                for m in measurements:
-                    measurement_config_kwargs = {
-                        "temporality": temporality,
-                        "modality": modality,
-                    }
-
-                    if isinstance(m, dict):
-                        m_dict = m
-                        measurement_config_kwargs["name"] = m_dict.pop("name")
-                        if m.get("values_column", None):
-                            values_column = m_dict.pop("values_column")
-                            m = [measurement_config_kwargs["name"], values_column]
-                        else:
-                            m = measurement_config_kwargs["name"]
-
-                        measurement_config_kwargs.update(m_dict)
-
-                    if isinstance(m, str) and modality == DataModality.UNIVARIATE_REGRESSION:
-                        add_to_container(m, InputDataType.FLOAT, data_schema)
-                    elif isinstance(m, list) and len(m) == 2 and isinstance(m[0], str) and isinstance(m[1], str) and modality == DataModality.MULTIVARIATE_REGRESSION:
-                        add_to_container(m[0], InputDataType.CATEGORICAL, data_schema)
-                        add_to_container(m[1], InputDataType.FLOAT, data_schema)
-                        measurement_config_kwargs["values_column"] = m[1]
-                        measurement_config_kwargs["name"] = m[0]
-                    elif isinstance(m, str) and modality == DataModality.SINGLE_LABEL_CLASSIFICATION:
-                        add_to_container(m, InputDataType.CATEGORICAL, data_schema)
-                    elif isinstance(m, str) and modality == DataModality.MULTI_LABEL_CLASSIFICATION:
-                        add_to_container(m, InputDataType.CATEGORICAL, data_schema)
-                    else:
-                        raise ValueError(f"{m}, {modality} invalid! Must be in {DataModality.values()}!")
-
-                    if m in measurement_configs:
-                        old = {k: v for k, v in measurement_configs[m].to_dict().items() if v is not None}
-                        if old != measurement_config_kwargs:
-                            raise ValueError(
-                                f"{m} differs across input sources!\n{old}\nvs.\n{measurement_config_kwargs}"
-                            )
-                    else:
-                        measurement_configs[m] = MeasurementConfig(**measurement_config_kwargs)
-
-    # Add the columns to the 'col_schema' dictionary for the 'outcomes' input schema
-    static_sources['outcomes']['StudyID'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['InitialA1c'] = InputDataType.FLOAT
-    static_sources['outcomes']['Female'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['Married'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['GovIns'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['English'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['AgeYears'] = InputDataType.CATEGORICAL
-    static_sources['outcomes']['SDI_score'] = InputDataType.FLOAT
-    static_sources['outcomes']['Veteran'] = InputDataType.CATEGORICAL
-
-    static_sources['diagnoses']['CodeWithType'] = InputDataType.CATEGORICAL
-    static_sources['procedures']['CodeWithType'] = InputDataType.CATEGORICAL
-
-    static_sources['procedures']['StudyID'] = InputDataType.CATEGORICAL
-    static_sources['diagnoses']['StudyID'] = InputDataType.CATEGORICAL
-
-    # Build DatasetSchema
-    connection_uri = None
-
-    def build_schema(
-        col_schema: dict[str, InputDataType],
-        source_schema: dict[str, Any],
-        schema_name: str,
-        **extra_kwargs,
-    ) -> InputDFSchema:
-        input_schema_kwargs = {}
-
-        if "input_df" in source_schema:
-            if schema_name == 'outcomes':
-                input_schema_kwargs["input_df"] = subjects_df
-            elif schema_name == 'diagnoses':
-                input_schema_kwargs["input_df"] = df_dia
-            elif schema_name == 'procedures':
-                input_schema_kwargs["input_df"] = df_prc
-            elif schema_name == 'labs':
-                input_schema_kwargs["input_df"] = df_labs
-            else:
-                raise ValueError(f"Unknown schema name: {schema_name}")
-        else:
-            raise ValueError("Must specify an input dataframe!")
-
-        for param in (
-            "start_ts_col",
-            "end_ts_col",
-            "ts_col",
-            "event_type",
-            "start_ts_format",
-            "end_ts_format",
-            "ts_format",
-        ):
-            if param in source_schema:
-                input_schema_kwargs[param] = source_schema[param]
-
-        if source_schema.get("start_ts_col", None):
-            input_schema_kwargs["type"] = InputDFType.RANGE
-        elif source_schema.get("ts_col", None):
-            input_schema_kwargs["type"] = InputDFType.EVENT
-        else:
-            input_schema_kwargs["type"] = InputDFType.STATIC
-
-        if input_schema_kwargs["type"] != InputDFType.STATIC and "event_type" not in input_schema_kwargs:
-            event_type = schema_name.upper()
-            input_schema_kwargs["event_type"] = event_type
-
-        cols_covered = []
-        any_schemas_present = False
-        for n, cols_n in (
-            ("start_data_schema", "start_columns"),
-            ("end_data_schema", "end_columns"),
-            ("data_schema", "columns"),
-        ):
-            if cols_n not in source_schema:
-                continue
-            cols = source_schema[cols_n]
-            data_schema = {}
-
-            for col in cols.items():
-                in_name, out_val = col
-                if isinstance(out_val, tuple):
-                    out_name, out_type = out_val
-                else:
-                    out_name, out_type = out_val, col_schema.get(out_val)
-
-                if out_type is None:
-                    raise ValueError(f"Column {out_val} not found in col_schema: {col_schema}")
-
-                cols_covered.append(out_name)
-                add_to_container(in_name, (out_name, out_type), data_schema)
-
-            input_schema_kwargs[n] = data_schema
-            any_schemas_present = True
-
-        if not any_schemas_present and (len(col_schema) > len(cols_covered)):
-            input_schema_kwargs["data_schema"] = {}
-
-        for col, dt in col_schema.items():
-            if col in cols_covered:
-                continue
-
-            if col == 'SDI_score':
-                col_schema[col] = InputDataType.FLOAT
-            else:
-                col_schema[col] = dt
-
-            for schema in ("start_data_schema", "end_data_schema", "data_schema"):
-                if schema in input_schema_kwargs:
-                    input_schema_kwargs[schema][col] = dt
-
-        must_have = source_schema.get("must_have", None)
-        if must_have is None:
-            pass
-        elif isinstance(must_have, list):
-            input_schema_kwargs["must_have"] = must_have
-        elif isinstance(must_have, dict):
-            must_have_processed = []
-            for k, v in must_have.items():
-                if v is True:
-                    must_have_processed.append(k)
-                elif isinstance(v, list):
-                    must_have_processed.append((k, v))
-                else:
-                    raise ValueError(f"{v} invalid for `must_have`")
-            input_schema_kwargs["must_have"] = must_have_processed
-        else:
-            raise ValueError("Unhandled `must_have` type")
-       
-        return InputDFSchema(**input_schema_kwargs, **extra_kwargs)
-
-    inputs = {
-        'outcomes': {
-            'input_df': outcomes_file_path,
-            'columns': {
-                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
-                'InitialA1c': ('InitialA1c', InputDataType.FLOAT),
-                'Female': ('Female', InputDataType.CATEGORICAL),
-                'Married': ('Married', InputDataType.CATEGORICAL),
-                'GovIns': ('GovIns', InputDataType.CATEGORICAL),
-                'English': ('English', InputDataType.CATEGORICAL),
-                'AgeYears': ('AgeYears', InputDataType.CATEGORICAL),
-                'SDI_score': ('SDI_score', InputDataType.FLOAT),
-                'Veteran': ('Veteran', InputDataType.CATEGORICAL)
-            }
-        },
-        'diagnoses': {
-            'input_df': diagnoses_file_path,
-            'columns': {
-                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
-                'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
-            }
-        },
-        'procedures': {
-            'input_df': procedures_file_path,
-            'columns': {
-                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
-                'CodeWithType': ('CodeWithType', InputDataType.CATEGORICAL)
-            }
-        },
-        'labs': {
-            'input_df': labs_file_path,
-            'event_type': 'LAB',
-            'ts_col': 'Date',
-            'ts_format': '%Y-%m-%d %H:%M:%S',
-            'columns': {
-                'StudyID': ('StudyID', InputDataType.CATEGORICAL),
-                'Code': ('Code', InputDataType.CATEGORICAL),
-                'Result': ('Result', InputDataType.FLOAT),
-                'Date': ('Date', InputDataType.TIMESTAMP)
-            }
-        } if use_labs else []
-    }
-
-    dynamic_sources['diagnoses']['dynamic_indices'] = InputDataType.CATEGORICAL
-    dynamic_sources['procedures']['dynamic_indices'] = InputDataType.CATEGORICAL
-
-    # Add the 'StudyID' column to the 'col_schema' dictionary for all dynamic input schemas
-    dynamic_sources['diagnoses']['StudyID'] = InputDataType.CATEGORICAL
-    dynamic_sources['procedures']['StudyID'] = InputDataType.CATEGORICAL
-
-    # Add the 'Date' column to the 'col_schema' dictionary for all dynamic input schemas
-    dynamic_sources['diagnoses']['Date'] = InputDataType.TIMESTAMP
-    dynamic_sources['procedures']['Date'] = InputDataType.TIMESTAMP
-
-    if use_labs:
-        # Add the 'StudyID' column to the 'col_schema' dictionary for all dynamic input schemas
-        dynamic_sources['labs']['StudyID'] = InputDataType.CATEGORICAL
-
-        # Add the 'Date' column to the 'col_schema' dictionary for all dynamic input schemas
-        dynamic_sources['labs']['Date'] = InputDataType.TIMESTAMP
-
-        # Add the 'Result' column to the 'col_schema' dictionary for the 'labs' input schema
-        dynamic_sources['labs']['Result'] = InputDataType.FLOAT
-
-        # Add the 'Code' column to the 'col_schema' dictionary for the 'labs' input schema
-        dynamic_sources['labs']['Code'] = InputDataType.CATEGORICAL
-
-    # Build DatasetSchema
-    dynamic_input_schemas = []
-
-    dynamic_input_schemas.append(
-        InputDFSchema(
-            input_df=df_dia,
-            subject_id_col=None,  # Set to None for dynamic input schemas
-            data_schema={
-                'Date': InputDataType.TIMESTAMP
-            },
-            event_type='DIAGNOSIS',
-            ts_col='Date',
-            ts_format='%Y-%m-%d %H:%M:%S',
-            type=InputDFType.EVENT
-        )
-    )
-
-    dynamic_input_schemas.extend([
-        InputDFSchema(
-            input_df=df_dia,
-            subject_id_col=None,
-            data_schema={'CodeWithType': InputDataType.CATEGORICAL, 'Date': InputDataType.TIMESTAMP},
-            event_type='DIAGNOSIS',
-            ts_col='Date',
-            ts_format='%Y-%m-%d %H:%M:%S',
-            type=InputDFType.EVENT
-        ),
-        InputDFSchema(
-            input_df=df_prc,
-            subject_id_col=None,
-            data_schema={'CodeWithType': InputDataType.CATEGORICAL, 'Date': InputDataType.TIMESTAMP},
-            event_type='PROCEDURE',
-            ts_col='Date',
-            ts_format='%Y-%m-%d %H:%M:%S',
-            type=InputDFType.EVENT
-        )
-    ])
-
-    if use_labs:
-        dynamic_input_schemas.append(
-            InputDFSchema(
-                input_df=df_labs,
-                subject_id_col=None,
-                data_schema={
-                    'Code': InputDataType.CATEGORICAL,
-                    'Result': InputDataType.FLOAT,
-                    'timestamp': InputDataType.TIMESTAMP
-                },
-                event_type='LAB',
-                ts_col='timestamp',
-                ts_format='%Y-%m-%d %H:%M:%S',
-                type=InputDFType.EVENT
-            )
-        )
-    
-    if use_labs:
-        df_labs_empi = df_labs['StudyID'].unique()
 
     print("Saving dataframes as Parquet files")
-    dynamic_measurements_df.write_parquet("data/dynamic_measurements_df.parquet")
-    events_df.write_parquet("data/events_df.parquet")
-    subjects_df.write_parquet("data/subjects_df.parquet")
+    dynamic_measurements_df.write_parquet(data_dir / "dynamic_measurements_df.parquet")
+    events_df.write_parquet(data_dir / "events_df.parquet")
+    subjects_df.write_parquet(data_dir / "subjects_df.parquet")
 
     print("Processing events and measurements data...")
     temp_dataset = Dataset(config, subjects_df=subjects_df, events_df=events_df, dynamic_measurements_df=dynamic_measurements_df)
 
-    events_df_dia, dynamic_measurements_df_dia = temp_dataset._process_events_and_measurements_df(
-        df_dia, "DIAGNOSIS", {"CodeWithType": ("CodeWithType", InputDataType.CATEGORICAL)}
-    )
-    events_df_prc, dynamic_measurements_df_prc = temp_dataset._process_events_and_measurements_df(
-        df_prc, "PROCEDURE", {"CodeWithType": ("CodeWithType", InputDataType.CATEGORICAL)}
-    )
-    if use_labs:
-        events_df_lab, dynamic_measurements_df_lab = temp_dataset._process_events_and_measurements_df(
-            df_labs, "LAB", {"Code": ("Code", InputDataType.CATEGORICAL), "Result": ("Result", InputDataType.FLOAT)}
-        )
-        # Rename 'Code' to 'CodeWithType' for consistency if 'Code' exists
-        if 'Code' in dynamic_measurements_df_lab.columns:
-            dynamic_measurements_df_lab = dynamic_measurements_df_lab.rename({"Code": "CodeWithType"})
-        dynamic_measurements_df = pl.concat([dynamic_measurements_df_dia, dynamic_measurements_df_prc, dynamic_measurements_df_lab], how="diagonal")
-    else:
-        dynamic_measurements_df = pl.concat([dynamic_measurements_df_dia, dynamic_measurements_df_prc], how="diagonal")
+    print("Columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
 
-    print("Columns in final dynamic_measurements_df:", dynamic_measurements_df.columns)
-    print("Data types in final dynamic_measurements_df:")
+    print("Unique values in dynamic_indices:")
+    print(dynamic_measurements_df['dynamic_indices'].unique().sort().head(20))
+
+    # Ensure event_id is Int64 in both DataFrames
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('event_id').cast(pl.Int64))
+    events_df = events_df.with_columns(pl.col('event_id').cast(pl.Int64))
+
+    print("Final sample of dynamic_measurements_df:")
+    print(dynamic_measurements_df.head())
+    print("\nFinal columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("\nData types in dynamic_measurements_df:")
     for col in dynamic_measurements_df.columns:
         print(f"{col}: {dynamic_measurements_df[col].dtype}")
 
-    print("Sample of StudyID column:")
-    print(dynamic_measurements_df.select('StudyID').head())
+    # Ensure 'subject_id' is present before further processing
+    if 'subject_id' not in dynamic_measurements_df.columns:
+        raise ValueError("'subject_id' column is missing from dynamic_measurements_df")
+
+    print("Sorting dynamic_measurements_df...")
+    dynamic_measurements_df = dynamic_measurements_df.sort(['subject_id', 'timestamp', 'event_id'])
+
+    print("Sample of sorted dynamic_measurements_df:")
+    print(dynamic_measurements_df.head())
 
     temp_dataset.dynamic_measurements_df = dynamic_measurements_df
-    
+
     print("Before _convert_dynamic_indices_to_indices")
     print("Data types in dynamic_measurements_df:")
     for col in temp_dataset.dynamic_measurements_df.columns:
         print(f"{col}: {temp_dataset.dynamic_measurements_df[col].dtype}")
-    
+
+    if not hasattr(temp_dataset, 'code_mapping') or temp_dataset.code_mapping is None:
+        temp_dataset._create_code_mapping()
+
+    print("Code mapping sample:")
+    print(dict(list(temp_dataset.code_mapping.items())[:5]))  # Print first 5 items of code_mapping
+
+    print("Sample of dynamic_indices before conversion:")
+    print(temp_dataset.dynamic_measurements_df.select('dynamic_indices').head())
+
     temp_dataset._convert_dynamic_indices_to_indices()
-    
+
     print("After _convert_dynamic_indices_to_indices")
     print("Data types in dynamic_measurements_df:")
     for col in temp_dataset.dynamic_measurements_df.columns:
@@ -706,75 +582,218 @@ def main(use_labs=False, save_schema=False, debug=False):
     print("Sample of dynamic_measurements_df:")
     print(temp_dataset.dynamic_measurements_df.head())
 
-    # Instead of using with_columns, let's create a new DataFrame with the desired columns and types
-    dynamic_measurements_df = pl.DataFrame({
-        'event_id': temp_dataset.dynamic_measurements_df['event_id'],
-        'StudyID': temp_dataset.dynamic_measurements_df['StudyID'],
-        'timestamp': temp_dataset.dynamic_measurements_df['timestamp'],
-        'dynamic_indices': temp_dataset.dynamic_measurements_df['dynamic_indices'].cast(pl.UInt32),
-        'dynamic_values': temp_dataset.dynamic_measurements_df['dynamic_values'],
-    })
+    # Create a mapping from StudyID (UUID) to numeric subject_id
+    unique_study_ids = subjects_df['StudyID'].unique()
+    subject_id_mapping = {str(uuid): idx for idx, uuid in enumerate(unique_study_ids, start=1)}
 
-    # Add dynamic_counts column if it exists, otherwise create it with default value 1
-    if 'dynamic_counts' in temp_dataset.dynamic_measurements_df.columns:
-        dynamic_measurements_df = dynamic_measurements_df.with_columns([
-            pl.col('dynamic_counts').fill_null(1).cast(pl.UInt32)
-        ])
-    else:
-        dynamic_measurements_df = dynamic_measurements_df.with_columns([
-            pl.lit(1).cast(pl.UInt32).alias('dynamic_counts')
+    print("Columns in events_df:")
+    print(events_df.columns)
+
+    if 'subject_id' not in events_df.columns:
+        print("Adding subject_id to events_df...")
+        events_df = events_df.with_columns([
+            pl.col('StudyID').cast(pl.Utf8).replace(subject_id_mapping).alias('subject_id').cast(pl.UInt32)
         ])
 
-    print("Final data types in dynamic_measurements_df:")
+    print("Columns in events_df after potential addition of subject_id:")
+    print(events_df.columns)
+
+    # Make sure to drop the original 'StudyID' column from subjects_df
+    subjects_df = subjects_df.drop('StudyID')
+
+    print("Sample of updated subjects_df:")
+    print(subjects_df.head())
+
+    # Print sample of subjects_df to verify the changes
+    print("Sample of updated subjects_df:")
+    print(subjects_df.head())
+
+    # Create the dynamic_measurements_df
+    columns_to_select = ['event_id', 'timestamp', 'dynamic_indices']
+    if 'Result' in temp_dataset.dynamic_measurements_df.columns:
+        columns_to_select.append('Result')
+    if 'subject_id' in temp_dataset.dynamic_measurements_df.columns:
+        columns_to_select.append('subject_id')
+
+    dynamic_measurements_df = temp_dataset.dynamic_measurements_df.select(columns_to_select)
+
+    print("Adding dynamic_counts column...")
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.lit(1).cast(pl.UInt32).alias('dynamic_counts')
+    ])
+
+    if use_labs:
+        if 'Result' in dynamic_measurements_df.columns:
+            dynamic_measurements_df = dynamic_measurements_df.with_columns([
+                pl.col('Result').alias('dynamic_values'),
+                pl.col("Result").apply(try_convert_to_float, return_dtype=pl.Float32).alias("dynamic_values_numeric")
+            ])
+        else:
+            dynamic_measurements_df = dynamic_measurements_df.with_columns([
+                pl.lit(None).cast(pl.Utf8).alias('dynamic_values'),
+                pl.lit(None).cast(pl.Float32).alias('dynamic_values_numeric')
+            ])
+
+        # Ensure correct data types
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('dynamic_values').cast(pl.Utf8),
+            pl.col('dynamic_values_numeric').cast(pl.Float32)
+        ])
+
+    print("Sample of dynamic_measurements_df after adding dynamic_values:")
+    print(dynamic_measurements_df.head())
+    print("\nData types in dynamic_measurements_df:")
     for col in dynamic_measurements_df.columns:
         print(f"{col}: {dynamic_measurements_df[col].dtype}")
 
+    # Convert StudyID to numeric subject_id and cast columns
+    if 'subject_id' not in dynamic_measurements_df.columns:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('event_id').replace(events_df.select('event_id', 'subject_id').collect().to_dict(as_series=False)).alias('subject_id').cast(pl.UInt32)
+        ])
+
+    columns_to_cast = [
+        pl.col('event_id').cast(pl.UInt32),
+        pl.col('dynamic_indices').cast(pl.UInt32),
+        pl.col('dynamic_counts').cast(pl.UInt32),
+        pl.col('timestamp').cast(pl.Datetime)
+    ]
+
+    if 'dynamic_values' in dynamic_measurements_df.columns:
+        columns_to_cast.append(pl.col('dynamic_values').cast(pl.Float32))
+
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(columns_to_cast)
+
+    # Ensure 'subject_id' is present
+    if 'subject_id' not in dynamic_measurements_df.columns:
+        raise ValueError("'subject_id' column is missing from dynamic_measurements_df")
+
     print("Sample of final dynamic_measurements_df:")
     print(dynamic_measurements_df.head())
-
-    dynamic_measurements_df = pl.concat([
-        df_dia.select('StudyID', 'CodeWithType', 'Date'),
-        df_prc.select('StudyID', 'CodeWithType', 'Date')
-    ])
-
-    dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col('StudyID').alias('subject_id').cast(pl.UInt32),
-        pl.col('Date').alias('timestamp'),
-        pl.col('CodeWithType').alias('dynamic_indices'),  # Keep as string
-        pl.when(pl.col('StudyID').is_in(df_dia['StudyID']))
-        .then(pl.lit('DIAGNOSIS'))
-        .otherwise(pl.lit('PROCEDURE'))
-        .alias('dynamic_indices_event_type').cast(pl.Categorical)
-    ])
-
-    dynamic_measurements_df = dynamic_measurements_df.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
-
-    dynamic_measurements_df = dynamic_measurements_df.with_row_index('event_id')
-
-    subjects_df = subjects_df.with_columns(pl.col('StudyID').cast(pl.UInt32).alias('subject_id'))
-
     print("Shape of subjects_df:", subjects_df.shape)
     print("Columns of subjects_df:", subjects_df.columns)
+    print("Data types in subjects_df:")
+    for col in subjects_df.columns:
+        print(f"{col}: {subjects_df[col].dtype}")
 
     if use_labs:
-        dynamic_measurements_df = df_labs.select('StudyID', 'Code', 'Result', 'Date').rename({'StudyID': 'subject_id', 'Date': 'timestamp'})
-        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('subject_id').cast(pl.UInt32))
+        # Prepare labs data
+        labs_df = df_labs.select('StudyID', 'Code', 'Result', 'Date').rename({
+            'StudyID': 'subject_id', 
+            'Date': 'timestamp',
+            'Code': 'dynamic_indices',
+            'Result': 'dynamic_values'
+        })
+
+        # Map the 'Code' to indices using the code_to_index mapping
+        labs_df = labs_df.with_columns([
+            pl.col('dynamic_indices').replace(code_to_index).cast(pl.UInt32)
+        ])
+
+        # Add dynamic_counts and event_type
+        labs_df = labs_df.with_columns([
+            pl.lit(1).cast(pl.UInt32).alias('dynamic_counts'),
+            pl.lit('LAB').alias('event_type')
+        ])
+
+        # Convert subject_id from UUID to numeric ID using subject_id_mapping
+        labs_df = labs_df.with_columns([
+            pl.col('subject_id').replace(subject_id_mapping).cast(pl.UInt32)
+        ])
+
+        # Ensure all columns have the correct data types
+        labs_df = labs_df.with_columns([
+            pl.col('timestamp').cast(pl.Datetime),
+            pl.col('dynamic_values').cast(pl.Utf8),
+            pl.col('dynamic_values').map_elements(try_convert_to_float).alias('dynamic_values_numeric')
+        ])
+
+        # Add event_id column and ensure it's Int64
+        labs_df = labs_df.with_row_count("event_id").with_columns([
+            pl.col('event_id').cast(pl.Int64)
+        ])
+
+        # Get the exact column structure from dynamic_measurements_df
+        dynamic_columns = dynamic_measurements_df.columns
+
+        # Ensure labs_df has all the columns from dynamic_measurements_df
+        for col in dynamic_columns:
+            if col not in labs_df.columns:
+                labs_df = labs_df.with_columns(pl.lit(None).alias(col))
+
+        # Select only the columns that are in dynamic_measurements_df
+        labs_df = labs_df.select(dynamic_columns)
+
+        print("Columns in labs_df after alignment:", labs_df.columns)
+
+        # Ensure all columns have the correct data types in both DataFrames
+        columns_to_cast = {
+            'event_id': pl.Int64,
+            'subject_id': pl.UInt32,
+            'dynamic_indices': pl.UInt32,
+            'dynamic_counts': pl.UInt32,
+            'timestamp': pl.Datetime,
+        }
+        if use_labs:
+            columns_to_cast.update({
+                'dynamic_values': pl.Utf8,
+                'dynamic_values_numeric': pl.Float32
+            })
+
+        for col, dtype in columns_to_cast.items():
+            if col in dynamic_measurements_df.columns:
+                dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col(col).cast(dtype))
+            if use_labs and col in labs_df.columns:
+                labs_df = labs_df.with_columns(pl.col(col).cast(dtype))
+
+        print("Columns in dynamic_measurements_df:", dynamic_measurements_df.columns)
+        print("Columns in labs_df:", labs_df.columns)
+
+        # Combine existing dynamic_measurements_df with labs_df
+        dynamic_measurements_df = pl.concat([dynamic_measurements_df, labs_df])
+
+        if 'event_id' in dynamic_measurements_df.columns:
+            dynamic_measurements_df = dynamic_measurements_df.rename({'event_id': 'old_event_id'})
+
+        # Sort and add new event_id
+        print("Sorting and adding new event_id...")
         dynamic_measurements_df = (
             dynamic_measurements_df
-            .group_by(['subject_id', 'timestamp'])
-            .agg(pl.col('Result').count().alias('tmp_event_id'))
-            .drop('tmp_event_id')
-            .with_row_index('tmp_event_id')
-            .rename({'tmp_event_id': 'event_id'})
+            .sort(['subject_id', 'timestamp'])
+            .with_row_count("event_id")
+            .with_columns(pl.col('event_id').cast(pl.Int64))
         )
 
+    # Ensure all columns have the correct data types
+    columns_to_cast = [
+        pl.col('event_id').cast(pl.Int64),
+        pl.col('subject_id').cast(pl.UInt32),
+        pl.col('dynamic_indices').cast(pl.UInt32),
+        pl.col('dynamic_counts').cast(pl.UInt32),
+        pl.col('timestamp').cast(pl.Datetime),
+    ]
+
+    if use_labs:
+        columns_to_cast.append(pl.col('dynamic_values').cast(pl.Utf8))
+
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(columns_to_cast)
+
+    # If using labs, ensure dynamic_values_numeric is also cast correctly
+    if use_labs and 'dynamic_values_numeric' in dynamic_measurements_df.columns:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('dynamic_values_numeric').cast(pl.Float32)
+        ])
+
+    print("Final columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+    print("Data types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    # Update vocabulary configuration
     event_types = events_df['event_type'].unique().to_list()
     event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
 
-    print("Event types index map:")
-    print(event_types_idxmap)
-
-    print("Updating vocabulary sizes and offsets...")
     vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
         'dynamic_indices': len(code_to_index),
@@ -782,24 +801,21 @@ def main(use_labs=False, save_schema=False, debug=False):
 
     vocab_offsets_by_measurement = {
         'event_type': 1,
-        'dynamic_indices': len(event_types_idxmap),
+        'dynamic_indices': len(event_types_idxmap) + 1,
     }
 
-    print("Updating config with vocabulary sizes and offsets...")
     config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
     config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
 
-    print(f"Number of unique mapped diagnosis codes: {df_dia['dynamic_indices'].n_unique()}")
-    print(f"Number of unique mapped procedures codes: {df_prc['dynamic_indices'].n_unique()}")
+    print("Event types index map:")
+    print(event_types_idxmap)
+    print("Vocabulary sizes by measurement:")
+    print(vocab_sizes_by_measurement)
+    print("Vocabulary offsets by measurement:")
+    print(vocab_offsets_by_measurement)
 
-    print("Checking for null or UNKNOWN_CODE values in dynamic_measurements_df")
-    null_count = dynamic_measurements_df.filter(pl.col('dynamic_indices').is_null()).shape[0]
-    unknown_count = dynamic_measurements_df.filter(pl.col('dynamic_indices') == 'UNKNOWN_CODE').shape[0]
-    print(f"Null values: {null_count}")
-    print(f"UNKNOWN_CODE values: {unknown_count}")
-    print(f"Sample of dynamic_measurements_df:\n{dynamic_measurements_df.head()}")
-
-    print_memory_usage()
+    print(f"Number of unique mapped diagnosis codes: {df_dia['CodeWithType'].n_unique()}")
+    print(f"Number of unique mapped procedures codes: {df_prc['CodeWithType'].n_unique()}")
 
     print("Convert temporal dfs to lazy frames..")
     events_df = events_df.lazy()
@@ -831,24 +847,81 @@ def main(use_labs=False, save_schema=False, debug=False):
             with open(config.save_dir / "input_schema.json", "w") as f:
                 json.dump(dataset_schema_dict, f, default=json_serial)
 
+    # Add this block before creating the Dataset object
+    print("Columns in dynamic_measurements_df:")
+    print(dynamic_measurements_df.columns)
+
     # Create the Dataset object with eager DataFrames
     print("Creating Dataset object...")
 
-    # Before creating the Dataset object
+    print("Preparing data for Dataset creation...")
+    # Ensure all DataFrames are collected (not lazy)
     subjects_df = subjects_df.collect() if isinstance(subjects_df, pl.LazyFrame) else subjects_df
     events_df = events_df.collect() if isinstance(events_df, pl.LazyFrame) else events_df
     dynamic_measurements_df = dynamic_measurements_df.collect() if isinstance(dynamic_measurements_df, pl.LazyFrame) else dynamic_measurements_df
 
-    # Ensure subject_id and event_id are UInt32 in all dataframes
+    # Check the type of timestamp column
+    if dynamic_measurements_df['timestamp'].dtype == pl.Datetime:
+        print("Timestamp is already in datetime format")
+    else:
+        print("Converting timestamp to datetime format")
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('timestamp').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S.%f", strict=False)
+            .fill_null(pl.col('timestamp').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False))
+            .alias('timestamp')
+        ])
+
+    # Ensure correct data types
     subjects_df = subjects_df.with_columns([pl.col('subject_id').cast(pl.UInt32)])
     events_df = events_df.with_columns([
+        pl.col('event_id').cast(pl.Int64),
         pl.col('subject_id').cast(pl.UInt32),
-        pl.col('event_id').cast(pl.UInt32)
+        pl.col('timestamp').cast(pl.Datetime),
+        pl.col('event_type').cast(pl.Utf8)  # Ensure event_type is String
     ])
-    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+    # Ensure all columns have the correct data types
+    columns_to_cast = [
+        pl.col('event_id').cast(pl.Int64),
         pl.col('subject_id').cast(pl.UInt32),
-        pl.col('event_id').cast(pl.UInt32)
-    ])
+        pl.col('dynamic_indices').cast(pl.UInt32),
+        pl.col('dynamic_counts').cast(pl.UInt32),
+        pl.col('timestamp').cast(pl.Datetime),
+    ]
+
+    # Only add event_type if it exists in the DataFrame
+    if 'event_type' in dynamic_measurements_df.columns:
+        columns_to_cast.append(pl.col('event_type').cast(pl.Utf8))
+
+    if use_labs:
+        columns_to_cast.append(pl.col('dynamic_values').cast(pl.Utf8))
+
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(columns_to_cast)
+
+    # If using labs, ensure dynamic_values_numeric is also cast correctly
+    if use_labs and 'dynamic_values_numeric' in dynamic_measurements_df.columns:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('dynamic_values_numeric').cast(pl.Float32)
+        ])
+
+    print("Final data types in dynamic_measurements_df:")
+    for col in dynamic_measurements_df.columns:
+        print(f"{col}: {dynamic_measurements_df[col].dtype}")
+
+    print("Before creating Dataset object:")
+    print(f"Shape of dynamic_measurements_df: {dynamic_measurements_df.shape}")
+    print(dynamic_measurements_df.head())
+
+    # If event_type is not in dynamic_measurements_df, we need to add it from events_df
+    if 'event_type' not in dynamic_measurements_df.columns:
+        print("Adding event_type to dynamic_measurements_df from events_df")
+        dynamic_measurements_df = dynamic_measurements_df.join(
+            events_df.select('event_id', 'event_type'),
+            on='event_id',
+            how='left'
+        )
+        dynamic_measurements_df = dynamic_measurements_df.with_columns([
+            pl.col('event_type').cast(pl.Utf8)
+        ])
 
     ESD = Dataset(
         config=config,
@@ -857,6 +930,9 @@ def main(use_labs=False, save_schema=False, debug=False):
         dynamic_measurements_df=dynamic_measurements_df,
         code_mapping=code_to_index
     )
+    print("After creating Dataset object:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
+    print(ESD.dynamic_measurements_df.head())
 
     print("Dataset object created.")
     print_memory_usage()
@@ -866,45 +942,44 @@ def main(use_labs=False, save_schema=False, debug=False):
     print("Dataset split.")
 
     print("Preprocessing dataset...")
+    print("Before preprocessing:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
+
     ESD.preprocess()
+
+    print("After preprocessing:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
     print("Dataset preprocessed.")
 
     print("Caching deep learning representation...")
+
+    print("Checking dynamic_indices in ESD.dynamic_measurements_df")
+    null_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices').is_null()).shape[0]
+    zero_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices') == 0).shape[0]
+    unknown_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices') == ESD.code_mapping.get('UNKNOWN', len(ESD.code_mapping) + 1)).shape[0]
+    print(f"Null values in dynamic_indices: {null_count}")
+    print(f"Zero values in dynamic_indices: {zero_count}")
+    print(f"Unknown values in dynamic_indices: {unknown_count}")
+
+    if null_count > 0 or zero_count > 0:
+        raise ValueError(f"Found {null_count} null values and {zero_count} zero values in dynamic_indices after preprocessing")
+    else:
+        print("No null or zero values found in dynamic_indices after preprocessing")
+        print(f"Number of unknown values in dynamic_indices: {unknown_count}")
+
+    # We don't need to check for 'UNKNOWN_CODE' as it should now have a valid index
+    print(f"Sample of ESD.dynamic_measurements_df:\n{ESD.dynamic_measurements_df.head()}")
+
+    print(f"Sample of ESD.dynamic_measurements_df:\n{ESD.dynamic_measurements_df.head()}")
+    print("Before caching deep learning representation:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
+
     ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
+
+    print("After caching deep learning representation:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
     print("Deep learning representation cached.")
     print_memory_usage()
-
-    print("Add epsilon to concurrent timestamps")
-    eps = np.finfo(float).eps
-
-    # Handle null timestamp values by filling them with a default value
-    default_timestamp = datetime(2000, 1, 1)  # Use Python's datetime
-
-    if 'timestamp' not in ESD.events_df.columns:
-        ESD.events_df = ESD.events_df.with_columns([
-            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-        ])
-    else:
-        ESD.events_df = ESD.events_df.with_columns([
-            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-        ])
-
-    ESD.events_df = ESD.events_df.with_columns([
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp_with_epsilon')
-    ])
-
-    if 'timestamp' not in ESD.dynamic_measurements_df.columns:
-        ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
-            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-        ])
-    else:
-        ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
-            pl.col('timestamp').fill_null(default_timestamp).alias('timestamp')
-        ])
-
-    ESD.dynamic_measurements_df = ESD.dynamic_measurements_df.with_columns([
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp_with_epsilon')
-    ])
 
     # Update the vocabulary configuration
     ESD.vocabulary_config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
@@ -918,14 +993,10 @@ def main(use_labs=False, save_schema=False, debug=False):
     print("Updated Event types index map:")
     print(ESD.vocabulary_config.event_types_idxmap)
 
-    print("Checking dynamic_indices in ESD.dynamic_measurements_df")
-    null_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices').is_null()).shape[0]
-    unknown_count = ESD.dynamic_measurements_df.filter(pl.col('dynamic_indices') == 'UNKNOWN_CODE').shape[0]
-    print(f"Null values: {null_count}")
-    print(f"UNKNOWN_CODE values: {unknown_count}")
-    print(f"Sample of ESD.dynamic_measurements_df:\n{ESD.dynamic_measurements_df.head()}")
-
     print("Saving dataset...")
+    print("Just before saving the dataset:")
+    print(f"Shape of ESD.dynamic_measurements_df: {ESD.dynamic_measurements_df.shape}")
+    print(ESD.dynamic_measurements_df.head())
     print(type(ESD))
     ESD.save(do_overwrite=do_overwrite)
     print("Dataset saved.")
@@ -946,7 +1017,6 @@ def main(use_labs=False, save_schema=False, debug=False):
     print(ESD.dynamic_measurements_df.head())
 
     print("Contents of Parquet files in data directory:")
-    data_dir = Path("data")
     for parquet_file in data_dir.glob("*.parquet"):
         print(f"File: {parquet_file}")
         df = pl.read_parquet(parquet_file)
