@@ -112,16 +112,15 @@ def main(cfg: FinetuneConfig):
         logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
         logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
 
-        wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
-        wandb_logger = WandbLogger(
-            **wandb_logger_kwargs,
-            save_dir=cfg.save_dir,
-        )
+        # wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
+        # wandb_logger = WandbLogger(
+        #     **wandb_logger_kwargs,
+        #     save_dir=cfg.save_dir,
+        # )
 
         logger.info("Starting training process")
         try:
-            # wandb.init(config=cfg.to_dict())
-            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
+            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd)
         except Exception as e:
             logger.exception(f"Error during training: {str(e)}")
             logger.error(f"Train dataset length: {len(train_pyd)}")

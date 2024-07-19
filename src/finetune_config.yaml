@@ -88,7 +88,7 @@ wandb_logger_kwargs:
   do_log_graph: false
 
 wandb_experiment_config_kwargs:
-  entity: "jvpoulos"
+  entity: "batchnorm_true_layernorm_true"
   project: "diabetes_finetune"
   team: null
   log_model: false
