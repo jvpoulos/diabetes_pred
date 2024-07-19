@@ -120,7 +120,7 @@ def main(cfg: FinetuneConfig):
 
         logger.info("Starting training process")
         try:
-            wandb.init(config=cfg.to_dict())
+            # wandb.init(config=cfg.to_dict())
             _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
         except Exception as e:
             logger.exception(f"Error during training: {str(e)}")

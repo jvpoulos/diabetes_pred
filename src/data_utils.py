@@ -182,6 +182,19 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"Dataset length: {len(self.cached_data)}")
         self.logger.info(f"Has task: {self.has_task}")
 
+    def create_code_mapping(self):
+        """Create a mapping from codes to indices for diagnoses and procedures."""
+        all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
+        
+        # Remove any None or empty string values
+        all_codes = {code for code in all_codes if code and str(code).strip()}
+        
+        sorted_codes = sorted(all_codes)
+        self.code_to_index = {str(code): idx for idx, code in enumerate(sorted_codes, start=1)}
+        
+        self.logger.info(f"Total unique codes: {len(self.code_to_index)}")
+        self.logger.info(f"Sample of code_to_index: {dict(list(self.code_to_index.items())[:5])}")
+        
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
         
@@ -293,11 +306,8 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         for code in codes:
             code_str = str(code).strip()
             index = self.code_to_index.get(code_str, 0)
-            # self.logger.debug(f"Code: {code_str}, Index: {index}")
             processed_indices.append(index)
         
-        # self.logger.debug(f"Raw codes: {codes}")
-        # self.logger.debug(f"Processed indices: {processed_indices}")
         return torch.tensor(processed_indices, dtype=torch.long)
 
     def process_dynamic_counts(self, counts):
