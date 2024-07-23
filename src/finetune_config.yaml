@@ -4,7 +4,7 @@ save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
-  use_batch_norm: true
+  use_batch_norm: false
   use_layer_norm: true
   use_flash_attention: true  # Set to false if you don't want to use Flash Attention
   problem_type: "single_label_classification"
@@ -96,3 +96,4 @@ wandb_experiment_config_kwargs:
   
 do_final_validation_on_metrics: false
 do_use_filesystem_sharing: false
+do_debug_mode: true

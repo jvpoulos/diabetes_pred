@@ -47,6 +47,76 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
+def process_events_and_measurements_df(
+    df: pl.DataFrame,
+    event_type: str,
+    columns_schema: list,
+    code_to_index: dict,
+    subject_id_mapping: dict
+):
+    print(f"Processing {event_type} data...")
+    print(f"Input columns: {df.columns}")
+
+    cols_select_exprs = [
+        pl.col("Date").alias("timestamp"),
+        pl.col("StudyID"),
+        pl.lit(event_type).cast(pl.Utf8).alias("event_type")
+    ]
+
+    for col in columns_schema:
+        if col in df.columns and col != "StudyID" and col != "Date":
+            cols_select_exprs.append(pl.col(col))
+
+    df = (
+        df.filter(pl.col("Date").is_not_null() & pl.col("StudyID").is_not_null())
+        .select(cols_select_exprs)
+        .unique()
+        .with_row_count("event_id")
+    )
+
+    # Add subject_id column
+    df = df.with_columns([
+        pl.col('StudyID').cast(pl.Utf8).replace(subject_id_mapping).alias('subject_id').cast(pl.UInt32)
+    ])
+
+    events_df = df.select("event_id", "subject_id", "timestamp", "event_type")
+    
+    dynamic_cols = ["event_id", "subject_id", "timestamp"]
+    if event_type in ['DIAGNOSIS', 'PROCEDURE']:
+        dynamic_cols.append(pl.col("CodeWithType").replace(code_to_index).alias("dynamic_indices"))
+    elif event_type == 'LAB':
+        dynamic_cols.append(pl.col("Code").replace(code_to_index).alias("dynamic_indices"))
+        if "Result" in df.columns:
+            dynamic_cols.append(pl.col("Result"))
+    
+    dynamic_measurements_df = df.select(dynamic_cols)
+
+    # Add dynamic_counts column for all event types
+    dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.lit(1).cast(pl.UInt32).alias("dynamic_counts"))
+
+    # Add dynamic_values column for all event types
+    if event_type == 'LAB' and "Result" in dynamic_measurements_df.columns:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col("Result").alias("dynamic_values"))
+    else:
+        dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.lit(None).cast(pl.Utf8).alias("dynamic_values"))
+
+    print(f"Output columns for {event_type}: {dynamic_measurements_df.columns}")
+    print(f"Sample output for {event_type}:")
+    print(dynamic_measurements_df.head())
+
+    return events_df, dynamic_measurements_df
+
+def try_convert_to_float(x):
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return None
+        
+def print_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    print(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+
 def inspect_pickle_file(file_path):
     try:
         with open(file_path, 'rb') as f:
