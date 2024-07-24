@@ -160,7 +160,7 @@ def main(use_labs=False, debug=False):
         df_prc_dynamic = df_prc_dynamic.with_columns(pl.lit(None).cast(pl.Utf8).alias("Result"))
         
         # Ensure all DataFrames have the same column order
-        columns_order = ['event_id', 'subject_id', 'timestamp', 'dynamic_indices', 'Result', 'dynamic_counts', 'dynamic_values']
+        columns_order = ['event_id', 'subject_id', 'timestamp', 'dynamic_indices', 'Result', 'dynamic_values']
         df_dia_dynamic = df_dia_dynamic.select(columns_order)
         df_prc_dynamic = df_prc_dynamic.select(columns_order)
         df_labs_dynamic = df_labs_dynamic.select(columns_order)

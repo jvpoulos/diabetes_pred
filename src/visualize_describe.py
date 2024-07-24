@@ -15,7 +15,7 @@ import matplotlib.dates as mdates
 from EventStream.data.dataset_polars import Dataset
 from EventStream.data.dataset_config import DatasetConfig
 
-DATA_DIR = Path("data")
+DATA_DIR = Path("data/labs")
 E_FILE = DATA_DIR / "E.pkl"
 
 print("Inspecting E.pkl file...")
@@ -38,11 +38,6 @@ print(ESD.dynamic_measurements_df.head())
 
 print("Unique event types in events_df:")
 print(ESD.events_df['event_type'].unique())
-
-# vocabulary indices
-print("Unified Vocabulary:")
-for word, index in ESD.unified_vocabulary_idxmap.items():
-    print(f"{index}: {word}")
 
 static_covariates = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
 
@@ -68,8 +63,6 @@ with open("data_summaries/dataset_description.txt", "w") as f:
     ESD.describe(do_print_measurement_summaries=True, viz_config=V)
     sys.stdout = original_stdout
 
-assert 'event_id' in ESD.dynamic_measurements_df.columns, "event_id column is missing in dynamic_measurements_df"
-assert ESD.dynamic_measurements_df['event_id'].is_numeric(), "event_id should be a numeric column"
 print("Data type of event_id column:", ESD.dynamic_measurements_df['event_id'].dtype)
 
 # Print summary statistics for all variables
@@ -79,6 +72,9 @@ print(ESD.events_df.describe())
 print(ESD.dynamic_measurements_df.describe())
 
 # Data preparation
+# Cast subject_id in events_df to UInt32
+ESD.events_df = ESD.events_df.with_columns(pl.col("subject_id").cast(pl.UInt32))
+
 subjects_with_events = ESD.subjects_df.join(ESD.events_df.select('subject_id'), on='subject_id', how='inner').unique()
 
 # Calculate the total count of subjects with events
@@ -154,7 +150,7 @@ save_plot(merged_data, 'AgeYears', 'measurements_per_subject', 'Female',
 # Distribution of measurements per subject:
 
 # Calculate the number of measurements per subject
-measurements_per_subject = ESD.dynamic_measurements_df.groupby('subject_id').agg(
+measurements_per_subject = ESD.dynamic_measurements_df.group_by('subject_id').agg(
     pl.count('measurement_id').alias('num_measurements')
 )
 
@@ -209,9 +205,9 @@ plot_avg_measurements_per_patient_per_month(ESD.dynamic_measurements_df)
 
 # Calculate descriptive statistics for measurements per patient per month
 measurements_per_patient_per_month_stats = (
-    ESD.dynamic_measurements_df.groupby(["subject_id", pl.col("timestamp").dt.strftime("%Y-%m").alias("month")])
+    ESD.dynamic_measurements_df.group_by(["subject_id", pl.col("timestamp").dt.strftime("%Y-%m").alias("month")])
     .agg(pl.count("measurement_id").alias("num_measurements"))
-    .groupby("subject_id")
+    .group_by("subject_id")
     .agg(
         pl.mean("num_measurements").alias("mean"),
         pl.median("num_measurements").alias("median"),

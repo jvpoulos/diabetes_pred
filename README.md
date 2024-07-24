@@ -203,7 +203,7 @@ $ python3 src/visualize_describe.py
 3. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
 $ python3 ../EventStreamGPT/scripts/launch_finetuning_wandb_hp_sweep.py # create the sweep. This will create a sweep on Weights and Biases with the specified hyperparameter ranges.
-$ wandb agent <sweep_id> # Start the agent(s) to run the sweep. Replace <sweep_id> with the sweep ID obtained from the previous step.
+$ wandb agent sweep_id # Start the agent(s) to run the sweep. Replace sweep_id with the sweep ID obtained from the previous step.
 ```
 The agent(s) will run the `hp_sweep.py` script with different hyperparameter configurations sampled from the ranges specified in the sweep configuration file. The training results and metrics will be logged to Weights and Biases for each run.
 

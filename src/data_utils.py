@@ -91,9 +91,6 @@ def process_events_and_measurements_df(
     
     dynamic_measurements_df = df.select(dynamic_cols)
 
-    # Add dynamic_counts column for all event types
-    dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.lit(1).cast(pl.UInt32).alias("dynamic_counts"))
-
     # Add dynamic_values column for all event types
     if event_type == 'LAB' and "Result" in dynamic_measurements_df.columns:
         dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col("Result").alias("dynamic_values"))
@@ -329,17 +326,13 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices)
             # self.logger.debug(f"Processed dynamic_indices for subject {subject_id}: {dynamic_indices}")
 
-            dynamic_counts = self.process_dynamic_counts(row[self.cached_data.columns.index('dynamic_counts')])
-
             # Ensure dynamic_indices is not empty
             if dynamic_indices.numel() == 0:
                 dynamic_indices = torch.tensor([0], dtype=torch.long)  # Use 0 for padding
-                dynamic_counts = torch.tensor([1.0], dtype=torch.float32)
 
             item = {
                 'subject_id': subject_id,
                 'dynamic_indices': dynamic_indices,
-                'dynamic_counts': dynamic_counts,
                 'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32) if self.has_task else None,
             }
 
@@ -411,7 +404,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         return {
             'subject_id': -1,
             'dynamic_indices': torch.tensor([1], dtype=torch.long),
-            'dynamic_counts': torch.tensor([1.0], dtype=torch.float32),
             'labels': torch.tensor(0.0, dtype=torch.float32) if self.has_task else None,
             'InitialA1c': torch.tensor(0.0, dtype=torch.float32),
             'Female': torch.tensor(0, dtype=torch.long),
@@ -482,9 +474,9 @@ def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
 
     # Calculate the number of measurements per patient per month
     measurements_per_patient_per_month = (
-        dynamic_measurements_df.groupby(["subject_id", "month"])
+        dynamic_measurements_df.group_by(["subject_id", "month"])
         .agg(pl.count("measurement_id").alias("num_measurements"))
-        .groupby("month")
+        .group_by("month")
         .agg(pl.mean("num_measurements").alias("avg_measurements_per_patient"))
     )
 
@@ -521,7 +513,7 @@ def temporal_dist_pd(df, measure, event_type_col=None):
 def temporal_dist_pd_monthly(df, measure):
     df = df.sort('timestamp')
     df = df.with_columns(pl.col('timestamp').dt.strftime('%Y-%m').alias('month'))
-    monthly_counts = df.groupby('month').agg(pl.count(measure).alias('count'))
+    monthly_counts = df.group_by('month').agg(pl.count(measure).alias('count'))
     return monthly_counts.sort('month')
 
 def save_scatter_plot(data, x_col, y_col, title, y_label, file_path, x_range=None, x_label=None, x_scale=None):
@@ -648,7 +640,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
     if df_name in ['Diagnoses', 'Procedures']:
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
         if min_frequency is not None:
-            code_counts = df.group_by('CodeWithType').agg(pl.count('CodeWithType').alias('count'))
+            code_counts = group_by('CodeWithType').agg(pl.count('CodeWithType').alias('count'))
             if isinstance(min_frequency, int):
                 frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['CodeWithType']
             else:
@@ -659,7 +651,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
     elif df_name == 'Labs':
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
         if min_frequency is not None:
-            code_counts = df.group_by('Code').agg(pl.count('Code').alias('count'))
+            code_counts = group_by('Code').agg(pl.count('Code').alias('count'))
             if isinstance(min_frequency, int):
                 frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['Code']
             else:

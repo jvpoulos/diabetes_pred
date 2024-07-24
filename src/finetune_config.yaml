@@ -56,8 +56,8 @@ optimization_config:
   lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau"
   
 data_config:
-  save_dir: "./data/labs"
-  dl_reps_dir: "data/labs/DL_reps"
+  save_dir: "./data"
+  dl_reps_dir: "data/DL_reps"
   dataset_path: null
   max_seq_len: 256
   subsequence_sampling_strategy: to_end
@@ -74,7 +74,7 @@ trainer_config:
   accelerator: auto
   devices: 3
   precision: "16-mixed"
-  detect_anomaly: true
+  detect_anomaly: false
   log_every_n_steps: 100
   strategy: "ddp_find_unused_parameters_true"
 
@@ -88,7 +88,7 @@ wandb_logger_kwargs:
   do_log_graph: false
 
 wandb_experiment_config_kwargs:
-  entity: "batchnorm_true_layernorm_true"
+  entity: "finetune"
   project: "diabetes_finetune"
   team: null
   log_model: false
@@ -96,4 +96,4 @@ wandb_experiment_config_kwargs:
   
 do_final_validation_on_metrics: false
 do_use_filesystem_sharing: false
-do_debug_mode: true
+do_debug_mode: false
