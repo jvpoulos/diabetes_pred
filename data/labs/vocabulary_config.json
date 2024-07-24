@@ -1,0 +1,27 @@
+{
+  "vocab_sizes_by_measurement": {
+    "event_type": 3,
+    "dynamic_indices": 3530
+  },
+  "vocab_offsets_by_measurement": {
+    "event_type": 1,
+    "dynamic_indices": 4
+  },
+  "measurements_idxmap": {
+    "event_type": 1,
+    "dynamic_indices": 2
+  },
+  "measurements_per_generative_mode": {
+    "single_label_classification": [
+      "event_type"
+    ],
+    "multi_label_classification": [
+      "dynamic_indices"
+    ]
+  },
+  "event_types_idxmap": {
+    "DIAGNOSIS": 1,
+    "LAB": 2,
+    "PROCEDURE": 3
+  }
+}

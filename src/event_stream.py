@@ -145,13 +145,12 @@ def main(use_labs=False, debug=False):
 
     print("Creating events dataframe...")
     # Process events and measurements
-
     df_dia_events, df_dia_dynamic = process_events_and_measurements_df(df_dia, "DIAGNOSIS", dia_columns_select, code_to_index, subject_id_mapping)
     df_prc_events, df_prc_dynamic = process_events_and_measurements_df(df_prc, "PROCEDURE", prc_columns_select, code_to_index, subject_id_mapping)
 
     if use_labs:
         df_labs_events, df_labs_dynamic = process_events_and_measurements_df(df_labs, "LAB", labs_columns_select, code_to_index, subject_id_mapping)
-        
+
         print("Columns in df_dia_dynamic:", df_dia_dynamic.columns)
         print("Columns in df_prc_dynamic:", df_prc_dynamic.columns)
         print("Columns in df_labs_dynamic:", df_labs_dynamic.columns)
@@ -165,47 +164,88 @@ def main(use_labs=False, debug=False):
         df_dia_dynamic = df_dia_dynamic.select(columns_order)
         df_prc_dynamic = df_prc_dynamic.select(columns_order)
         df_labs_dynamic = df_labs_dynamic.select(columns_order)
-        
+
         events_df = pl.concat([df_dia_events, df_prc_events, df_labs_events], how='vertical')
         dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic, df_labs_dynamic], how='vertical')
     else:
         events_df = pl.concat([df_dia_events, df_prc_events], how='vertical')
         dynamic_measurements_df = pl.concat([df_dia_dynamic, df_prc_dynamic], how='vertical')
 
-    print("Columns in concatenated dynamic_measurements_df:", dynamic_measurements_df.columns)
+    print("Add epsilon to concurrent timestamps")
+    eps = np.finfo(float).eps
+    default_timestamp = datetime(2000, 1, 1)
+    
+    # Apply timestamp adjustment to events_df
+    events_df = events_df.with_columns([
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('event_id').cast(pl.Int64),
+        pl.col('event_type').cast(pl.Utf8)  # Convert Categorical to String
+    ]).with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
+    ])
+    
+    # Apply timestamp adjustment to dynamic_measurements_df
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('event_id').cast(pl.Int64)
+    ]).with_columns([
+        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
+    ])
+    
+    # Ensure event_type is not a combination in events_df
+    events_df = events_df.with_columns([
+        pl.col('event_type').str.split('&').list.first().alias('event_type')
+    ])
 
     # Rename existing 'event_id' column
     events_df = events_df.rename({"event_id": "original_event_id"})
     dynamic_measurements_df = dynamic_measurements_df.rename({"event_id": "original_event_id"})
 
     # Sort and add new event_id
-    events_df = events_df.sort(['subject_id', 'timestamp']).with_row_count("event_id")
-    events_df = events_df.with_columns(pl.col('event_id').cast(pl.Int64))
+    events_df = events_df.sort(['subject_id', 'timestamp']).with_row_index("event_id")
+    dynamic_measurements_df = dynamic_measurements_df.sort(['subject_id', 'timestamp']).with_row_index("event_id")
 
-    dynamic_measurements_df = dynamic_measurements_df.sort(['subject_id', 'timestamp']).with_row_count("event_id")
+    # Make sure to cast the new event_id column to Int64:
+    events_df = events_df.with_columns(pl.col('event_id').cast(pl.Int64))
     dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col('event_id').cast(pl.Int64))
 
     # Optionally, drop the original_event_id column if it's no longer needed
     events_df = events_df.drop('original_event_id')
     dynamic_measurements_df = dynamic_measurements_df.drop('original_event_id')
-    
-    # Update vocabulary configuration
-    event_types = events_df['event_type'].unique().to_list()
+
+    # Update event types
+    unique_event_types = set()
+    for event_type in events_df['event_type'].unique():
+        unique_event_types.update(event_type.split('&'))
+    event_types = sorted(list(unique_event_types))
     event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
 
-    vocab_sizes_by_measurement = {
+    # Update events_df with single event types
+    def split_event_type(event_type):
+        types = event_type.split('&')
+        return types[0] if len(types) == 1 else 'MULTIPLE'
+
+    events_df = events_df.with_columns([
+        pl.col('event_type').map_elements(split_event_type).alias('event_type')
+    ])
+
+    # Update vocabulary configuration
+    config.vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
         'dynamic_indices': len(code_to_index),
     }
 
-    vocab_offsets_by_measurement = {
+    config.vocab_offsets_by_measurement = {
         'event_type': 1,
         'dynamic_indices': len(event_types_idxmap) + 1,
     }
 
-    config.vocab_sizes_by_measurement = vocab_sizes_by_measurement
-    config.vocab_offsets_by_measurement = vocab_offsets_by_measurement
     config.event_types_idxmap = event_types_idxmap
+    
+    # Count of events by type
+    event_type_counts = events_df.group_by('event_type').count()
+    print("\nCount of events by type:")
+    print(event_type_counts)
 
     # Save DataFrames as Parquet files
     subjects_df.write_parquet(data_dir / "subjects_df.parquet")
@@ -301,6 +341,22 @@ def main(use_labs=False, debug=False):
                 print(f"No Parquet files found for split '{split}'.")
     else:
         print("DL_reps directory not found.")
+
+    print("\nSummary statistics for DL_reps/train_0.parquet:")
+    train_df = pl.read_parquet(data_dir / 'DL_reps' / 'train_0.parquet')
+    print(train_df.describe())
+    print("\nNumber of non-null dynamic_values:")
+    print(train_df.filter(pl.col('dynamic_values').is_not_null()).shape[0])
+    print("\nSample of non-null dynamic_values:")
+    print(train_df.filter(pl.col('dynamic_values').is_not_null()).select('dynamic_values').head())
+
+    print("\nSummary statistics for dynamic_measurements_df.parquet:")
+    dynamic_measurements_df = pl.read_parquet(data_dir / 'dynamic_measurements_df.parquet')
+    print(dynamic_measurements_df.describe())
+    print("\nNumber of non-null dynamic_values:")
+    print(dynamic_measurements_df.filter(pl.col('dynamic_values').is_not_null()).shape[0])
+    print("\nSample of non-null dynamic_values:")
+    print(dynamic_measurements_df.filter(pl.col('dynamic_values').is_not_null()).select('dynamic_values').head())
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process Event Stream Data.')

@@ -47,7 +47,7 @@ optimization_config:
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: True  # Flag to enable grad_value clipping
-  patience: 10
+  patience: 2
   gradient_accumulation: 2
   num_dataloader_workers: 13
   lr_num_warmup_steps: 200  
@@ -56,8 +56,8 @@ optimization_config:
   lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau"
   
 data_config:
-  save_dir: "./data"
-  dl_reps_dir: "data/DL_reps"
+  save_dir: "./data/labs"
+  dl_reps_dir: "data/labs/DL_reps"
   dataset_path: null
   max_seq_len: 256
   subsequence_sampling_strategy: to_end
