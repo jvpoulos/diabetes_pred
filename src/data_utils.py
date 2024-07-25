@@ -306,9 +306,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"Cached data columns: {self.cached_data.columns}")
         self.logger.info(f"Sample of dynamic_indices: {self.cached_data['dynamic_indices'].head(5)}")
 
-        # Filter out rows with empty dynamic_indices
-        self.cached_data = self.cached_data.filter(pl.col('dynamic_indices').is_not_null() & (pl.col('dynamic_indices') != '[]') & (pl.col('dynamic_indices') != ''))
-        
         self.logger.info(f"After filtering, {self.cached_data.shape[0]} rows remain")
         self.logger.info(f"Sample of dynamic_indices after filtering: {self.cached_data['dynamic_indices'].head(5)}")
 
@@ -353,25 +350,25 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             return self.get_default_item()
 
     def process_dynamic_indices(self, indices):
-        if indices is None or (isinstance(indices, (list, str)) and len(indices) == 0):
-            self.logger.warning(f"Received empty or None for dynamic_indices, using default value")
+        if indices is None:
+            self.logger.warning(f"Received None for dynamic_indices, using default value")
             return torch.tensor([0], dtype=torch.long)
+        
+        if isinstance(indices, (int, np.integer)):
+            return torch.tensor([indices], dtype=torch.long)
         
         if isinstance(indices, str):
-            codes = [indices]  # Single code as a string
-        elif isinstance(indices, list):
-            codes = indices
-        else:
-            self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
-            return torch.tensor([0], dtype=torch.long)
+            try:
+                indices = ast.literal_eval(indices)
+            except:
+                self.logger.warning(f"Failed to parse string dynamic_indices: {indices}, using default value")
+                return torch.tensor([0], dtype=torch.long)
         
-        processed_indices = []
-        for code in codes:
-            code_str = str(code).strip()
-            index = self.code_to_index.get(code_str, 0)
-            processed_indices.append(index)
+        if isinstance(indices, list):
+            return torch.tensor(indices, dtype=torch.long)
         
-        return torch.tensor(processed_indices, dtype=torch.long)
+        self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
+        return torch.tensor([0], dtype=torch.long)
 
     def process_dynamic_counts(self, counts):
         if counts is None:
@@ -636,11 +633,11 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
 
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False).cast(pl.Datetime('us')))
-
+        
     if df_name in ['Diagnoses', 'Procedures']:
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
         if min_frequency is not None:
-            code_counts = group_by('CodeWithType').agg(pl.count('CodeWithType').alias('count'))
+            code_counts = df.group_by('CodeWithType').agg(pl.count('CodeWithType').alias('count'))
             if isinstance(min_frequency, int):
                 frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['CodeWithType']
             else:
@@ -651,7 +648,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
     elif df_name == 'Labs':
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
         if min_frequency is not None:
-            code_counts = group_by('Code').agg(pl.count('Code').alias('count'))
+            code_counts = df.group_by('Code').agg(pl.count('Code').alias('count'))
             if isinstance(min_frequency, int):
                 frequent_codes = code_counts.filter(pl.col('count') >= min_frequency)['Code']
             else:

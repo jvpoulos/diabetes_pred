@@ -87,8 +87,8 @@ def main(use_labs=False, debug=False):
     )
 
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
-    diagnoses_file_path = 'data/Diagnoses.txt'
-    procedures_file_path = 'data/Procedures.txt'
+    diagnoses_file_path = 'data/DiagnosesICD10.txt'
+    procedures_file_path = 'data/ProceduresICD10.txt'
     if use_labs:
         labs_file_path = 'data/Labs.txt'
 

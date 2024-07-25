@@ -4,6 +4,8 @@ save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
+  use_labs: false
+  sweep: false
   use_batch_norm: false
   use_layer_norm: true
   use_flash_attention: true  # Set to false if you don't want to use Flash Attention
@@ -40,8 +42,8 @@ optimization_config:
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
   max_epochs: 100 
-  batch_size: 256
-  validation_batch_size: 256
+  batch_size: 1024
+  validation_batch_size: 1024
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01
@@ -81,14 +83,14 @@ trainer_config:
 experiment_dir: "./experiments"
 
 wandb_logger_kwargs:
-  name: "jvpoulos"
+  name: "transformer_dia_prc"
   project: "diabetes_finetune"
   team: null
   log_model: false
   do_log_graph: false
 
 wandb_experiment_config_kwargs:
-  entity: "finetune"
+  entity: "jvpoulos"
   project: "diabetes_finetune"
   team: null
   log_model: false
@@ -96,4 +98,3 @@ wandb_experiment_config_kwargs:
   
 do_final_validation_on_metrics: false
 do_use_filesystem_sharing: false
-do_debug_mode: false

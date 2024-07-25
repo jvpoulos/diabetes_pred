@@ -21,13 +21,31 @@ from pytorch_lightning.loggers import WandbLogger
 import polars as pl
 import torch
 import logging
+import argparse
 
 from data_utils import CustomPytorchDataset
 
+def evaluate_expression(expression, config):
+    if isinstance(config, DictConfig):
+        config_dict = OmegaConf.to_container(config, resolve=True)
+    elif isinstance(config, dict):
+        config_dict = config
+    else:
+        config_dict = vars(config)
+    return eval(expression, {"__builtins__": __builtins__}, config_dict)
+
 @hydra.main(version_base=None, config_path=".", config_name="finetune_config")
-def main(cfg: FinetuneConfig):
+def main(cfg: DictConfig):
+    cfg = OmegaConf.create(cfg)
+    use_labs = cfg.get('use_labs', False)
+    sweep = cfg.get('sweep', False)
+    
     logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
+    
+    logger.info("Starting main function")
+    logger.info(f"Using labs: {use_labs}")
+    logger.info(f"Hyperparameter sweep: {sweep}")
     
     logger.info("Starting main function")
     
@@ -48,15 +66,27 @@ def main(cfg: FinetuneConfig):
         else:
             cfg = FinetuneConfig(**cfg)
 
-        cfg.data_config.dl_reps_dir = Path("data/DL_reps")
+        if sweep: 
+            # Evaluate the expressions for problematic parameters
+            cfg['config']['hidden_size'] = evaluate_expression(str(cfg['config']['hidden_size']), cfg['config'])
+            cfg['data_config']['max_seq_len'] = evaluate_expression(str(cfg['data_config']['max_seq_len']), cfg['config'])
+            cfg['data_config']['min_seq_len'] = evaluate_expression(str(cfg['data_config']['min_seq_len']), cfg['config'])
+            cfg['optimization_config']['end_lr_frac_of_init_lr'] = evaluate_expression(str(cfg['optimization_config']['end_lr_frac_of_init_lr']), cfg['optimization_config'])
+            cfg['optimization_config']['validation_batch_size'] = evaluate_expression(str(cfg['optimization_config']['validation_batch_size']), cfg['optimization_config'])
+
+        if use_labs:
+            DATA_DIR = Path("data/labs")
+            cfg.data_config.dl_reps_dir = Path("data/labs/DL_reps")
+        else:
+            DATA_DIR = Path("data/")
+            cfg.data_config.dl_reps_dir = Path("data/DL_reps")
+
         logger.info("Loaded FinetuneConfig:")
         logger.info(str(cfg))
 
-        DATA_DIR = Path("data")
-
         logger.info("Checking parquet files.")
 
-        train_parquet_files = list(Path("data/DL_reps").glob("train*.parquet"))
+        train_parquet_files = list(cfg.data_config.dl_reps_dir.glob("train*.parquet"))
         logger.info(f"Train Parquet files: {train_parquet_files}")
         for file in train_parquet_files:
             logger.info(f"File {file} size: {os.path.getsize(file)} bytes")
@@ -112,12 +142,6 @@ def main(cfg: FinetuneConfig):
         logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
         logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
 
-        # wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
-        # wandb_logger = WandbLogger(
-        #     **wandb_logger_kwargs,
-        #     save_dir=cfg.save_dir,
-        # )
-
         logger.info("Starting training process")
         try:
             _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd)
@@ -144,5 +168,5 @@ if __name__ == "__main__":
     import cloudpickle
     mp.reductions.ForkingPickler.dumps = cloudpickle.dumps
     mp.reductions.ForkingPickler.loads = cloudpickle.loads
-    
+
     main()
