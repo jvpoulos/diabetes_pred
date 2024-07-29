@@ -1,3 +1,4 @@
+sweep: false
 do_overwrite: false  
 seed: 42
 save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
@@ -5,8 +6,7 @@ dataset_path: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
   use_labs: false
-  sweep: false
-  use_batch_norm: false
+  use_batch_norm: true
   use_layer_norm: true
   use_flash_attention: true  # Set to false if you don't want to use Flash Attention
   problem_type: "single_label_classification"
@@ -42,14 +42,14 @@ optimization_config:
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
   max_epochs: 100 
-  batch_size: 1024
-  validation_batch_size: 1024
+  batch_size: 2048
+  validation_batch_size: 2048
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: True  # Flag to enable grad_value clipping
-  patience: 2
+  patience: 5
   gradient_accumulation: 2
   num_dataloader_workers: 13
   lr_num_warmup_steps: 200  
