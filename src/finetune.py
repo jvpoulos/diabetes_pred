@@ -1,471 +1,276 @@
-from hydra.core.config_store import ConfigStore
-from hydra.core.hydra_config import HydraConfig
-from hydra.utils import get_original_cwd
-
 import torch.multiprocessing as mp
-import dill
-import os
-import sys
-
-import json
-import ast
-import base64
-
-# Ensure WandB run is finished before starting a new one
-import wandb
-if wandb.run:
-    wandb.finish()
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
-from EventStream.transformer.lightning_modules.fine_tuning import train
-from transformers import PretrainedConfig
-from EventStream.transformer.config import StructuredTransformerConfig
-from pathlib import Path
-import json
-from EventStream.data.config import PytorchDatasetConfig
-from EventStream.data.dataset_config import DatasetConfig
-from EventStream.data.dataset_polars import Dataset
-from EventStream.data.pytorch_dataset import PytorchDataset
-from pytorch_lightning.loggers import WandbLogger
-import polars as pl
-import torch
+from hydra.utils import get_original_cwd
+import os
 import logging
-import argparse
+import torch
+import polars as pl
+from pathlib import Path
+import wandb
+from pytorch_lightning.loggers import WandbLogger
+import ray
+import json
+from ray import train, tune
+from ray.air.integrations.wandb import WandbLoggerCallback, setup_wandb
+from ray.tune.schedulers import ASHAScheduler
 
+from EventStream.transformer.config import StructuredTransformerConfig
+from EventStream.transformer.lightning_modules.fine_tuning import train
 from data_utils import CustomPytorchDataset
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-from types import SimpleNamespace
-from omegaconf import MISSING
+# Move data loading outside of main
+DATA_DIR = Path(os.path.expanduser("~/diabetes_pred/data"))
+VOCABULARY_CONFIG_PATH = DATA_DIR / "vocabulary_config.json"
 
-class ConfigDict(dict):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.__dict__ = self
-
-    def __getattr__(self, name):
-        return self.get(name)
+class Config:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            if isinstance(value, dict):
+                setattr(self, key, Config(**value))
+            else:
+                setattr(self, key, value)
 
     def to_dict(self):
-        return dict(self)
+        return {k: v.to_dict() if isinstance(v, Config) else v for k, v in self.__dict__.items()}
 
-class CustomESTConfig(PretrainedConfig):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # Add attributes from StructuredTransformerConfig
-        self.vocab_size = kwargs.get('vocab_size', 30522)
-        self.hidden_size = kwargs.get('hidden_size', 768)
-        self.num_hidden_layers = kwargs.get('num_hidden_layers', 12)
-        self.num_attention_heads = kwargs.get('num_attention_heads', 12)
-        self.intermediate_size = kwargs.get('intermediate_size', 3072)
-        self.hidden_act = kwargs.get('hidden_act', "gelu")
-        self.hidden_dropout_prob = kwargs.get('hidden_dropout_prob', 0.1)
-        self.attention_probs_dropout_prob = kwargs.get('attention_probs_dropout_prob', 0.1)
-        self.max_position_embeddings = kwargs.get('max_position_embeddings', 512)
-        self.type_vocab_size = kwargs.get('type_vocab_size', 2)
-        self.initializer_range = kwargs.get('initializer_range', 0.02)
-        self.layer_norm_eps = kwargs.get('layer_norm_eps', 1e-12)
-        self.pad_token_id = kwargs.get('pad_token_id', 0)
-        self.position_embedding_type = kwargs.get('position_embedding_type', "absolute")
-        self.use_cache = kwargs.get('use_cache', True)
-        self._num_labels = kwargs.get('num_labels', 2)
+    def get(self, key, default=None):
+        return getattr(self, key, default)
 
-    @property
-    def num_labels(self):
-        return self._num_labels
+    def __getitem__(self, key):
+        return getattr(self, key)
 
-    @num_labels.setter
-    def num_labels(self, value):
-        self._num_labels = value
-
-@dataclass
-class FinetuneConfig:
-    sweep: bool = False
-    do_overwrite: bool = False
-    seed: int = 42
-    save_dir: str = MISSING
-    dataset_path: Optional[str] = None
-    config: Dict[str, Any] = field(default_factory=dict)
-    optimization_config: Dict[str, Any] = field(default_factory=dict)
-    data_config: Dict[str, Any] = field(default_factory=dict)
-    trainer_config: Dict[str, Any] = field(default_factory=dict)
-    experiment_dir: str = "./experiments"
-    wandb_logger_kwargs: Dict[str, Any] = field(default_factory=dict)
-    wandb_experiment_config_kwargs: Dict[str, Any] = field(default_factory=dict)
-    do_final_validation_on_metrics: bool = False
-    do_use_filesystem_sharing: bool = False
-    data_config_path: Optional[str] = None
-    optimization_config_path: Optional[str] = None
-    pretrained_weights_fp: Optional[str] = None
-    vocabulary_config_path: str = field(default_factory=lambda: str(Path("/home/jvp/diabetes_pred/data/vocabulary_config.json")))
-
-cs = ConfigStore.instance()
-cs.store(name="finetune_config", node=FinetuneConfig)
-
-def evaluate_expression(expression, config):
-    if expression is None:
-        return None
-    if isinstance(expression, (int, float, bool, str)):
-        return expression
-    try:
-        if isinstance(config, dict):
-            return eval(expression, {"__builtins__": None}, config)
-        elif isinstance(config, FinetuneConfig):
-            return eval(expression, {"__builtins__": None}, config.__dict__)
-        elif hasattr(config, '__dict__'):
-            return eval(expression, {"__builtins__": None}, config.__dict__)
-        return eval(expression, {"__builtins__": None}, vars(config))
-    except Exception as e:
-        logger.warning(f"Failed to evaluate expression: {expression}. Error: {str(e)}")
-        return None
-
-def set_default_optimization_values(optimization_config, config):
-    if isinstance(optimization_config, dict):
-        if 'end_lr' not in optimization_config and 'end_lr_frac_of_init_lr' not in optimization_config:
-            optimization_config['end_lr_frac_of_init_lr'] = 0.1
-        
-        if 'batch_size' not in optimization_config:
-            optimization_config['batch_size'] = 1536  # Default batch size
-        
-        if 'validation_batch_size' not in optimization_config:
-            optimization_config['validation_batch_size'] = optimization_config['batch_size']
-    
-    # Extract max_grad_norm
-    max_grad_norm = optimization_config.pop('max_grad_norm', config.pop('max_grad_norm', 1.0))
-    
-    return optimization_config, config, max_grad_norm
-
-def set_default_config_params(config, max_grad_norm):
-    config_dict = config.to_dict()
-    if 'task_specific_params' not in config_dict or config_dict['task_specific_params'] is None:
-        config_dict['task_specific_params'] = {}
-    
-    if 'pooling_method' not in config_dict['task_specific_params']:
-        config_dict['task_specific_params']['pooling_method'] = 'mean'  # Default to 'mean' pooling
-    
-    # Set default intermediate_dropout if not present
-    if 'intermediate_dropout' not in config_dict:
-        config_dict['intermediate_dropout'] = 0.1  # Default value, adjust as needed
-    
-    # Add max_grad_norm to the config
-    config_dict['max_grad_norm'] = max_grad_norm
-    
-    # Update the StructuredTransformerConfig object
-    for k, v in config_dict.items():
-        setattr(config, k, v)
-    
-    return config_dict, config
-
-def load_config():
-    # Check if we're running under Hydra
-    if HydraConfig.initialized():
-        cfg = HydraConfig.get()
-        
-        # Check if sweep is enabled through Hydra's override
-        is_sweep = cfg.overrides.get('sweep', 'false').lower() == 'true'
-        
-        if is_sweep:
-            # If in sweep mode, load the encoded config
-            try:
-                encoded_config_path = os.path.join(get_original_cwd(), 'encoded_config.json')
-                with open(encoded_config_path, 'r') as f:
-                    encoded_config = f.read()
-                # Decode the encoded configuration
-                decoded_config = json.loads(base64.b64decode(encoded_config).decode())
-                return OmegaConf.create(decoded_config), True
-            except Exception as e:
-                print(f"Error loading or decoding config: {str(e)}. Proceeding with default configuration.")
-                return None, True
-    else:
-        # If not running under Hydra, use argparse for backward compatibility
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--sweep', action='store_true', help='Run in sweep mode')
-        args, unknown = parser.parse_known_args()
-        
-        if args.sweep:
-            try:
-                with open('encoded_config.json', 'r') as f:
-                    encoded_config = f.read()
-                # Decode the encoded configuration
-                decoded_config = json.loads(base64.b64decode(encoded_config).decode())
-                return OmegaConf.create(decoded_config), True
-            except Exception as e:
-                print(f"Error loading or decoding config: {str(e)}. Proceeding with default configuration.")
-                return None, True
-    
-    return None, False
-
-def clean_config(cfg):
-    # Remove keys that are not expected by FinetuneConfig
-    unexpected_keys = ['method', 'metric', 'parameters', 'name']
-    for key in unexpected_keys:
-        cfg.pop(key, None)
-    # Ensure sweep is included in the cleaned config
-    if 'sweep' not in cfg:
-        cfg['sweep'] = False
-    return cfg
-
-def config_to_dict(config):
-    if isinstance(config, dict):
-        return {k: config_to_dict(v) for k, v in config.items()}
-    elif hasattr(config, '__dict__'):
-        return {k: config_to_dict(v) for k, v in config.__dict__.items() if not k.startswith('_')}
-    else:
-        return config
-
-@hydra.main(config_path=".", config_name="finetune_config")
-def main(cfg: FinetuneConfig):
-    print(OmegaConf.to_yaml(cfg))
-    if 'sweep' not in cfg:
-        OmegaConf.update(cfg, "sweep", False, merge=True)
-
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-    
-    logger.info("Starting main function")
-
-    # Set float32 matmul precision to 'medium' for better performance on Tensor Core enabled devices
-    torch.set_float32_matmul_precision('medium')
-
-    loaded_config, is_sweep = load_config()
-
-    if loaded_config is not None:
-        cfg = OmegaConf.merge(cfg, loaded_config)
-    else:
-        # If no sweep config was loaded, use the Hydra config
-        cfg = OmegaConf.to_container(cfg, resolve=True)
-
-    # Use the sweep parameter from the config
-    is_sweep = cfg.get('sweep', False)
-
-    # Ensure all necessary fields are present
-    cfg['config'] = cfg.get('config', {})
-    cfg['data_config'] = cfg.get('data_config', {})
-    cfg['optimization_config'] = cfg.get('optimization_config', {})
-
-    use_labs = cfg.get('use_labs', False)
-    
-    logger.info(f"Using labs: {use_labs}")
-    logger.info(f"Hyperparameter sweep: {is_sweep}")
-
-    if isinstance(cfg, DictConfig):
-        cfg = OmegaConf.to_container(cfg, resolve=True)
-
-    data_config_path = cfg.pop("data_config_path", None)
-    optimization_config_path = cfg.pop("optimization_config_path", None)
-
-    # Clean the configuration
-    cfg = clean_config(cfg)
-
-    if data_config_path:
-        data_config_fp = Path(data_config_path)
-        logger.info(f"Loading data_config from {data_config_fp}")
-        reloaded_data_config = PytorchDatasetConfig.from_json_file(data_config_fp)
-        cfg["data_config"] = reloaded_data_config
-        cfg["config"]["problem_type"] = cfg["config"]["problem_type"]
-
-    # Set default values for optimization config and extract max_grad_norm
-    cfg["optimization_config"], cfg["config"], max_grad_norm = set_default_optimization_values(
-        cfg.get("optimization_config", {}),
-        cfg.get("config", {})
-    )
-    
-    # Create StructuredTransformerConfig object
-    transformer_config = StructuredTransformerConfig(**cfg["config"])
-    
-    # Set default values for optimization config and extract max_grad_norm
-    cfg["optimization_config"], cfg["config"], max_grad_norm = set_default_optimization_values(
-        cfg.get("optimization_config", {}),
-        cfg.get("config", {})
-    )
-    
-    # Set default config parameters including task-specific params, intermediate_dropout, and max_grad_norm
-    config_dict, transformer_config = set_default_config_params(transformer_config, max_grad_norm)
-    
-    # Convert StructuredTransformerConfig back to dictionary
-    cfg["config"] = config_to_dict(transformer_config)
-    
-    cfg_dict = {**cfg, 'data_config_path': data_config_path, 'optimization_config_path': optimization_config_path}
-    cfg = FinetuneConfig(**cfg_dict)
-    
-    # Convert the entire cfg object to a dictionary for easier access
-    cfg_dict = config_to_dict(cfg)
-    
-    # Log important configuration values
-    logger.info(f"Batch size: {cfg_dict['optimization_config'].get('batch_size', 'Not set')}")
-    logger.info(f"Validation batch size: {cfg_dict['optimization_config'].get('validation_batch_size', 'Not set')}")
-    logger.info(f"Max grad norm: {cfg_dict['config'].get('max_grad_norm', 'Not set')}")
-    logger.info(f"Intermediate dropout: {cfg_dict['config'].get('intermediate_dropout', 'Not set')}")
-
-    if is_sweep:
-        # Evaluate the expressions for problematic parameters
-        cfg_dict['config']['hidden_size'] = evaluate_expression(cfg_dict['config'].get('hidden_size'), cfg_dict['config'])
-        cfg_dict['data_config']['max_seq_len'] = evaluate_expression(cfg_dict['data_config'].get('max_seq_len'), cfg_dict['config'])
-        cfg_dict['data_config']['min_seq_len'] = evaluate_expression(cfg_dict['data_config'].get('min_seq_len'), cfg_dict['config'])
-        
-        # Handle optimization_config
-        cfg_dict['optimization_config']['end_lr_frac_of_init_lr'] = evaluate_expression(
-            cfg_dict['optimization_config'].get('end_lr_frac_of_init_lr'), cfg_dict['optimization_config']
-        )
-        cfg_dict['optimization_config']['validation_batch_size'] = evaluate_expression(
-            cfg_dict['optimization_config'].get('validation_batch_size'), cfg_dict['optimization_config']
-        )
-        cfg_dict['config']['max_grad_norm'] = evaluate_expression(
-            cfg_dict['config'].get('max_grad_norm'), {'max_grad_norm': cfg_dict['config'].get('max_grad_norm')}
-        )
-        
-        # Update the original cfg object with the evaluated values
-        cfg.config.update(cfg_dict['config'])
-        cfg.data_config.update(cfg_dict['data_config'])
-        cfg.optimization_config.update(cfg_dict['optimization_config'])
-
-
-    # Print current working directory
-    logger.info(f"Current working directory: {os.getcwd()}")
-
-    original_cwd = get_original_cwd()
-    logger.info(f"Original working directory: {original_cwd}")
-
-    if use_labs:
-        DATA_DIR = Path(original_cwd) / "data/labs"
-    else:
-        DATA_DIR = Path(original_cwd) / "data"
-
-    logger.info(f"Data directory: {DATA_DIR}")
-
-    # Update dl_reps_dir to use the absolute path
-    cfg.data_config['dl_reps_dir'] = str(DATA_DIR / "DL_reps")
-    logger.info(f"DL_reps directory: {cfg.data_config['dl_reps_dir']}")
-
-    logger.info("Loaded FinetuneConfig:")
-    logger.info(str(cfg))
-
-    logger.info("Checking parquet files.")
-    train_parquet_files = list(Path(cfg.data_config['dl_reps_dir']).glob("train*.parquet"))
-    logger.info(f"Train Parquet files: {train_parquet_files}")
-    for file in train_parquet_files:
-        logger.info(f"File {file} size: {os.path.getsize(file)} bytes")
-    
-    logger.info("Loading subjects DataFrame")
+def create_datasets(data_config, device):
     subjects_df = pl.read_parquet(DATA_DIR / "subjects_df.parquet")
-    subjects_df = subjects_df.rename({"subject_id": "subject_id_right"})
-    logger.debug(f"Subjects DataFrame shape: {subjects_df.shape}")
-
-    logger.info("Loading task DataFrames")
     train_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_train.parquet")
     val_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_val.parquet")
     test_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_test.parquet")
-    
-    logger.info(f"Train task DataFrame shape: {train_df.shape}")
-    logger.info(f"Train task DataFrame columns: {train_df.columns}")
-    logger.info(f"Sample of train task DataFrame:\n{train_df.head()}")
-
-    logger.info("Loading diagnosis and procedure DataFrames")
     df_dia = pl.read_parquet(DATA_DIR / "df_dia.parquet")
     df_prc = pl.read_parquet(DATA_DIR / "df_prc.parquet")
-    logger.debug(f"Diagnosis DataFrame shape: {df_dia.shape}")
-    logger.debug(f"Procedure DataFrame shape: {df_prc.shape}")
 
-    logger.info(f"dl_reps_dir: {cfg.data_config['dl_reps_dir']}")
+    train_pyd = CustomPytorchDataset(data_config, split="train", dl_reps_dir=str(DATA_DIR / "DL_reps"),
+                                     subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=train_df, device=device)
+    tuning_pyd = CustomPytorchDataset(data_config, split="tuning", dl_reps_dir=str(DATA_DIR / "DL_reps"),
+                                      subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=val_df, device=device)
+    held_out_pyd = CustomPytorchDataset(data_config, split="held_out", dl_reps_dir=str(DATA_DIR / "DL_reps"),
+                                        subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=test_df, device=device)
+    return train_pyd, tuning_pyd, held_out_pyd
 
+def train_function(config):
+    # Setup wandb
+    wandb_run = setup_wandb(config=config, project="diabetes_sweep")
+    
+    # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    
+    # Create datasets
+    train_pyd, tuning_pyd, held_out_pyd = create_datasets(config["data_config"], device)
 
-    logger.info("Creating CustomPytorchDataset instances")
-    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config['dl_reps_dir'], subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=train_df, device=device)
-    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config['dl_reps_dir'], subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=val_df, device=device)
-    held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config['dl_reps_dir'], subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=test_df, device=device)
+    # Load vocabulary config
+    with open(VOCABULARY_CONFIG_PATH, 'r') as f:
+        vocabulary_config = json.load(f)
 
-    logger.info(f"Train dataset length: {len(train_pyd)}")
-    logger.info(f"Tuning dataset length: {len(tuning_pyd)}")
-    logger.info(f"Held-out dataset length: {len(held_out_pyd)}")
+    # Set vocab_size from vocabulary config
+    vocab_size = vocabulary_config['vocab_sizes_by_measurement']['dynamic_indices'] + 2  # Add 2 instead of 1
+    print(f"Adjusted vocab_size: {vocab_size}")
 
-    if len(train_pyd) == 0 or len(tuning_pyd) == 0 or len(held_out_pyd) == 0:
-        logger.error("One or more datasets are empty. Please check your data loading process.")
-        return
+    max_index_train = max(train_pyd.get_max_index(), tuning_pyd.get_max_index(), held_out_pyd.get_max_index())
+    print(f"Maximum index in datasets: {max_index_train}")
 
-    max_index = max(
-        train_pyd.get_max_index(),
-        tuning_pyd.get_max_index(),
-        held_out_pyd.get_max_index()
+    vocab_size = max(vocab_size, max_index_train + 1)
+    print(f"Final vocab_size after adjustment: {vocab_size}")
+
+    # Update config with the hyperparameters from Ray Tune
+    config["config"].update(config.get("config", {}))
+    config["optimization_config"].update(config.get("optimization_config", {}))
+
+    # Ensure vocab_size is set correctly after the update
+    config["config"]["vocab_size"] = vocab_size
+
+    # Update config with the hyperparameters from Ray Tune
+    config["config"].update(config.get("config", {}))
+    config["optimization_config"].update(config.get("optimization_config", {}))
+    
+    # Handle embedding dimensions based on do_split_embeddings
+    if not config["config"].get("do_split_embeddings", False):
+        config["config"]["categorical_embedding_dim"] = None
+        config["config"]["numerical_embedding_dim"] = None
+
+   # Ensure max_grad_norm is in the config
+    if "max_grad_norm" not in config["config"]:
+        config["config"]["max_grad_norm"] = config["optimization_config"].get("max_grad_norm", 1.0)
+
+    # Ensure task_specific_params is a dictionary
+    if "task_specific_params" not in config["config"] or config["config"]["task_specific_params"] is None:
+        config["config"]["task_specific_params"] = {"pooling_method": "mean"}
+    elif "pooling_method" not in config["config"]["task_specific_params"]:
+        config["config"]["task_specific_params"]["pooling_method"] = "mean"
+
+   # Ensure intermediate_dropout is present
+    if "intermediate_dropout" not in config["config"]:
+        config["config"]["intermediate_dropout"] = config["config"].get("dropout", 0.1)  # Default to 0.1 if not specified
+
+    # Ensure max_training_steps and weight_decay are in optimization_config
+    if "validation_batch_size" not in config["optimization_config"]:
+        config["optimization_config"]["validation_batch_size"] = config["optimization_config"]["batch_size"]
+    if "max_training_steps" not in config["optimization_config"]:
+        config["optimization_config"]["max_training_steps"] = config["optimization_config"].get("max_epochs", 100) * len(train_pyd) // config["optimization_config"].get("batch_size", 32)
+    if "weight_decay" not in config["optimization_config"]:
+        config["optimization_config"]["weight_decay"] = config["optimization_config"].get("weight_decay", 0.01)
+    
+    # Ensure end_lr_frac_of_init_lr is between 0 and 1
+    init_lr = config["optimization_config"]["init_lr"]
+    end_lr = config["optimization_config"]["end_lr"]
+    config["optimization_config"]["end_lr_frac_of_init_lr"] = min(max(end_lr / init_lr, 0), 1)
+
+    # Remove vocab_size from config["config"] if it exists
+    config["config"].pop("vocab_size", None)
+
+    # Create StructuredTransformerConfig
+    transformer_config = StructuredTransformerConfig(vocab_size=vocab_size, **config["config"])
+    print(f"Transformer config vocab_size: {transformer_config.vocab_size}")
+
+    # Ensure vocab_size is set correctly in the transformer_config
+    if transformer_config.vocab_size != vocab_size:
+        print(f"Warning: transformer_config.vocab_size ({transformer_config.vocab_size}) does not match expected vocab_size ({vocab_size}). Updating...")
+        transformer_config.vocab_size = vocab_size
+
+    print(f"Final vocab_size before creating train_config: {vocab_size}")
+
+    # Create a Config object to mimic the expected cfg structure
+    train_config = Config(
+        config=transformer_config,
+        optimization_config=Config(**config["optimization_config"]),
+        data_config=Config(**config["data_config"]),
+        wandb_logger_kwargs=config["wandb_logger_kwargs"],
+        seed=config.get("seed", 42),
+        pretrained_weights_fp=config.get("pretrained_weights_fp", None),
+        vocabulary_config_path=str(VOCABULARY_CONFIG_PATH),
+        save_dir=Path(config.get("save_dir", "./experiments/finetune")),
+        trainer_config=config.get("trainer_config", {}),
+        vocab_size=vocab_size
     )
 
-    cfg.config['vocab_size'] = max_index + 1
-    logger.info(f"Set vocab_size to {cfg.config['vocab_size']}")
+    # Ensure vocab_size is set in the config attribute of train_config
+    train_config.config.vocab_size = vocab_size
+    
+    print(f"train_config.config.vocab_size: {train_config.config.vocab_size}")
+    print(f"train_config.vocab_size: {train_config.vocab_size}")
+    
+    os.makedirs('data', exist_ok=True)
+    if not os.path.exists('data/vocabulary_config.json'):
+        os.symlink(str(VOCABULARY_CONFIG_PATH), 'data/vocabulary_config.json')
 
-    logger.debug(f"Train dataset cached data: {[df.shape for df in train_pyd.cached_data_list] if hasattr(train_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
-    logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
-    logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
+    # Ensure trainer_config is a dictionary
+    if isinstance(train_config.trainer_config, Config):
+        train_config.trainer_config = train_config.trainer_config.to_dict()
 
-    logger.info("Starting training process")
+    # Run the training process
+    print(f"Final check - train_config.config.vocab_size: {train_config.config.vocab_size}")
+    print(f"Final check - train_config.vocab_size: {train_config.vocab_size}")
+    print(f"Final check - transformer_config.vocab_size: {transformer_config.vocab_size}")
+    _, tuning_metrics, _ = train(train_config, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_run)
+    
+    # Report the results back to Ray Tune
+    if tuning_metrics is not None and 'auroc' in tuning_metrics:
+        ray.train.report({"val_auc_epoch": tuning_metrics['auroc']})
+    else:
+        print("Warning: tuning_metrics is None or does not contain 'auroc'")
+        ray.train.report({"val_auc_epoch": 0.0})  # Report a default value
 
-    # Ensure all necessary attributes are present
-    cfg.__dict__.setdefault('wandb_logger_kwargs', {})
-    cfg.__dict__.setdefault('wandb_experiment_config_kwargs', {})
-    cfg.__dict__.setdefault('pretrained_weights_fp', None) 
+    # Make sure to finish the wandb run
+    wandb_run.finish()
 
-    # Set the vocabulary_config_path using an absolute path
-    vocabulary_config_path = str(Path("/home/jvp/diabetes_pred/data/vocabulary_config.json"))
-    cfg.vocabulary_config_path = vocabulary_config_path
+@hydra.main(config_path=".", config_name="finetune_config", version_base=None)
+def main(cfg):
+    # Initialize Ray, ignoring reinit errors
+    ray.init(ignore_reinit_error=True)
 
-    logger.info(f"Vocabulary config path: {vocabulary_config_path}")
-    logger.info(f"Vocabulary config file exists: {os.path.exists(vocabulary_config_path)}")
+    # Check if cfg is already a dict (as it would be when called through Ray Tune)
+    if isinstance(cfg, dict):
+        config = cfg
+    else:
+        # If it's an OmegaConf object, convert it to a container
+        config = OmegaConf.to_container(cfg, resolve=True)
 
-    if not os.path.exists(vocabulary_config_path):
-        raise FileNotFoundError(f"Vocabulary config file not found at {vocabulary_config_path}")
+    # Ensure 'config' key exists
+    if 'config' not in config:
+        config['config'] = {}
 
-    # Debug logging for cfg.config
-    logger.debug(f"cfg.config type: {type(cfg.config)}")
-    logger.debug(f"cfg.config keys: {cfg.config.keys()}")
-    logger.debug(f"cfg.config vocab_size: {cfg.config.get('vocab_size', 'Not found')}")
+    # Extract necessary configurations
+    wandb_config = config
+    wandb_project = config.get("wandb_logger_kwargs", {}).get("project", "diabetes_sweep")
+    wandb_entity = config.get("wandb_logger_kwargs", {}).get("entity", None)
+    data_config = config.get("data_config", {})
+    optimization_config = config.get("optimization_config", {})
+    wandb_logger_kwargs = config.get("wandb_logger_kwargs", {})
+    seed = config.get("seed", 42)
+    pretrained_weights_fp = config.get("pretrained_weights_fp", None)
+    save_dir = config.get("save_dir", "./experiments/finetune")
+    trainer_config = config.get("trainer_config", {})
 
-    # Convert FinetuneConfig to a dictionary
-    cfg_dict = vars(cfg)
+    # Initialize wandb
+    wandb.init(config=wandb_config,
+               project=wandb_project,
+               entity=wandb_entity)
 
-    # Create ConfigDict objects for nested configurations
-    cfg_obj = ConfigDict()
-    for key, value in cfg_dict.items():
-        if isinstance(value, dict):
-            cfg_obj[key] = ConfigDict(value)
-        else:
-            cfg_obj[key] = value
+    # Set up device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Convert save_dir to a Path object
-    cfg_obj['save_dir'] = Path(cfg_obj['save_dir'])
+    # Create datasets
+    train_pyd, tuning_pyd, held_out_pyd = create_datasets(data_config, device)
 
-    # Create and update custom_config
-    custom_config = CustomESTConfig(**cfg_obj['config'])
-    custom_config.vocab_size = cfg_obj['config']['vocab_size']
-    custom_config.num_labels = 2  # or whatever number of labels you have
-    cfg_obj['config'] = custom_config
+    # Set up WandB logger
+    wandb_logger = WandbLogger(**wandb_logger_kwargs)
 
-    # Ensure wandb_logger_kwargs and wandb_experiment_config_kwargs are dictionaries
-    cfg_obj['wandb_logger_kwargs'] = dict(cfg.wandb_logger_kwargs)
-    cfg_obj['wandb_experiment_config_kwargs'] = dict(cfg.wandb_experiment_config_kwargs)
+    # Ensure max_training_steps and weight_decay are in optimization_config
+    if "validation_batch_size" not in optimization_config:
+        optimization_config["validation_batch_size"] = optimization_config["batch_size"]
+    if "max_training_steps" not in optimization_config:
+        optimization_config["max_training_steps"] = optimization_config.get("max_epochs", 100) * len(train_pyd) // optimization_config.get("batch_size", 32)
+    if "weight_decay" not in optimization_config:
+        optimization_config["weight_decay"] = optimization_config.get("weight_decay", 0.01)
 
-    # Create WandbLogger
-    wandb_logger_kwargs = {k: v for k, v in cfg_obj['wandb_logger_kwargs'].items() if k not in ['do_log_graph', 'team']}
-    wandb_logger = WandbLogger(**wandb_logger_kwargs, save_dir=str(cfg_obj['save_dir']))
+    # Define the search space
+    search_space = {
+        "config": config,
+        "optimization_config": optimization_config,
+        "data_config": data_config,
+        "wandb_logger_kwargs": wandb_logger_kwargs,
+        "seed": seed,
+        "pretrained_weights_fp": pretrained_weights_fp
+    }
 
-    # Debug logging
-    logger.debug(f"save_dir type: {type(cfg_obj['save_dir'])}")
-    logger.debug(f"save_dir value: {cfg_obj['save_dir']}")
+    # Add max_grad_norm to the search space if it's not already there
+    if "max_grad_norm" not in search_space["config"]:
+        search_space["config"]["max_grad_norm"] = tune.uniform(0.1, 1.0)
 
-    # Update the train function call
-    original_cwd = os.getcwd()
-    os.chdir("/home/jvp/diabetes_pred")  # Change to the directory containing the 'data' folder
-    try:
-        wandb.init(config=cfg_obj.to_dict())
-        _, tuning_metrics, held_out_metrics = train(cfg_obj, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
-    except Exception as e:
-        logger.exception(f"Error during training: {str(e)}")
-    finally:
-        os.chdir(original_cwd)
+    # Get the current working directory
+    cwd = os.getcwd()
+    
+    # Create an absolute path for ray_results
+    storage_path = os.path.abspath(os.path.join(cwd, "ray_results"))
 
-    logger.info("Main function completed")
+    # Configure the Ray Tune run
+    analysis = tune.run(
+        train_function,
+        config=search_space,
+        num_samples=30,  # Number of trials
+        scheduler=ASHAScheduler(metric="val_auc_epoch", mode="max"),
+        progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
+        name="diabetes_sweep",
+        storage_path=storage_path,  # Use the absolute path
+        resources_per_trial={"cpu": 4, "gpu": 0.33},  # Allocate 3 CPU and 0.33 GPU per trial
+        callbacks=[WandbLoggerCallback(project="diabetes_sweep")]
+    )
+
+    # Print the best config
+    best_config = analysis.get_best_config(metric="val_auc_epoch", mode="max")
+    print("Best hyperparameters found were: ", best_config)
+
+    # You can also print the best trial's last result
+    best_trial = analysis.get_best_trial(metric="val_auc_epoch", mode="max")
+    print("Best trial last result:", best_trial.last_result)
 
 if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)

@@ -29,6 +29,7 @@ kaleido==0.2.1
 lightning==2.2.3
 pytorch_lognormal_mixture==0.0.1
 pyo3-pack==0.6.1
+optuna==3.6.1
 
 
 

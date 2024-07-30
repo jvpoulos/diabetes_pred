@@ -3,6 +3,7 @@ do_overwrite: false
 seed: 42
 save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
+pretrained_weights_fp: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
   use_labs: false
@@ -48,7 +49,7 @@ optimization_config:
   lr_decay_power: 0.01
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
-  use_grad_value_clipping: True  # Flag to enable grad_value clipping
+  use_grad_value_clipping: true  # Flag to enable grad_value clipping
   patience: 5
   gradient_accumulation: 2
   num_dataloader_workers: 13

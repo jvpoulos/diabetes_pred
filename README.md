@@ -53,8 +53,11 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 - `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
 
-- `train_tune.py` [static analyses]
-	- Hyperparameter optimization for transfomer models using Ray Tune.
+- `tune_static.py` [static analyses]
+	- Hyperparameter optimization for static transfomer models using Ray Tune.
+
+- `tune_temporal.py` [temporal analyses]
+	- Hyperparameter optimization for static transfomer models using Ray Tune.
 
 - `hp_sweep.py` [temporal analyses]
 	- Perform hyperparameter tuning for the temporal analyses by loading the dataset, creating the model, and training it.
@@ -112,7 +115,7 @@ $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
 Optionally,  follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
-6. Clone forked version of git repo [EventStreamGPT](https://github.com/mmcdermott/EventStreamGPT), outside of project directory:
+6. Clone forked version of git repo [EventStreamGPT](https://github.com/jvpoulos/EventStreamGPT), outside of project directory:
 ```bash
 $ git clone https://github.com/jvpoulos/EventStreamGPT.git
 touch EventStreamGPT/__init__.py
@@ -143,7 +146,7 @@ $ python3 src/data_analysis.py
 3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
 
 ```bash
-$ python3 src/train_tune.py --model_type FTTransformer --epochs 25
+$ python3 src/tune_static.py --model_type FTTransformer --epochs 25
 ```
 
 4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
@@ -182,9 +185,16 @@ $ python3 src/test.py  --dataset_type 'test' --model_type ResNet --dim 128 --dep
 
 ## Temporal analyses
 
+0. Create Python path for ESGPT
+```bash
+$ echo 'export PYTHONPATH=$PYTHONPATH:../EventStreamGPT' >> ~/.bashrc
+$ source ~/.bashrc
+$ echo $PYTHONPATH
+# :../EventStreamGPT
+```
+
 1. Create data files (arguments: `--use_dask`, `--use_labs`, `--debug`):
 ```bash
-$ export PYTHONPATH=$PYTHONPATH:../EventStreamGPT
 $ python3 src/event_stream.py --use_labs
 ```
 
@@ -202,10 +212,8 @@ $ python3 src/visualize_describe.py
 
 3. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
-$ python3 ../EventStreamGPT/scripts/launch_finetuning_wandb_hp_sweep.py # create the sweep. This will create a sweep on Weights and Biases with the specified hyperparameter ranges.
-$ wandb agent user_id/diabetes_sweep/sweep_id # Start the agent(s) to run the sweep. Replace sweep_id with the sweep ID obtained from the previous step.
+$ python3 src/tune_temporal.py --epochs 100
 ```
-The agent(s) will run the `hp_sweep.py` script with different hyperparameter configurations sampled from the ranges specified in the sweep configuration file. The training results and metrics will be logged to Weights and Biases for each run.
 
 4. Train the transformer from scratch:
 
