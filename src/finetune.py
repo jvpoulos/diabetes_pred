@@ -52,17 +52,6 @@ class ConfigDict(dict):
     def to_dict(self):
         return dict(self)
 
-class ConfigNamespace(SimpleNamespace):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.vocabulary_config_path = kwargs.get('vocabulary_config_path')
-
-    def to_dict(self):
-        return {k: (v.to_dict() if isinstance(v, ConfigNamespace) else v) for k, v in self.__dict__.items()}
-
-    def get(self, key, default=None):
-        return getattr(self, key, default)
-
 class CustomESTConfig(PretrainedConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -412,13 +401,6 @@ def main(cfg: FinetuneConfig):
     logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
 
     logger.info("Starting training process")
-
-    def dict_to_namespace(d):
-        if isinstance(d, dict):
-            return ConfigNamespace(**{k: dict_to_namespace(v) if v is not None else None for k, v in d.items()})
-        elif isinstance(d, list):
-            return [dict_to_namespace(v) for v in d]
-        return d
 
     # Ensure all necessary attributes are present
     cfg.__dict__.setdefault('wandb_logger_kwargs', {})
