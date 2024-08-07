@@ -10,7 +10,8 @@ config:
   output_attentions: true
   output_hidden_states: false
   output_scores: false
-  use_cache: true
+  use_gradient_checkpointing: false
+  use_cache: true # must be false if use_gradient_checkpointing is true
   use_labs: true
   use_batch_norm: true
   use_layer_norm: true
@@ -19,37 +20,37 @@ config:
   num_labels: 2
   do_use_sinusoidal: true
   do_split_embeddings: true
-  categorical_embedding_dim: 64
-  numerical_embedding_dim: 64
+  categorical_embedding_dim: 32
+  numerical_embedding_dim: 128
   static_embedding_mode: sum_all
-  categorical_embedding_weight: 0.3
-  numerical_embedding_weight: 0.5
-  static_embedding_weight: 0.4
+  categorical_embedding_weight: 0.5
+  numerical_embedding_weight: 0.7
+  static_embedding_weight: 0.6
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 6
+  num_hidden_layers: 4
   seq_attention_types: ["global", "local"]
   seq_window_size: 168
   head_dim: 32
-  num_attention_heads: 8
-  max_grad_norm: 1
-  intermediate_dropout: 0.3
-  attention_dropout: 0.3
-  input_dropout: 0.3
-  resid_dropout: 0.3
+  num_attention_heads: 4
+  max_grad_norm: 10
+  intermediate_dropout: 0.1
+  attention_dropout: 0.1
+  input_dropout: 0.1
+  resid_dropout: 0.1
   layer_norm_epsilon: 1e-5
-  hidden_size: 256  # 32*8 = 256, consistent with head_dim and num_attention_heads
-  intermediate_size: 256
+  hidden_size: 128  # 32*4 = 128, consistent with head_dim and num_attention_heads
+  intermediate_size: 128
   task_specific_params:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 1e-3  # Initial learning rate
+  init_lr: 1e-2  # Initial learning rate
   end_lr: 1e-5   # Final learning rate
-  end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
+  end_lr_frac_of_init_lr: 0.001  # This should be equal to end_lr / init_lr
   max_epochs: 100 
-  batch_size: 512
+  batch_size: 1024
   validation_batch_size: 2048
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
@@ -57,7 +58,7 @@ optimization_config:
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: true  # Flag to enable grad_value clipping
   patience: 5
-  gradient_accumulation: 2
+  gradient_accumulation: 4
   num_dataloader_workers: 13
   lr_num_warmup_steps: 200  
   max_training_steps: 316500 # steps per epoch = training samples/effective batch size
@@ -86,6 +87,7 @@ trainer_config:
   detect_anomaly: false
   log_every_n_steps: 100
   strategy: "ddp_find_unused_parameters_true"
+  accumulate_grad_batches: 16
 
 experiment_dir: "./experiments"
 

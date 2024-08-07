@@ -21,6 +21,7 @@ from ray.tune.search import sample
 
 from EventStream.transformer.config import StructuredTransformerConfig
 from EventStream.transformer.lightning_modules.fine_tuning import train
+from EventStream.data.vocabulary import VocabularyConfig
 from data_utils import CustomPytorchDataset
 
 def get_data_dir(config):
@@ -91,14 +92,32 @@ def train_function(config):
 
     # Load vocabulary config
     with open(VOCABULARY_CONFIG_PATH, 'r') as f:
-        vocabulary_config = json.load(f)
+        vocabulary_config_dict = json.load(f)
+    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
 
-    # Set vocab_size from vocabulary config
-    vocab_size = vocabulary_config['vocab_sizes_by_measurement']['dynamic_indices'] + 2  # Add 2 instead of 1
-    print(f"Adjusted vocab_size: {vocab_size}")
+    # Calculate total vocabulary size from VocabularyConfig
+    total_vocab_size = vocabulary_config.total_vocab_size
 
+    # Get maximum index from datasets
     max_index_train = max(train_pyd.get_max_index(), tuning_pyd.get_max_index(), held_out_pyd.get_max_index())
+
+    # Set vocab_size to be the maximum of total_vocab_size and max_index_train + 1
+    vocab_size = max(total_vocab_size, max_index_train + 1)
+
+    print(f"Total vocabulary size from config: {total_vocab_size}")
     print(f"Maximum index in datasets: {max_index_train}")
+    print(f"Final vocab_size: {vocab_size}")
+
+    # Update config with the calculated vocab_size
+    config["config"]["vocab_size"] = vocab_size
+
+    # Ensure oov_index is set correctly
+    oov_index = vocab_size - 1
+    print(f"OOV index: {oov_index}")
+
+    # Update the vocabulary_config with the new total_vocab_size and oov_index
+    vocabulary_config.total_vocab_size = vocab_size
+    vocabulary_config.oov_index = oov_index
 
     vocab_size = max(vocab_size, max_index_train + 1)
     print(f"Final vocab_size after adjustment: {vocab_size}")
@@ -222,7 +241,7 @@ def train_function(config):
         wandb_logger_kwargs=config["wandb_logger_kwargs"],
         seed=config.get("seed", 42),
         pretrained_weights_fp=config.get("pretrained_weights_fp", None),
-        vocabulary_config_path=str(VOCABULARY_CONFIG_PATH),
+        vocabulary_config=vocabulary_config,
         save_dir=Path(config.get("save_dir", "./experiments/finetune")),
         trainer_config=config.get("trainer_config", {}),
         vocab_size=vocab_size
@@ -323,7 +342,7 @@ def main(cfg):
             "use_layer_norm": tune.choice([True, False]),
             "use_batch_norm": tune.choice([True, False]),
             "do_use_learnable_sinusoidal_ATE": tune.choice([True, False]),
-            "do_use_sinusoidal": tune.choice([True, False]),  # Added
+            "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
             "categorical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
             "numerical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
@@ -349,7 +368,7 @@ def main(cfg):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-5, 1e-1),
-            "batch_size": tune.choice([256, 512, 1024, 2048]),
+            "batch_size": tune.choice([256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "gradient_accumulation": tune.choice([1, 2, 4]),

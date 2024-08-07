@@ -1575,38 +1575,64 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         try:
             row = self.cached_data.row(idx)
             subject_id = row[self.cached_data.columns.index('subject_id')]
-
             raw_dynamic_indices = row[self.cached_data.columns.index('dynamic_indices')]
-            # self.logger.debug(f"Raw dynamic_indices for subject {subject_id}: {raw_dynamic_indices}")
-
             dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices)
-            # self.logger.debug(f"Processed dynamic_indices for subject {subject_id}: {dynamic_indices}")
-
+            
             # Ensure dynamic_indices is not empty
             if dynamic_indices.numel() == 0:
                 dynamic_indices = torch.tensor([0], dtype=torch.long)  # Use 0 for padding
-
+            
             item = {
                 'subject_id': subject_id,
                 'dynamic_indices': dynamic_indices,
                 'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32) if self.has_task else None,
             }
-
+            
+            # Handle dynamic_values
+            if 'dynamic_values' in self.cached_data.columns:
+                raw_dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
+                item['dynamic_values'] = self.process_dynamic_values(raw_dynamic_values)
+            else:
+                item['dynamic_values'] = torch.tensor([0.0], dtype=torch.float32)  # Default value
+            
             # Add static features
             static_features = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
             for feature in static_features:
                 item[feature] = self.process_static_feature(row, feature)
-
+            
             if 'A1cGreaterThan7' in self.cached_data.columns:
                 item['A1cGreaterThan7'] = self.process_static_feature(row, 'A1cGreaterThan7', dtype=torch.float32)
             else:
                 item['A1cGreaterThan7'] = torch.tensor(0.0, dtype=torch.float32)
-
+            
             return self.handle_nan_values(item)
-
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
             return self.get_default_item()
+
+    def process_dynamic_values(self, raw_dynamic_values):
+        if raw_dynamic_values is None:
+            return torch.tensor([0.0], dtype=torch.float32)  # Default value for missing dynamic_values
+        
+        if isinstance(raw_dynamic_values, str):
+            try:
+                values = ast.literal_eval(raw_dynamic_values)
+                if isinstance(values, (list, tuple)):
+                    return torch.tensor(values, dtype=torch.float32)
+                else:
+                    return torch.tensor([float(values)], dtype=torch.float32)
+            except:
+                self.logger.warning(f"Failed to parse string dynamic_values: {raw_dynamic_values}, using default value")
+                return torch.tensor([0.0], dtype=torch.float32)
+        
+        if isinstance(raw_dynamic_values, (float, int)):
+            return torch.tensor([float(raw_dynamic_values)], dtype=torch.float32)
+        
+        if isinstance(raw_dynamic_values, (list, tuple)):
+            return torch.tensor(raw_dynamic_values, dtype=torch.float32)
+        
+        self.logger.error(f"Unexpected type for dynamic_values: {type(raw_dynamic_values)}")
+        return torch.tensor([0.0], dtype=torch.float32)
 
     def process_dynamic_indices(self, indices):
         if indices is None:

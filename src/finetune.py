@@ -19,6 +19,7 @@ from EventStream.data.dataset_config import DatasetConfig
 from EventStream.data.dataset_polars import Dataset
 from EventStream.data.pytorch_dataset import PytorchDataset
 from pytorch_lightning.loggers import WandbLogger
+from EventStream.data.vocabulary import VocabularyConfig
 import polars as pl
 import torch
 if torch.cuda.is_available():
@@ -43,6 +44,11 @@ def _main(cfg: dict, use_labs: bool = False):
 
     logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
+
+    logger.info("Loading vocabulary config")
+    with open("data/vocabulary_config.json", "r") as f:
+        vocabulary_config_dict = json.load(f)
+    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
     
     logger.info("Starting main function")
     
@@ -140,8 +146,10 @@ def _main(cfg: dict, use_labs: bool = False):
             held_out_pyd.get_max_index()
         )
 
-        cfg.config.vocab_size = max_index + 1
+        cfg.config.vocab_size = max(max_index + 1, vocabulary_config.total_vocab_size)
+        oov_index = cfg.config.vocab_size  # Set oov_index to vocab_size
         logger.info(f"Set vocab_size to {cfg.config.vocab_size}")
+        logger.info(f"Set oov_index to {oov_index}")
 
         logger.debug(f"Train dataset cached data: {[df.shape for df in train_pyd.cached_data_list] if hasattr(train_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
         logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
@@ -149,7 +157,7 @@ def _main(cfg: dict, use_labs: bool = False):
 
         logger.info("Starting training process")
         try:
-            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd)
+            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, vocabulary_config=vocabulary_config, oov_index=oov_index)
         except Exception as e:
             logger.exception(f"Error during training: {str(e)}")
             logger.error(f"Train dataset length: {len(train_pyd)}")
