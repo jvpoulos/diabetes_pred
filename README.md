@@ -48,7 +48,10 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 	- Defines the specific task --- this case, the task is binary classification on A1cGreaterThan7.
 
 - `finetune.py` [temporal analyses]
-	- Fine-tunes a transformer (from scratch) on the binary classification task. Utilizes the `pretrain_config.yaml` config file.
+	- Fine-tunes a transformer (from scratch) on the binary classification task. Utilizes the `fine_config.yaml` config file.
+
+- `tune_finetune.py` [temporal analyses]
+	- Fine-tuning script called by `tune_temporal.py`.
 
 - `data_analysis.py` [static analyses]
 	- Visualizes one-hot encoded feature sparsity and generates training dataset summary statistics.
@@ -57,7 +60,7 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 	- Hyperparameter optimization for static transfomer models using Ray Tune.
 
 - `tune_temporal.py` [temporal analyses]
-	- Hyperparameter optimization for static transfomer models using Ray Tune.
+	- Hyperparameter optimization for temporal transfomer models using Ray Tune.
 
 - `hp_sweep.py` [temporal analyses]
 	- Perform hyperparameter tuning for the temporal analyses by loading the dataset, creating the model, and training it.
@@ -198,24 +201,12 @@ $ echo $PYTHONPATH
 $ python3 src/event_stream.py --use_labs
 ```
 
-Create the task-specific data splits (data/labs/task_dfs/a1c_greater_than_7_{split}.parquet): 
-
-```bash
-$ python3 src/build_task.py --use_labs
-```
-
-2. (Optional) Create plots and summary statistics:
-
-```bash
-$ python3 src/visualize_describe.py
-```
-
-3. (Optional) Hyperparameter optimization for transfomer model:
+2. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
 $ python3 src/tune_temporal.py --epochs 100
 ```
 
-4. Train the transformer from scratch:
+3. Train the transformer from scratch:
 
 ```bash
 $ python3 src/finetune.py use_labs=true

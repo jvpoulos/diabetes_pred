@@ -5,7 +5,7 @@ from ray.tune.search.optuna import OptunaSearch
 from ray.air.integrations.wandb import WandbLoggerCallback
 import os
 import yaml
-from finetune import main as finetune_main
+from tune_finetune import main as finetune_main
 import argparse
 
 def optimize_hyperparameters(config_path, epochs):
@@ -13,46 +13,60 @@ def optimize_hyperparameters(config_path, epochs):
     with open(config_path, 'r') as f:
         base_config = yaml.safe_load(f)
 
-    # Define the search space based on the YAML file and matching finetune.py
+    # Define the search space based on the YAML file and matching tune_finetune.py
     search_space = {
         "config": {
             "use_layer_norm": tune.choice([True, False]),
             "use_batch_norm": tune.choice([True, False]),
             "do_use_learnable_sinusoidal_ATE": tune.choice([True, False]),
+            "do_use_sinusoidal": tune.choice([True, False]),  # Added
             "do_split_embeddings": tune.choice([True, False]),
-            "categorical_embedding_dim": tune.choice([32, 64, 128]),
-            "numerical_embedding_dim": tune.choice([32, 64, 128]),
-            "categorical_embedding_weight": tune.choice([0.1, 0.3, 0.5]),
+            "categorical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
+            "numerical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
+            "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "numerical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
-            "static_embedding_weight": tune.choice([0.3, 0.4, 0.6]),
+            "static_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "dynamic_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "num_hidden_layers": tune.choice([4, 6, 8]),
-            "seq_window_size": tune.choice([168, 336, 504]),
-            "head_dim": tune.choice([16, 32, 64]),
+            "head_dim": tune.choice([32, 64, 128]),
             "num_attention_heads": tune.choice([4, 8, 12]),
-            "intermediate_dropout": tune.choice([0.1, 0.3]),
-            "attention_dropout": tune.choice([0.1, 0.3]),
-            "input_dropout": tune.choice([0.1, 0.3]),
-            "resid_dropout": tune.choice([0.1, 0.3]),
-            "max_grad_norm": tune.choice([1, 5, 10]),
-            "intermediate_size": tune.choice([256, 512, 1024]),
+            "intermediate_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "attention_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "input_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "resid_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "max_grad_norm": tune.choice([1, 5, 10, 15]),
+            "intermediate_size": tune.choice([128, 256, 512, 1024]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
-            }
+            },
+            "layer_norm_epsilon": tune.sample_from(
+                lambda spec: tune.loguniform(1e-7, 1e-5) if spec.config["config"]["use_layer_norm"] else None
+            ),
         },
         "optimization_config": {
-            "init_lr": tune.loguniform(1e-5, 1e-2),
+            "init_lr": tune.loguniform(1e-5, 1e-1),
             "batch_size": tune.choice([256, 512, 1024, 2048]),
             "use_grad_value_clipping": tune.choice([True, False]),
-            "patience": tune.choice([5, 10]),
+            "patience": tune.choice([1, 5, 10]),
             "gradient_accumulation": tune.choice([1, 2, 4]),
             "use_lr_scheduler": tune.choice([True, False]),
+            "weight_decay": tune.loguniform(1e-5, 1e-2),  # Added
+            "lr_decay_power": tune.uniform(0, 1),  # Added
         },
-        "data_config": base_config["data_config"]
+        "data_config": {
+            **data_config,
+            "min_seq_len": tune.randint(2, 50),  # Added
+            "max_seq_len": tune.randint(100, 750),  # Added
+        }
     }
 
-    # Include data_config in the search space
-    search_space["data_config"] = base_config["data_config"]
+    # Ensure seq_window_size is within bounds of min_seq_len and max_seq_len
+    search_space["config"]["seq_window_size"] = tune.sample_from(
+        lambda spec: tune.randint(
+            spec.config["data_config"]["min_seq_len"],
+            spec.config["data_config"]["max_seq_len"]
+        )
+    )
 
     search_space["wandb_logger_kwargs"] = {
         "project": "diabetes_sweep",
@@ -93,7 +107,7 @@ def optimize_hyperparameters(config_path, epochs):
     analysis = tune.run(
         finetune_main,
         config=search_space,
-        num_samples=30,  # Number of trials
+        num_samples=20,  # Number of trials
         scheduler=ASHAScheduler(
             time_attr='epoch',
             metric="val_auc_epoch",
@@ -109,10 +123,10 @@ def optimize_hyperparameters(config_path, epochs):
         progress_reporter=tune.CLIReporter(
             metric_columns=["val_auc_epoch", "training_iteration"]
         ),
-        name="diabetes_sweep",
+        name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
         resources_per_trial={"cpu": 4, "gpu": 0.33},  # Allocate 3 CPU and 0.33 GPU per trial
-        callbacks=[WandbLoggerCallback(project="diabetes_sweep")]
+        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 
     print("Best hyperparameters found were: ", analysis.best_config)

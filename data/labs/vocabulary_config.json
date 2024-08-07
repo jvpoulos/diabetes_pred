@@ -1,7 +1,7 @@
 {
   "vocab_sizes_by_measurement": {
     "event_type": 3,
-    "dynamic_indices": 3530
+    "dynamic_indices": 3237
   },
   "vocab_offsets_by_measurement": {
     "event_type": 1,
@@ -9,14 +9,19 @@
   },
   "measurements_idxmap": {
     "event_type": 1,
-    "dynamic_indices": 2
+    "dynamic_indices": 2,
+    "dynamic_values": 3
   },
   "measurements_per_generative_mode": {
     "single_label_classification": [
       "event_type"
     ],
     "multi_label_classification": [
-      "dynamic_indices"
+      "dynamic_indices",
+      "dynamic_values"
+    ],
+    "multivariate_regression": [
+      "dynamic_values"
     ]
   },
   "event_types_idxmap": {

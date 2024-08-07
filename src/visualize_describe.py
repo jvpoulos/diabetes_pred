@@ -16,32 +16,15 @@ import argparse
 from EventStream.data.dataset_polars import Dataset
 from EventStream.data.dataset_config import DatasetConfig
 
-def main(use_labs=False):
-
+def main(ESD, use_labs=False):
     if use_labs:
-        DATA_DIR = Path("data/labs")
+        # Create a data_summaries folder if it doesn't exist
+        os.makedirs("data_summaries/labs", exist_ok=True)
+        DATA_SUMMARIES_DIR = Path("data_summaries/labs")
     else:
-        DATA_DIR = Path("data/")
-        
-    E_FILE = DATA_DIR / "E.pkl"
-
-    print("Inspecting E.pkl file...")
-    inspect_pickle_file(E_FILE)
-
-    # Load the Dataset object
-    ESD = Dataset.load(DATA_DIR)
-
-    # Split the dataset into train, validation, and test sets
-    ESD.split(split_fracs=[0.7, 0.2, 0.1])
-
-    # Preprocess the dataset
-    ESD.preprocess()
-
-    # Inspect dataframes
-
-    print(ESD.subjects_df.head())
-    print(ESD.events_df.head())
-    print(ESD.dynamic_measurements_df.head())
+        # Create a data_summaries folder if it doesn't exist
+        os.makedirs("data_summaries", exist_ok=True)
+        DATA_SUMMARIES_DIR = Path("data_summaries")
 
     print("Unique event types in events_df:")
     print(ESD.events_df['event_type'].unique())
@@ -60,11 +43,8 @@ def main(use_labs=False):
         min_sub_to_plot_age_dist=10
     )
 
-    # Create a data_summaries folder if it doesn't exist
-    os.makedirs("data_summaries", exist_ok=True)
-
     # Describe the dataset and save the text output to a file
-    with open("data_summaries/dataset_description.txt", "w") as f:
+    with open(DATA_SUMMARIES_DIR / "dataset_description.txt", "w") as f:
         original_stdout = sys.stdout
         sys.stdout = f
         ESD.describe(do_print_measurement_summaries=True, viz_config=V)
@@ -74,6 +54,7 @@ def main(use_labs=False):
 
     # Print summary statistics for all variables
     print("Summary statistics:")
+    pd.options.display.max_columns = ESD.subjects_df.shape[1]
     print(ESD.subjects_df.describe())
     print(ESD.events_df.describe())
     print(ESD.dynamic_measurements_df.describe())
@@ -113,11 +94,11 @@ def main(use_labs=False):
     # Create and save the plots
     save_plot(subjects_with_events_pd, 'AgeYears', 'percentage', 'Female', 
               '% of Patients with an Event by Age and Gender', 'Percentage', (13, 80),
-              "data_summaries/subjects_with_events_by_age_gender.png")
+              DATA_SUMMARIES_DIR / "subjects_with_events_by_age_gender.png")
 
     save_plot(merged_data, 'AgeYears', 'events_per_subject', 'Female',
               'Events per Subject at Age, by Gender', 'Events per Subject', (13, 80),
-              "data_summaries/events_per_subject_at_age_by_gender.png")
+              DATA_SUMMARIES_DIR / "events_per_subject_at_age_by_gender.png")
 
     # Calculate the total count of subjects with measurements
     # Cast the subject_id column in ESD.dynamic_measurements_df to UInt32
@@ -148,11 +129,11 @@ def main(use_labs=False):
     # Create and save the plots
     save_plot(subjects_with_measurements_pd, 'AgeYears', 'percentage', 'Female', 
               'Share of patients with measurements by age and gender', 'Percentage', (13, 80),
-              "data_summaries/subjects_with_measurements_by_age_gender.png")
+              DATA_SUMMARIES_DIR / "subjects_with_measurements_by_age_gender.png")
 
     save_plot(merged_data, 'AgeYears', 'measurements_per_subject', 'Female',
               'Average number of measurements per patient, grouped by age and gender', 'Avg. measurements per patient', (13, 80),
-              "data_summaries/measurements_per_subject_at_age_by_gender.png")
+              DATA_SUMMARIES_DIR / "measurements_per_subject_at_age_by_gender.png")
 
     # Distribution of measurements per subject:
 
@@ -176,7 +157,7 @@ def main(use_labs=False):
     measurements_per_subject_pd = measurements_per_subject.to_pandas()
 
     # Save the plot using the custom function
-    save_plot_measurements_per_subject(measurements_per_subject_pd, 'num_measurements', 'Female', 'Distribution of measurements per patient', 'Number of Measurements', "data_summaries/measurements_per_subject_distribution.png")
+    save_plot_measurements_per_subject(measurements_per_subject_pd, 'num_measurements', 'Female', 'Distribution of measurements per patient', 'Number of Measurements', DATA_SUMMARIES_DIR / "measurements_per_subject_distribution.png")
 
     print("Shape of subjects_with_measurements:", subjects_with_measurements.shape)
     print("Shape of subjects_with_events:", subjects_with_events.shape)
@@ -225,8 +206,35 @@ def main(use_labs=False):
     )
 
     print("Descriptive statistics for measurements per patient per month:")
+
+    # Calculate summary statistics across all patients
+    measurement_summary = ESD.dynamic_measurements_df.select(
+        pl.col('dynamic_indices').mean().alias('mean_index'),
+        pl.col('dynamic_indices').median().alias('median_index'),
+        pl.col('dynamic_indices').std().alias('std_index'),
+        pl.col('dynamic_indices').min().alias('min_index'),
+        pl.col('dynamic_indices').max().alias('max_index'),
+        pl.col('dynamic_values').mean().alias('mean_value'),
+        pl.col('dynamic_values').median().alias('median_value'),
+        pl.col('dynamic_values').std().alias('std_value'),
+        pl.col('dynamic_values').min().alias('min_value'),
+        pl.col('dynamic_values').max().alias('max_value')
+    )
+
+    print("Summary statistics for measurements across all patients:")
+    print(measurement_summary)
+
+    # Calculate the total number of measurements and unique patients
+    total_measurements = ESD.dynamic_measurements_df.shape[0]
+    unique_patients = ESD.dynamic_measurements_df['subject_id'].n_unique()
+
+    print(f"Total number of measurements: {total_measurements}")
+    print(f"Number of unique patients: {unique_patients}")
+    print(f"Average number of measurements per patient: {total_measurements / unique_patients:.2f}")
+
     print(measurements_per_patient_per_month_stats)
 
+    # summarize measurements across patients instead of at the patient-level:
     # Additional data validation
     print("\nAdditional Data Validation:")
     print("Number of unique subjects in dynamic_measurements_df:", ESD.dynamic_measurements_df['subject_id'].n_unique())

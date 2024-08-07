@@ -43,7 +43,10 @@ labs_columns = {
 'StudyID': 'object',
 'Date': 'object', 
 'Code': 'object', 
-'Result': 'object', 
+'Result': 'float64', 
+'ValType': 'object', 
+'Source': 'object',
+'dtype': 'object'
 }
 
 # Select columns to read in each dataset (temporal analyses)
