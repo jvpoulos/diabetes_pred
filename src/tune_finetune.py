@@ -178,7 +178,6 @@ def train_function(config):
         "batch_size": config["optimization_config"]["batch_size"],
         "use_grad_value_clipping": config["optimization_config"]["use_grad_value_clipping"],
         "patience": config["optimization_config"]["patience"],
-        "gradient_accumulation": config["optimization_config"]["gradient_accumulation"],
         "use_lr_scheduler": config["optimization_config"]["use_lr_scheduler"],
         "lr_scheduler_type": config["optimization_config"]["lr_scheduler_type"],
         "end_lr": config["optimization_config"]["end_lr"],
@@ -341,9 +340,9 @@ def main(cfg):
         "config": {
             "use_layer_norm": tune.choice([True, False]),
             "use_batch_norm": tune.choice([True, False]),
-            "do_use_learnable_sinusoidal_ATE": tune.choice([True, False]),
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
+            "use_gradient_checkpointing": tune.choice([True, False]),
             "categorical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
             "numerical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -368,18 +367,21 @@ def main(cfg):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-5, 1e-1),
-            "batch_size": tune.choice([256, 512, 1024]),
+            "batch_size": tune.choice([512, 1024, 2048, 3072, 4096]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
-            "gradient_accumulation": tune.choice([1, 2, 4]),
             "use_lr_scheduler": tune.choice([True, False]),
-            "weight_decay": tune.loguniform(1e-5, 1e-2),  # Added
-            "lr_decay_power": tune.uniform(0, 1),  # Added
+            "weight_decay": tune.loguniform(1e-5, 1e-2),
+            "lr_decay_power": tune.uniform(0, 1),
+        },
+
+        "trainer_config": {
+            "accumulate_grad_batches": tune.choice([1, 2, 4, 8]),
         },
         "data_config": {
             **data_config,
-            "min_seq_len": tune.randint(2, 50),  # Added
-            "max_seq_len": tune.randint(100, 750),  # Added
+            "min_seq_len": tune.randint(2, 50),
+            "max_seq_len": tune.randint(100, 750),
         }
     }
 
@@ -424,6 +426,9 @@ def main(cfg):
     # Add max_grad_norm to the search space if it's not already there
     if "max_grad_norm" not in search_space["config"]:
         search_space["config"]["max_grad_norm"] = tune.uniform(0.1, 1.0)
+
+    # Set use_cache based on use_gradient_checkpointing
+    config["config"]["use_cache"] = not config["config"]["use_gradient_checkpointing"]
 
     # Get the current working directory
     cwd = os.getcwd()

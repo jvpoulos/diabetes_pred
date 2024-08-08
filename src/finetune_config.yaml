@@ -10,15 +10,15 @@ config:
   output_attentions: true
   output_hidden_states: false
   output_scores: false
-  use_gradient_checkpointing: false
-  use_cache: true # must be false if use_gradient_checkpointing is true
+  use_gradient_checkpointing: true
+  use_cache: false # must be false if use_gradient_checkpointing is true
   use_labs: true
   use_batch_norm: true
   use_layer_norm: true
   use_flash_attention: true  # Set to false if you don't want to use Flash Attention
   problem_type: "single_label_classification"
   num_labels: 2
-  do_use_sinusoidal: true
+  do_use_sinusoidal: true # When True, it uses the standard TemporalPositionEncoding; When False, it uses the LearnableFrequencySinusoidalTemporalPositionEncoding
   do_split_embeddings: true
   categorical_embedding_dim: 32
   numerical_embedding_dim: 128
@@ -50,16 +50,14 @@ optimization_config:
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.001  # This should be equal to end_lr / init_lr
   max_epochs: 100 
-  batch_size: 1024
-  validation_batch_size: 2048
+  batch_size: 3072
+  validation_batch_size: 3072
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: true  # Flag to enable grad_value clipping
   patience: 5
-  gradient_accumulation: 4
-  num_dataloader_workers: 13
   lr_num_warmup_steps: 200  
   max_training_steps: 316500 # steps per epoch = training samples/effective batch size
   use_lr_scheduler: true
@@ -87,7 +85,7 @@ trainer_config:
   detect_anomaly: false
   log_every_n_steps: 100
   strategy: "ddp_find_unused_parameters_true"
-  accumulate_grad_batches: 16
+  accumulate_grad_batches: 4
 
 experiment_dir: "./experiments"
 
