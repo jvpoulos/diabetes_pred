@@ -21,8 +21,8 @@ def optimize_hyperparameters(config_path, epochs):
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
             "use_gradient_checkpointing": tune.choice([True, False]),
-            "categorical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
-            "numerical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
+            "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
+            "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "numerical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "static_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -35,7 +35,7 @@ def optimize_hyperparameters(config_path, epochs):
             "input_dropout": tune.choice([0.0, 0.1, 0.3]),
             "resid_dropout": tune.choice([0.0, 0.1, 0.3]),
             "max_grad_norm": tune.choice([1, 5, 10, 15]),
-            "intermediate_size": tune.choice([128, 256, 512, 1024]),
+            "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
             },
@@ -45,7 +45,10 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-5, 1e-1),
-            "batch_size": tune.choice([512, 1024, 2048, 3072, 4096]),
+            "batch_size": tune.sample_from(
+                lambda spec: tune.choice([512, 1024, 2048]) if spec.config["config"]["use_gradient_checkpointing"] 
+                             else tune.choice([128, 256, 512, 1024])
+            ),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -56,7 +59,7 @@ def optimize_hyperparameters(config_path, epochs):
             "accumulate_grad_batches": tune.choice([1, 2, 4, 8]),
         },
         "data_config": {
-            **data_config,
+            **base_config.get('data_config', {}),
             "min_seq_len": tune.randint(2, 50),  
             "max_seq_len": tune.randint(100, 750),  
         }
@@ -71,7 +74,7 @@ def optimize_hyperparameters(config_path, epochs):
     )
 
     search_space["wandb_logger_kwargs"] = {
-        "project": "diabetes_sweep",
+        "project": "diabetes_sweep_labs",
         "entity": "jvpoulos"  # replace with your actual entity
     }
 
@@ -83,24 +86,26 @@ def optimize_hyperparameters(config_path, epochs):
     # Add end_lr and end_lr_frac_of_init_lr
     search_space["optimization_config"]["end_lr"] = tune.loguniform(1e-7, 1e-4)
     search_space["optimization_config"]["end_lr_frac_of_init_lr"] = tune.sample_from(
-        lambda spec: spec.config.optimization_config.end_lr / spec.config.optimization_config.init_lr
+        lambda spec: spec.config["optimization_config"]["end_lr"] / spec.config["optimization_config"]["init_lr"]
     )
 
     # Add clip_grad_value only if use_grad_value_clipping is True
     search_space["optimization_config"]["clip_grad_value"] = tune.sample_from(
-        lambda spec: tune.choice([0.5, 1.0, 5.0]) if spec.config.optimization_config.use_grad_value_clipping else None
+        lambda spec: tune.choice([0.5, 1.0, 5.0]) if spec.config["optimization_config"]["use_grad_value_clipping"] else None
     )
 
     # Add lr_scheduler_type only if use_lr_scheduler is True
     search_space["optimization_config"]["lr_scheduler_type"] = tune.sample_from(
-        lambda spec: tune.choice(["cosine", "linear", "one_cycle", "reduce_on_plateau"]) if spec.config.optimization_config.use_lr_scheduler else None
+        lambda spec: tune.choice(["cosine", "linear", "one_cycle", "reduce_on_plateau"]) if spec.config["optimization_config"]["use_lr_scheduler"] else None
     )
 
     # Add epochs to the search space
     search_space["optimization_config"]["max_epochs"] = epochs
 
     # Set use_cache based on use_gradient_checkpointing
-    config["config"]["use_cache"] = not config["config"]["use_gradient_checkpointing"]
+    search_space["config"]["use_cache"] = tune.sample_from(
+        lambda spec: not spec.config["config"]["use_gradient_checkpointing"]
+    )
 
     # Get the current working directory
     cwd = os.getcwd()

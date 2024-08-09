@@ -1329,8 +1329,7 @@ def process_events_and_measurements_df(
             cols_select_exprs.append(pl.col(col))
 
     df = (
-        df.filter(pl.col("Date").is_not_null() & pl.col("StudyID").is_not_null())
-        .select(cols_select_exprs)
+        df.select(cols_select_exprs)
         .unique()
         .with_row_count("event_id")
     )
@@ -1361,6 +1360,14 @@ def process_events_and_measurements_df(
     print(f"Output columns for {event_type}: {dynamic_measurements_df.columns}")
     print(f"Sample output for {event_type}:")
     print(dynamic_measurements_df.head())
+
+    # Fill null values with 0 for numeric columns
+    float_columns = [col for col in dynamic_measurements_df.columns 
+                     if dynamic_measurements_df[col].dtype in [pl.Float32, pl.Float64]]
+    
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.col(col).fill_null(0) for col in float_columns
+    ])
 
     return events_df, dynamic_measurements_df
         
@@ -1574,34 +1581,29 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         try:
             row = self.cached_data.row(idx)
-            subject_id = row[self.cached_data.columns.index('subject_id')]
             raw_dynamic_indices = row[self.cached_data.columns.index('dynamic_indices')]
-            dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices)
+            dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices).clone()  # Add .clone() here
             
-            # Ensure dynamic_indices is not empty
             if dynamic_indices.numel() == 0:
-                dynamic_indices = torch.tensor([0], dtype=torch.long)  # Use 0 for padding
+                dynamic_indices = torch.tensor([0], dtype=torch.long)
             
             item = {
-                'subject_id': subject_id,
                 'dynamic_indices': dynamic_indices,
-                'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32) if self.has_task else None,
+                'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32).clone() if self.has_task else None,
             }
             
-            # Handle dynamic_values
             if 'dynamic_values' in self.cached_data.columns:
                 raw_dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
-                item['dynamic_values'] = self.process_dynamic_values(raw_dynamic_values)
+                item['dynamic_values'] = self.process_dynamic_values(raw_dynamic_values).clone()  # Add .clone() here
             else:
-                item['dynamic_values'] = torch.tensor([0.0], dtype=torch.float32)  # Default value
+                item['dynamic_values'] = torch.tensor([0.0], dtype=torch.float32)
             
-            # Add static features
             static_features = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
             for feature in static_features:
-                item[feature] = self.process_static_feature(row, feature)
+                item[feature] = self.process_static_feature(row, feature).clone()  # Add .clone() here
             
             if 'A1cGreaterThan7' in self.cached_data.columns:
-                item['A1cGreaterThan7'] = self.process_static_feature(row, 'A1cGreaterThan7', dtype=torch.float32)
+                item['A1cGreaterThan7'] = self.process_static_feature(row, 'A1cGreaterThan7', dtype=torch.float32).clone()  # Add .clone() here
             else:
                 item['A1cGreaterThan7'] = torch.tensor(0.0, dtype=torch.float32)
             

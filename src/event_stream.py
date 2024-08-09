@@ -245,10 +245,16 @@ def main(use_labs=False, debug=False):
     events_df = events_df.drop('original_event_id')
     dynamic_measurements_df = dynamic_measurements_df.drop('original_event_id')
 
-    # Convert dynamic_values to float, replacing non-numeric values with null
+    # Convert dynamic_values to float, replacing non-numeric values with 0
     dynamic_measurements_df = dynamic_measurements_df.with_columns(
-        pl.col('dynamic_values').cast(pl.Float64, strict=False)
+        pl.col('dynamic_values').cast(pl.Float64, strict=False).fill_null(0)
     )
+
+    # Fill null with 0 for Result column as well
+    dynamic_measurements_df = dynamic_measurements_df.with_columns([
+        pl.col('Result').fill_null(0),
+        pl.col('dynamic_values').fill_null(0)
+    ])
 
     print("Data type of dynamic_values after conversion:", dynamic_measurements_df['dynamic_values'].dtype)
 

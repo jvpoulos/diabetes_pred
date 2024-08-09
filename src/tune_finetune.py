@@ -24,11 +24,39 @@ from EventStream.transformer.lightning_modules.fine_tuning import train
 from EventStream.data.vocabulary import VocabularyConfig
 from data_utils import CustomPytorchDataset
 
+import tempfile
+import atexit
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def resolve_tune_value(value):
+    if isinstance(value, tune.search.sample.Categorical):
+        return value.categories[0]  # Use the first category as a default
+    elif isinstance(value, tune.search.sample.Float):
+        return value.lower
+    elif isinstance(value, tune.search.sample.Integer):
+        return value.lower
+    elif isinstance(value, bool):
+        return value
+    elif callable(value):  # Handle sample_from functions
+        try:
+            return value(None)  # Pass None as a dummy spec
+        except:
+            return None  # Return None if the function can't be evaluated
+    else:
+        return value
+
 def get_data_dir(config):
-    base_dir = Path(os.path.expanduser("~/diabetes_pred/data"))
-    if config.get("config", {}).get("use_labs", False):
-        return base_dir / "labs"
-    return base_dir
+    base_dir = Path("/home/jvp/diabetes_pred/data")
+    if config.get("config", {}).get("use_labs", True):
+        data_dir = base_dir / "labs"
+    else:
+        data_dir = base_dir
+    
+    logger.info(f"Data directory set to: {data_dir}")
+    return data_dir
 
 class Config:
     def __init__(self, **kwargs):
@@ -47,80 +75,137 @@ class Config:
     def __getitem__(self, key):
         return getattr(self, key)
 
+    @property
+    def oov_index(self):
+        return getattr(self.vocabulary_config, 'oov_index', self.vocab_size - 1)
+
+    @property
+    def use_labs(self):
+        return getattr(self.config, 'use_labs', True)
+
+    def update_data_config(self):
+        pass
+
+    def get_vocabulary_config_path(self):
+        return getattr(self, 'vocabulary_config_path', None)
+
 def create_datasets(cfg, device):
-    subjects_df = pl.read_parquet(DATA_DIR / "subjects_df.parquet")
-    train_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_train.parquet")
-    val_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_val.parquet")
-    test_df = pl.read_parquet(DATA_DIR / "task_dfs/a1c_greater_than_7_test.parquet")
-    df_dia = pl.read_parquet(DATA_DIR / "df_dia.parquet")
-    df_prc = pl.read_parquet(DATA_DIR / "df_prc.parquet")
+    data_config = cfg if isinstance(cfg, dict) else cfg.data_config
+    dl_reps_dir = data_config.get('dl_reps_dir')
+    
+    if not dl_reps_dir:
+        raise ValueError("dl_reps_dir not specified in the config")
+    
+    dl_reps_dir = Path(dl_reps_dir)
+    
+    logger.info(f"Using dl_reps_dir: {dl_reps_dir}")
+    
+    if not dl_reps_dir.exists():
+        raise FileNotFoundError(f"dl_reps_dir not found: {dl_reps_dir}")
+        
+        # Check if the directory exists relative to the current working directory
+        relative_path = Path.cwd() / dl_reps_dir.name
+        if relative_path.exists():
+            logger.info(f"Directory found at: {relative_path}")
+            logger.info("Consider using an absolute path or updating the working directory.")
+        else:
+            logger.info("Directory not found relative to the current working directory.")
+        
+        raise FileNotFoundError(f"dl_reps_dir not found: {dl_reps_dir}")
+    
+    # List contents of dl_reps_dir
+    logger.info(f"Contents of dl_reps_dir: {list(dl_reps_dir.iterdir())}")
+    
+    logger.info(f"DATA_DIR (absolute): {DATA_DIR.resolve()}")
+    
+    if not DATA_DIR.exists():
+        raise FileNotFoundError(f"DATA_DIR not found: {DATA_DIR}")
+    
+    subjects_df = pl.read_parquet(os.path.join(DATA_DIR, "subjects_df.parquet"))
+    train_df = pl.read_parquet(os.path.join(DATA_DIR, "task_dfs/a1c_greater_than_7_train.parquet"))
+    val_df = pl.read_parquet(os.path.join(DATA_DIR, "task_dfs/a1c_greater_than_7_val.parquet"))
+    test_df = pl.read_parquet(os.path.join(DATA_DIR, "task_dfs/a1c_greater_than_7_test.parquet"))
+    df_dia = pl.read_parquet(os.path.join(DATA_DIR, "df_dia.parquet"))
+    df_prc = pl.read_parquet(os.path.join(DATA_DIR, "df_prc.parquet"))
     
     # Load df_labs if it exists
     df_labs = None
-    if (DATA_DIR / "df_labs.parquet").exists():
-        df_labs = pl.read_parquet(DATA_DIR / "df_labs.parquet")
+    df_labs_path = os.path.join(DATA_DIR, "df_labs.parquet")
+    if os.path.exists(df_labs_path):
+        df_labs = pl.read_parquet(df_labs_path)
 
-    train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir,
+    train_pyd = CustomPytorchDataset(data_config, split="train", dl_reps_dir=dl_reps_dir,
                                      subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
                                      task_df=train_df, device=device)
-    tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir,
+    tuning_pyd = CustomPytorchDataset(data_config, split="tuning", dl_reps_dir=dl_reps_dir,
                                       subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
                                       task_df=val_df, device=device)
-    held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir,
+    held_out_pyd = CustomPytorchDataset(data_config, split="held_out", dl_reps_dir=dl_reps_dir,
                                         subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
                                         task_df=test_df, device=device)
     return train_pyd, tuning_pyd, held_out_pyd
 
 def train_function(config):
-    global DATA_DIR  # We'll modify the global DATA_DIR
-    
-    # Setup wandb
-    wandb_run = setup_wandb(config=config, project="diabetes_sweep")
+    global DATA_DIR
+
+    # Set up wandb
+    wandb_run = setup_wandb(config=config, project="diabetes_sweep_labs")
     
     # Set DATA_DIR based on the config
-    DATA_DIR = get_data_dir(config)
+    DATA_DIR = Path(get_data_dir(config)).resolve()
+    logger.info(f"DATA_DIR set to (absolute): {DATA_DIR}")
+
+    # Ensure data_config is in the config
+    if 'data_config' not in config:
+        config['data_config'] = {}
+
+    # Ensure dl_reps_dir is set in data_config
+    if 'dl_reps_dir' not in config['data_config']:
+        config['data_config']['dl_reps_dir'] = "/home/jvp/diabetes_pred/data/labs/DL_reps"
     
-    # Update VOCABULARY_CONFIG_PATH
-    global VOCABULARY_CONFIG_PATH
-    VOCABULARY_CONFIG_PATH = DATA_DIR / "vocabulary_config.json"
+    logger.info(f"dl_reps_dir set to: {config['data_config']['dl_reps_dir']}")
+
+    logger.info(f"Current working directory: {Path.cwd()}")
     
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Create datasets
-    train_pyd, tuning_pyd, held_out_pyd = create_datasets(config["data_config"], device)
-
-    # Load vocabulary config
-    with open(VOCABULARY_CONFIG_PATH, 'r') as f:
-        vocabulary_config_dict = json.load(f)
-    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
-
-    # Calculate total vocabulary size from VocabularyConfig
-    total_vocab_size = vocabulary_config.total_vocab_size
+    try:
+        train_pyd, tuning_pyd, held_out_pyd = create_datasets(config['data_config'], device)
+    except FileNotFoundError as e:
+        logger.error(f"Error creating datasets: {str(e)}")
+        logger.info("Config used:")
+        logger.info(json.dumps(config, indent=2))
+        raise
 
     # Get maximum index from datasets
     max_index_train = max(train_pyd.get_max_index(), tuning_pyd.get_max_index(), held_out_pyd.get_max_index())
 
-    # Set vocab_size to be the maximum of total_vocab_size and max_index_train + 1
-    vocab_size = max(total_vocab_size, max_index_train + 1)
+    vocab_size = max_index_train + 1
 
-    print(f"Total vocabulary size from config: {total_vocab_size}")
-    print(f"Maximum index in datasets: {max_index_train}")
-    print(f"Final vocab_size: {vocab_size}")
-
-    # Update config with the calculated vocab_size
-    config["config"]["vocab_size"] = vocab_size
+    logger.info(f"Maximum index in datasets: {max_index_train}")
+    logger.info(f"Final vocab_size: {vocab_size}")
 
     # Ensure oov_index is set correctly
     oov_index = vocab_size - 1
-    print(f"OOV index: {oov_index}")
+    logger.info(f"OOV index: {oov_index}")
 
-    # Update the vocabulary_config with the new total_vocab_size and oov_index
-    vocabulary_config.total_vocab_size = vocab_size
-    vocabulary_config.oov_index = oov_index
+    # Create a minimal VocabularyConfig
+    vocabulary_config = VocabularyConfig(
+        vocab_sizes_by_measurement={'event_type': vocab_size},
+        vocab_offsets_by_measurement={'event_type': 0},
+        measurements_idxmap={'event_type': 0},
+        measurements_per_generative_mode={'single_label_classification': ['event_type']},
+        event_types_idxmap={'DIAGNOSIS': 0, 'LAB': 1, 'PROCEDURE': 2}
+    )
 
-    vocab_size = max(vocab_size, max_index_train + 1)
-    print(f"Final vocab_size after adjustment: {vocab_size}")
+    # Use the absolute path
+    vocab_config_path = "/home/jvp/diabetes_pred/data/labs/vocabulary_config.json"
+    logger.info(f"Using vocabulary config at: {vocab_config_path}")
+
+    # Update config with the vocabulary config path
+    config["vocabulary_config_path"] = vocab_config_path
 
     # Update config with the hyperparameters from Ray Tune
     config["config"].update(config.get("config", {}))
@@ -132,6 +217,13 @@ def train_function(config):
     # Update config with the hyperparameters from Ray Tune
     config["config"].update(config.get("config", {}))
     config["optimization_config"].update(config.get("optimization_config", {}))
+
+    if config["config"]["use_layer_norm"]:
+        if "layer_norm_epsilon" not in config["config"] or config["config"]["layer_norm_epsilon"] is None:
+            config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-7, 1e-5)
+    else:
+        config["config"]["layer_norm_epsilon"] = None
+
     
     # Handle embedding dimensions based on do_split_embeddings
     if not config["config"].get("do_split_embeddings", False):
@@ -155,8 +247,6 @@ def train_function(config):
     # Ensure max_training_steps and weight_decay are in optimization_config
     if "validation_batch_size" not in config["optimization_config"]:
         config["optimization_config"]["validation_batch_size"] = config["optimization_config"]["batch_size"]
-    if "max_training_steps" not in config["optimization_config"]:
-        config["optimization_config"]["max_training_steps"] = config["optimization_config"].get("max_epochs", 100) * len(train_pyd) // config["optimization_config"].get("batch_size", 32)
     if "weight_decay" not in config["optimization_config"]:
         config["optimization_config"]["weight_decay"] = config["optimization_config"].get("weight_decay", 0.01)
     
@@ -166,11 +256,42 @@ def train_function(config):
     config["optimization_config"]["end_lr_frac_of_init_lr"] = min(max(end_lr / init_lr, 0), 1)
 
     # Resolve use_lr_scheduler and lr_scheduler_type
-    use_lr_scheduler = resolve_tune_value(config["optimization_config"].get("use_lr_scheduler", False))
-    lr_scheduler_type = resolve_tune_value(config["optimization_config"].get("lr_scheduler_type", None)) if use_lr_scheduler else None
+    use_lr_scheduler = config["optimization_config"].get("use_lr_scheduler", False)
+    if isinstance(use_lr_scheduler, tune.search.sample.Categorical):
+        use_lr_scheduler = use_lr_scheduler.categories[0]
+    lr_scheduler_type = None
+    if use_lr_scheduler:
+        lr_scheduler_type = config["optimization_config"].get("lr_scheduler_type")
+        if isinstance(lr_scheduler_type, tune.search.sample.Categorical):
+            lr_scheduler_type = lr_scheduler_type.categories[0]
+
+    # Resolve the values before calculation
+    max_epochs = resolve_tune_value(config["optimization_config"].get("max_epochs", 100))
+    batch_size = resolve_tune_value(config["optimization_config"].get("batch_size", 32))
+
+    # Now calculate max_training_steps with resolved values
+    max_training_steps = int(max_epochs * len(train_pyd) // batch_size)
+
+    # Update the config with the calculated value
+    config["optimization_config"]["max_training_steps"] = max_training_steps
 
     config["optimization_config"]["use_lr_scheduler"] = use_lr_scheduler
     config["optimization_config"]["lr_scheduler_type"] = lr_scheduler_type
+
+    # Ensure data_config is in the config
+    if 'data_config' not in config:
+        config['data_config'] = {}
+    
+    # Ensure dl_reps_dir is in data_config
+    if 'dl_reps_dir' not in config['data_config']:
+        config['data_config']['dl_reps_dir'] = str(DATA_DIR / "DL_reps")
+
+    # Resolve Ray Tune search space objects in config
+    for key in config["config"]:
+        config["config"][key] = resolve_tune_value(config["config"][key])
+
+    for key in config["optimization_config"]:
+        config["optimization_config"][key] = resolve_tune_value(config["optimization_config"][key])
 
     # Log optimization configs
     wandb_run.log({
@@ -191,17 +312,8 @@ def train_function(config):
         "min_seq_len": config["data_config"]["min_seq_len"],
         "max_seq_len": config["data_config"]["max_seq_len"],
         "seq_window_size": config["config"]["seq_window_size"],
+        "accumulate_grad_batches": config["trainer_config"]["accumulate_grad_batches"],
     })
-
-    def resolve_tune_value(value):
-        if isinstance(value, sample.Categorical):
-            return value.categories[0]
-        elif isinstance(value, sample.Float):
-            return value.lower
-        elif isinstance(value, sample.Integer):
-            return value.lower
-        else:
-            return value
 
     # Resolve Ray Tune search space objects in config
     for key in config["config"]:
@@ -217,11 +329,18 @@ def train_function(config):
     # Remove vocab_size from config["config"] if it exists
     config["config"].pop("vocab_size", None)
 
+    # Remove max_grad_norm from config["config"] if it exists
+    max_grad_norm = config["config"].pop("max_grad_norm", None)
+
     # Create StructuredTransformerConfig
+    transformer_config_args = {k: v for k, v in config["config"].items() if k != "layer_norm_epsilon"}
+    if config["config"]["use_layer_norm"]:
+        transformer_config_args["layer_norm_epsilon"] = config["config"]["layer_norm_epsilon"]
+
     transformer_config = StructuredTransformerConfig(
         vocab_size=vocab_size,
-        max_grad_norm=config["config"]["max_grad_norm"],
-        **config["config"]
+        max_grad_norm=max_grad_norm if max_grad_norm is not None else config["config"].get("max_grad_norm", 1.0),
+        **transformer_config_args
     )
     print(f"Transformer config vocab_size: {transformer_config.vocab_size}")
 
@@ -232,7 +351,7 @@ def train_function(config):
 
     print(f"Final vocab_size before creating train_config: {vocab_size}")
 
-    # Create a Config object to mimic the expected cfg structure
+    # Create a Config object to mimic the expected config structure
     train_config = Config(
         config=transformer_config,
         optimization_config=Config(**config["optimization_config"]),
@@ -243,42 +362,84 @@ def train_function(config):
         vocabulary_config=vocabulary_config,
         save_dir=Path(config.get("save_dir", "./experiments/finetune")),
         trainer_config=config.get("trainer_config", {}),
-        vocab_size=vocab_size
+        vocab_size=vocab_size,
+        update_data_config=lambda: None,
+        do_debug_mode=False,
+        vocabulary_config_path=config["vocabulary_config_path"],
     )
+
+    # After creating train_config
+    logger.info(f"Vocabulary config path: {train_config.vocabulary_config_path}")
+    if not os.path.exists(train_config.vocabulary_config_path):
+        raise FileNotFoundError(f"Vocabulary config file not found at: {train_config.vocabulary_config_path}")
 
     # Ensure vocab_size is set in the config attribute of train_config
     train_config.config.vocab_size = vocab_size
+    train_config.vocabulary_config_path = os.path.abspath(vocab_config_path)
+    logger.info(f"Setting vocabulary_config_path in train_config: {train_config.vocabulary_config_path}")
     
-    print(f"train_config.config.vocab_size: {train_config.config.vocab_size}")
-    print(f"train_config.vocab_size: {train_config.vocab_size}")
-    
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(DATA_DIR / 'vocabulary_config.json'):
-        os.symlink(str(VOCABULARY_CONFIG_PATH), DATA_DIR / 'vocabulary_config.json')
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Contents of temp directory: {os.listdir(os.path.dirname(train_config.vocabulary_config_path))}")
+
+    logger.info(f"train_config.config.vocab_size: {train_config.config.vocab_size}")
+    logger.info(f"train_config.vocab_size: {train_config.vocab_size}")
 
     # Ensure trainer_config is a dictionary
     if isinstance(train_config.trainer_config, Config):
         train_config.trainer_config = train_config.trainer_config.to_dict()
 
-    # Run the training process
-    print(f"Final check - train_config.config.vocab_size: {train_config.config.vocab_size}")
-    print(f"Final check - train_config.vocab_size: {train_config.vocab_size}")
-    print(f"Final check - transformer_config.vocab_size: {transformer_config.vocab_size}")
-    _, tuning_metrics, _ = train(train_config, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_run)
-    
-    # Report the results back to Ray Tune
-    if tuning_metrics is not None and 'auroc' in tuning_metrics:
-        ray.train.report({"val_auc_epoch": tuning_metrics['auroc']})
-    else:
-        print("Warning: tuning_metrics is None or does not contain 'auroc'")
-        ray.train.report({"val_auc_epoch": 0.0})  # Report a default value
+    try:
+        # Run the training process
+        logger.info(f"Final check - train_config.config.vocab_size: {train_config.config.vocab_size}")
+        logger.info(f"Final check - train_config.vocab_size: {train_config.vocab_size}")
+        logger.info(f"Final check - transformer_config.vocab_size: {transformer_config.vocab_size}")
+        
+        logger.info(f"train_config attributes: {vars(train_config)}")
+        logger.info(f"vocabulary_config: {vocabulary_config}")
+        logger.info(f"oov_index: {oov_index}")
 
-    # Make sure to finish the wandb run
-    wandb_run.finish()
+        logger.info(f"Checking vocabulary config file at: {train_config.vocabulary_config_path}")
+        if not os.path.exists(train_config.vocabulary_config_path):
+            raise FileNotFoundError(f"Vocabulary config file not found at: {train_config.vocabulary_config_path}")
+
+        logger.info(f"Contents of directory: {os.listdir(os.path.dirname(train_config.vocabulary_config_path))}")
+
+        original_dir = os.getcwd()
+        os.chdir("/home/jvp/diabetes_pred/data/labs")
+        try:
+            _, tuning_metrics, _ = train(
+                train_config, 
+                train_pyd, 
+                tuning_pyd, 
+                held_out_pyd, 
+                wandb_logger=wandb_run,
+                vocabulary_config=vocabulary_config,
+                oov_index=oov_index
+            )
+        finally:
+            os.chdir(original_dir)
+
+        # Report the results back to Ray Tune
+        if tuning_metrics is not None and 'auroc' in tuning_metrics:
+            ray.train.report({"val_auc_epoch": tuning_metrics['auroc']})
+        else:
+            print("Warning: tuning_metrics is None or does not contain 'auroc'")
+            ray.train.report({"val_auc_epoch": 0.0})  # Report a default value
+    except Exception as e:
+        print(f"An error occurred during training: {str(e)}")
+        print("Traceback:")
+        import traceback
+        traceback.print_exc()
+        # Report a failure to Ray Tune
+        ray.train.report({"val_auc_epoch": float('-inf')})
+    finally:
+      
+        # Make sure to finish the wandb run
+        wandb_run.finish()
 
 @hydra.main(config_path=".", config_name="finetune_config", version_base=None)
 def main(cfg):
-    global DATA_DIR  # We'll modify the global DATA_DIR
+    global DATA_DIR
 
     # Initialize Ray, ignoring reinit errors
     ray.init(ignore_reinit_error=True)
@@ -291,19 +452,20 @@ def main(cfg):
         config = OmegaConf.to_container(cfg, resolve=True)
 
     # Set DATA_DIR based on the config
-    DATA_DIR = get_data_dir(config)
+    DATA_DIR = Path(get_data_dir(config))
 
-    # Update VOCABULARY_CONFIG_PATH
-    global VOCABULARY_CONFIG_PATH
-    VOCABULARY_CONFIG_PATH = DATA_DIR / "vocabulary_config.json"
+    # Ensure 'data_config' key exists
+    if 'data_config' not in config:
+        config['data_config'] = {}
 
-    # Ensure 'config' key exists
-    if 'config' not in config:
-        config['config'] = {}
+    # Set dl_reps_dir to the absolute path
+    config['data_config']['dl_reps_dir'] = "/home/jvp/diabetes_pred/data/labs/DL_reps"
+
+    logger.info(f"dl_reps_dir set to: {config['data_config']['dl_reps_dir']}")
 
     # Extract necessary configurations
     wandb_config = config
-    wandb_project = config.get("wandb_logger_kwargs", {}).get("project", "diabetes_sweep")
+    wandb_project = config.get("wandb_logger_kwargs", {}).get("project", "diabetes_sweep_labs")
     wandb_entity = config.get("wandb_logger_kwargs", {}).get("entity", None)
     data_config = config.get("data_config", {})
     optimization_config = config.get("optimization_config", {})
@@ -322,20 +484,26 @@ def main(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create datasets
-    train_pyd, tuning_pyd, held_out_pyd = create_datasets(data_config, device)
+    train_pyd, tuning_pyd, held_out_pyd = create_datasets(config['data_config'], device)  # Pass data_config directly
 
     # Set up WandB logger
     wandb_logger = WandbLogger(**wandb_logger_kwargs)
 
-    # Ensure max_training_steps and weight_decay are in optimization_config
+    # Ensure these are in optimization_config
     if "validation_batch_size" not in optimization_config:
         optimization_config["validation_batch_size"] = optimization_config["batch_size"]
-    if "max_training_steps" not in optimization_config:
-        optimization_config["max_training_steps"] = optimization_config.get("max_epochs", 100) * len(train_pyd) // optimization_config.get("batch_size", 32)
     if "weight_decay" not in optimization_config:
         optimization_config["weight_decay"] = optimization_config.get("weight_decay", 0.01)
 
-    # Define the search space based on the YAML file and matching finetune.py
+    def get_seq_window_size(spec):
+        min_seq_len = resolve_tune_value(spec.config["data_config"]["min_seq_len"])
+        max_seq_len = resolve_tune_value(spec.config["data_config"]["max_seq_len"])
+        return np.random.randint(min_seq_len, max_seq_len + 1)
+
+    def get_batch_size(spec):
+        use_gradient_checkpointing = resolve_tune_value(spec.config["config"]["use_gradient_checkpointing"])
+        return np.random.choice([512, 1024, 2048] if use_gradient_checkpointing else [128, 256, 512, 1024])
+
     search_space = {
         "config": {
             "use_layer_norm": tune.choice([True, False]),
@@ -343,8 +511,8 @@ def main(cfg):
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
             "use_gradient_checkpointing": tune.choice([True, False]),
-            "categorical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
-            "numerical_embedding_dim": tune.choice([16, 32, 64, 128, 256]),
+            "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
+            "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "numerical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "static_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -357,24 +525,27 @@ def main(cfg):
             "input_dropout": tune.choice([0.0, 0.1, 0.3]),
             "resid_dropout": tune.choice([0.0, 0.1, 0.3]),
             "max_grad_norm": tune.choice([1, 5, 10, 15]),
-            "intermediate_size": tune.choice([128, 256, 512, 1024]),
+            "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
             },
             "layer_norm_epsilon": tune.sample_from(
-                lambda spec: tune.loguniform(1e-7, 1e-5) if spec.config["config"]["use_layer_norm"] else None
+                lambda spec: np.random.uniform(1e-7, 1e-5) if resolve_tune_value(spec.config["config"]["use_layer_norm"]) else None
             ),
+            "seq_window_size": tune.sample_from(get_seq_window_size),
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-5, 1e-1),
-            "batch_size": tune.choice([512, 1024, 2048, 3072, 4096]),
+            "batch_size": tune.sample_from(get_batch_size),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
+            "lr_scheduler_type": tune.choice([None, "cosine", "linear", "one_cycle", "reduce_on_plateau"]),
             "weight_decay": tune.loguniform(1e-5, 1e-2),
             "lr_decay_power": tune.uniform(0, 1),
+            "end_lr": tune.loguniform(1e-7, 1e-4),
+            "max_epochs": tune.choice([50, 100, 150]),
         },
-
         "trainer_config": {
             "accumulate_grad_batches": tune.choice([1, 2, 4, 8]),
         },
@@ -385,40 +556,24 @@ def main(cfg):
         }
     }
 
-    # Ensure seq_window_size is within bounds of min_seq_len and max_seq_len
-    search_space["config"]["seq_window_size"] = tune.sample_from(
-        lambda spec: tune.randint(
-            spec.config["data_config"]["min_seq_len"],
-            spec.config["data_config"]["max_seq_len"]
-        )
-    )
-
-    search_space["wandb_logger_kwargs"] = {
-        "project": "diabetes_sweep",
-        "entity": "jvpoulos"  # replace with your actual entity
-    }
-
-    # Add hidden_size based on head_dim and num_attention_heads
     search_space["config"]["hidden_size"] = tune.sample_from(
-        lambda spec: spec.config.config.head_dim * spec.config.config.num_attention_heads
+        lambda spec: resolve_tune_value(spec.config["config"]["head_dim"]) * resolve_tune_value(spec.config["config"]["num_attention_heads"])
     )
 
-    # Add end_lr and end_lr_frac_of_init_lr
-    search_space["optimization_config"]["end_lr"] = tune.loguniform(1e-7, 1e-4)
     search_space["optimization_config"]["end_lr_frac_of_init_lr"] = tune.sample_from(
-        lambda spec: spec.config.optimization_config.end_lr / spec.config.optimization_config.init_lr
+        lambda spec: resolve_tune_value(spec.config["optimization_config"]["end_lr"]) / resolve_tune_value(spec.config["optimization_config"]["init_lr"])
     )
 
-    # Add clip_grad_value only if use_grad_value_clipping is True
     search_space["optimization_config"]["clip_grad_value"] = tune.sample_from(
-        lambda spec: tune.choice([0.5, 1.0, 5.0]) if spec.config.optimization_config.use_grad_value_clipping else None
+        lambda spec: np.random.choice([0.5, 1.0, 5.0]) if resolve_tune_value(spec.config["optimization_config"]["use_grad_value_clipping"]) else None
     )
 
-    search_space["optimization_config"]["use_lr_scheduler"] = tune.choice([True, False])
-    search_space["optimization_config"]["lr_scheduler_type"] = tune.sample_from(
-        lambda spec: tune.choice(["cosine", "linear", "one_cycle", "reduce_on_plateau"]) 
-        if spec.config["optimization_config"]["use_lr_scheduler"] else None
-    )
+    def get_max_training_steps(spec):
+        max_epochs = resolve_tune_value(spec.config["optimization_config"]["max_epochs"])
+        batch_size = resolve_tune_value(spec.config["optimization_config"]["batch_size"])
+        return int(max_epochs * len(train_pyd) // batch_size)
+
+    search_space["optimization_config"]["max_training_steps"] = tune.sample_from(get_max_training_steps)
 
     # Add epochs to the search space
     search_space["optimization_config"]["max_epochs"] = config.get("max_epochs", 100)
@@ -430,6 +585,12 @@ def main(cfg):
     # Set use_cache based on use_gradient_checkpointing
     config["config"]["use_cache"] = not config["config"]["use_gradient_checkpointing"]
 
+    search_space["optimization_config"]["max_training_steps"] = tune.sample_from(
+        lambda spec: int(
+            resolve_tune_value(spec.config["optimization_config"].get("max_epochs", 100)) * 
+            len(train_pyd) // resolve_tune_value(spec.config["optimization_config"].get("batch_size", 32))
+        )
+    )
     # Get the current working directory
     cwd = os.getcwd()
     
@@ -439,14 +600,14 @@ def main(cfg):
     # Configure the Ray Tune run
     analysis = tune.run(
         train_function,
-        config=search_space,
+        config=config,  # Pass the entire config
         num_samples=20,  # Number of trials
         scheduler=ASHAScheduler(metric="val_auc_epoch", mode="max"),
         progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
-        name="diabetes_sweep",
+        name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
         resources_per_trial={"cpu": 4, "gpu": 0.33},  # Allocate 3 CPU and 0.33 GPU per trial
-        callbacks=[WandbLoggerCallback(project="diabetes_sweep")]
+        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 
     # Print the best config

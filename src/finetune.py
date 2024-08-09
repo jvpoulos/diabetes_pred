@@ -146,7 +146,7 @@ def _main(cfg: dict, use_labs: bool = False):
             held_out_pyd.get_max_index()
         )
 
-        cfg.config.vocab_size = max(max_index + 1, vocabulary_config.total_vocab_size)
+        cfg.config.vocab_size = max_index + 1
         oov_index = cfg.config.vocab_size  # Set oov_index to vocab_size
         logger.info(f"Set vocab_size to {cfg.config.vocab_size}")
         logger.info(f"Set oov_index to {oov_index}")
