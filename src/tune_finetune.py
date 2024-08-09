@@ -14,6 +14,7 @@ import wandb
 from pytorch_lightning.loggers import WandbLogger
 import ray
 import json
+import numpy as np
 from ray import train, tune
 from ray.air.integrations.wandb import WandbLoggerCallback, setup_wandb
 from ray.tune.schedulers import ASHAScheduler
@@ -61,6 +62,8 @@ def get_data_dir(config):
 class Config:
     def __init__(self, **kwargs):
         for key, value in kwargs.items():
+            if key == 'batch_size':
+                value = int(value)
             if isinstance(value, dict):
                 setattr(self, key, Config(**value))
             else:
@@ -147,6 +150,15 @@ def create_datasets(cfg, device):
 
 def train_function(config):
     global DATA_DIR
+
+    # Check for wandb_logger_kwargs and provide a default if not present
+    wandb_logger_kwargs = config.get("wandb_logger_kwargs", {})
+    if not wandb_logger_kwargs:
+        wandb_logger_kwargs = {
+            "project": "diabetes_sweep_labs",
+            "entity": "default_entity",  # replace with your wandb entity
+            "name": f"trial_{tune.get_trial_id()}",
+        }
 
     # Set up wandb
     wandb_run = setup_wandb(config=config, project="diabetes_sweep_labs")
@@ -246,7 +258,7 @@ def train_function(config):
 
     # Ensure max_training_steps and weight_decay are in optimization_config
     if "validation_batch_size" not in config["optimization_config"]:
-        config["optimization_config"]["validation_batch_size"] = config["optimization_config"]["batch_size"]
+        config["optimization_config"]["validation_batch_size"] = int(config["optimization_config"]["batch_size"])
     if "weight_decay" not in config["optimization_config"]:
         config["optimization_config"]["weight_decay"] = config["optimization_config"].get("weight_decay", 0.01)
     
@@ -502,7 +514,7 @@ def main(cfg):
 
     def get_batch_size(spec):
         use_gradient_checkpointing = resolve_tune_value(spec.config["config"]["use_gradient_checkpointing"])
-        return np.random.choice([512, 1024, 2048] if use_gradient_checkpointing else [128, 256, 512, 1024])
+        return int(np.random.choice([512, 1024, 2048] if use_gradient_checkpointing else [128, 256, 512, 1024]))
 
     search_space = {
         "config": {
@@ -556,6 +568,11 @@ def main(cfg):
         }
     }
 
+    search_space["wandb_logger_kwargs"] = {
+        "project": "diabetes_sweep_labs",
+        "entity": "jvpoulos"  # replace with your actual entity
+    }
+
     search_space["config"]["hidden_size"] = tune.sample_from(
         lambda spec: resolve_tune_value(spec.config["config"]["head_dim"]) * resolve_tune_value(spec.config["config"]["num_attention_heads"])
     )
@@ -600,8 +617,8 @@ def main(cfg):
     # Configure the Ray Tune run
     analysis = tune.run(
         train_function,
-        config=config,  # Pass the entire config
-        num_samples=20,  # Number of trials
+        config=search_space,  
+        num_samples=30,  # Number of trials
         scheduler=ASHAScheduler(metric="val_auc_epoch", mode="max"),
         progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
         name="diabetes_sweep_labs",
