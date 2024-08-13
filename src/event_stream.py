@@ -26,11 +26,13 @@ from dask.diagnostics import ProgressBar
 from dask.distributed import Client, as_completed
 from typing import Any
 import polars as pl
+print(f"Polars version: {pl.__version__}")
 from polars.datatypes import DataType
 import pickle
 from pathlib import Path
 import polars.expr as expr
 import pyarrow.parquet as pq
+from pandas import Series
 
 from EventStream.data.config import (
     InputDFSchema,
@@ -45,10 +47,11 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, fit_scaler_on_training_data
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
+from EventStream.data.types import NumericDataModalitySubtype
 
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -80,16 +83,66 @@ def main(use_labs=False, debug=False):
 
     config = DatasetConfig(
         measurement_configs={
+            'InitialA1c': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.UNIVARIATE_REGRESSION,
+                _measurement_metadata=pd.Series(),
+            ),
+            'AgeYears': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.UNIVARIATE_REGRESSION,
+                _measurement_metadata=pd.Series(),
+            ),
+            'SDI_score': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.UNIVARIATE_REGRESSION,
+                _measurement_metadata=pd.Series(),
+            ),
+            'static_indices': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
+            'static_measurement_indices': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.MULTI_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
             'dynamic_indices': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTI_LABEL_CLASSIFICATION,
-                _measurement_metadata=None,  # Set this to None instead of an empty DataFrame
+                _measurement_metadata=None,
             ),
             'dynamic_values': MeasurementConfig(
                 temporality=TemporalityType.DYNAMIC,
                 modality=DataModality.MULTIVARIATE_REGRESSION,
                 values_column='dynamic_values',
-                _measurement_metadata=None,  # Set this to None initially
+                _measurement_metadata=None,
+            ),
+            'Female': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
+            'Married': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
+            'GovIns': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
+            'English': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
+            ),
+            'Veteran': MeasurementConfig(
+                temporality=TemporalityType.STATIC,
+                modality=DataModality.SINGLE_LABEL_CLASSIFICATION,
+                _measurement_metadata=None,
             ),
         },
         normalizer_config={'cls': 'standard_scaler'},
@@ -122,8 +175,45 @@ def main(use_labs=False, debug=False):
         pl.col('StudyID').replace(subject_id_mapping).alias('subject_id').cast(pl.UInt32)
     ])
 
+    # Create static vocabularies
+    static_indices_vocab, static_measurement_indices_vocab = create_static_vocabularies(subjects_df)
+    
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+
+    def map_to_index(col):
+        mapping_dict = {str(k): v for k, v in static_indices_vocab[col].items()}
+        expr = pl.when(pl.col(col).is_null()).then(None)
+        for k, v in mapping_dict.items():
+            expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(v)
+        return expr.otherwise(None)
+
+    # Create expressions for static_indices and static_measurement_indices
+    static_indices_expr = pl.concat_list([map_to_index(col) for col in static_columns]).alias("static_indices")
+    static_measurement_indices_expr = pl.concat_list([
+        pl.when(pl.col(col).is_not_null())
+        .then(pl.lit(static_measurement_indices_vocab[col]))
+        .otherwise(None)
+        for col in static_columns
+    ]).alias("static_measurement_indices")
+
+    # Apply the expressions to the DataFrame
+    subjects_df = subjects_df.with_columns([
+        static_indices_expr,
+        static_measurement_indices_expr
+    ])
+
+    # Filter out None values and cast to UInt32
+    subjects_df = subjects_df.with_columns([
+        pl.col("static_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32)),
+        pl.col("static_measurement_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32))
+    ])
+
+    print("Data types after processing:")
+    print(subjects_df.dtypes)
+    
     print("Shape of subjects_df after aggregation:", subjects_df.shape)
     print("Number of unique EMPIs:", subjects_df['StudyID'].n_unique())
+    print("Columns in subjects_df:", subjects_df.columns)
 
     print("Processing diagnosis and procedure data...")
     df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01))
@@ -203,27 +293,18 @@ def main(use_labs=False, debug=False):
     print("Final schema of dynamic_measurements_df:")
     print(dynamic_measurements_df.schema)
 
-    print("Add epsilon to concurrent timestamps")
-    eps = np.finfo(float).eps
-    default_timestamp = datetime(2000, 1, 1)
-    
-    # Apply timestamp adjustment to events_df
+    # Handle null timestamps
     events_df = events_df.with_columns([
-        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('timestamp').fill_null(pl.min('timestamp')).alias('timestamp'),
         pl.col('event_id').cast(pl.Int64),
         pl.col('event_type').cast(pl.Utf8)  # Convert Categorical to String
-    ]).with_columns([
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
     ])
-    
-    # Apply timestamp adjustment to dynamic_measurements_df
+
     dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col('timestamp').fill_null(default_timestamp).alias('timestamp'),
+        pl.col('timestamp').fill_null(pl.min('timestamp')).alias('timestamp'),
         pl.col('event_id').cast(pl.Int64)
-    ]).with_columns([
-        (pl.col('timestamp').cast(pl.Float64) + pl.col('event_id') * eps).cast(pl.Datetime).alias('timestamp')
     ])
-    
+
     # Ensure event_type is not a combination in events_df
     events_df = events_df.with_columns([
         pl.col('event_type').str.split('&').list.first().alias('event_type')
@@ -234,8 +315,8 @@ def main(use_labs=False, debug=False):
     dynamic_measurements_df = dynamic_measurements_df.rename({"event_id": "original_event_id"})
 
     # Sort and add new event_id
-    events_df = events_df.sort(['subject_id', 'timestamp']).with_row_index("event_id")
-    dynamic_measurements_df = dynamic_measurements_df.sort(['subject_id', 'timestamp']).with_row_index("event_id")
+    events_df = events_df.sort(['subject_id', 'timestamp', 'original_event_id']).with_row_index("event_id")
+    dynamic_measurements_df = dynamic_measurements_df.sort(['subject_id', 'timestamp', 'original_event_id']).with_row_index("event_id")
 
     # Make sure to cast the new event_id column to Int64:
     events_df = events_df.with_columns(pl.col('event_id').cast(pl.Int64))
@@ -265,30 +346,42 @@ def main(use_labs=False, debug=False):
     event_types = sorted(list(unique_event_types))
     event_types_idxmap = {event_type: idx for idx, event_type in enumerate(event_types, start=1)}
 
-    # Update events_df with single event types
-    def split_event_type(event_type):
-        types = event_type.split('&')
-        return types[0] if len(types) == 1 else 'MULTIPLE'
-
     events_df = events_df.with_columns([
-        pl.col('event_type').map_elements(split_event_type).alias('event_type')
+        pl.col('event_type').map_elements(split_event_type, return_dtype=pl.Utf8).alias('event_type')
     ])
 
     # Update vocabulary configuration
     config.vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
         'dynamic_indices': len(code_to_index),
+        'static_indices': len(static_indices_vocab),  # You'll need to create this vocabulary
+        'static_measurement_indices': len(static_measurement_indices_vocab),  # You'll need to create this vocabulary
     }
 
     config.vocab_offsets_by_measurement = {
         'event_type': 1,
         'dynamic_indices': len(event_types_idxmap) + 1,
+        'static_indices': len(event_types_idxmap) + len(code_to_index) + 1,
+        'static_measurement_indices': len(event_types_idxmap) + len(code_to_index) + len(static_indices_vocab) + 1,
     }
 
+    config.measurements_idxmap = {
+        'event_type': event_types_idxmap,
+        'dynamic_indices': code_to_index,
+        'static_indices': static_indices_vocab,
+        'static_measurement_indices': static_measurement_indices_vocab,
+    }
+
+    config.measurements_per_generative_mode = {
+        DataModality.MULTI_LABEL_CLASSIFICATION: ['dynamic_indices', 'static_indices', 'static_measurement_indices'],
+        DataModality.MULTIVARIATE_REGRESSION: ['dynamic_values'],
+        DataModality.UNIVARIATE_REGRESSION: ['InitialA1c', 'AgeYears', 'SDI_score'],
+        DataModality.SINGLE_LABEL_CLASSIFICATION: ['Female', 'Married', 'GovIns', 'English', 'Veteran'],
+    }
     config.event_types_idxmap = event_types_idxmap
     
     # Count of events by type
-    event_type_counts = events_df.group_by('event_type').count()
+    event_type_counts = events_df.group_by('event_type').len()
     print("\nCount of events by type:")
     print(event_type_counts)
 
@@ -309,11 +402,10 @@ def main(use_labs=False, debug=False):
         subjects_df=subjects_df,
         events_df=events_df,
         dynamic_measurements_df=dynamic_measurements_df,
-        code_mapping=code_to_index
+        code_mapping=code_to_index,
+        static_indices_vocab=static_indices_vocab,
+        static_measurement_indices_vocab=static_measurement_indices_vocab
     )
-
-    print("Sample of dynamic_values after conversion:")
-    print(ESD.dynamic_measurements_df.select('dynamic_values').head())
 
     # Split dataset
     ESD.split(split_fracs=split, split_names=["train", "tuning", "held_out"], seed=seed)

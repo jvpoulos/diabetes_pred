@@ -18,7 +18,7 @@ config:
   use_flash_attention: true  # Set to false if you don't want to use Flash Attention
   problem_type: "single_label_classification"
   num_labels: 2
-  do_use_sinusoidal: false # When True, it uses the standard TemporalPositionEncoding; When False, it uses the LearnableFrequencySinusoidalTemporalPositionEncoding
+  do_use_sinusoidal: true # When True, it uses the LearnableFrequencySinusoidalTemporalPositionEncoding; When False, it uses the standard TemporalPositionEncoding
   do_split_embeddings: true
   categorical_embedding_dim: 32
   numerical_embedding_dim: 128

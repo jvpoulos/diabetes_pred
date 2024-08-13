@@ -161,7 +161,7 @@ $ echo $PYTHONPATH
 # :../EventStreamGPT
 ```
 
-1. Create data files (arguments: `--use_dask`, `--use_labs`, `--debug`):
+1. Create data files (arguments: `--use_dask`, `--debug`):
 ```bash
 $ python3 src/event_stream.py --use_labs
 ```

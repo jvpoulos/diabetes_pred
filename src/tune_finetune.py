@@ -232,7 +232,7 @@ def train_function(config):
 
     if config["config"]["use_layer_norm"]:
         if "layer_norm_epsilon" not in config["config"] or config["config"]["layer_norm_epsilon"] is None:
-            config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-7, 1e-5)
+            config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-6, 1e-4)
     else:
         config["config"]["layer_norm_epsilon"] = None
 
@@ -307,24 +307,10 @@ def train_function(config):
 
     # Log optimization configs
     wandb_run.log({
-        "init_lr": config["optimization_config"]["init_lr"],
-        "batch_size": config["optimization_config"]["batch_size"],
-        "use_grad_value_clipping": config["optimization_config"]["use_grad_value_clipping"],
-        "patience": config["optimization_config"]["patience"],
-        "use_lr_scheduler": config["optimization_config"]["use_lr_scheduler"],
-        "lr_scheduler_type": config["optimization_config"]["lr_scheduler_type"],
-        "end_lr": config["optimization_config"]["end_lr"],
-        "end_lr_frac_of_init_lr": config["optimization_config"]["end_lr_frac_of_init_lr"],
-        "clip_grad_value": config["optimization_config"].get("clip_grad_value", None),
-        "max_epochs": config["optimization_config"]["max_epochs"],
-        "weight_decay": config["optimization_config"]["weight_decay"],
-        "lr_decay_power": config["optimization_config"]["lr_decay_power"],
-        "do_use_sinusoidal": config["config"]["do_use_sinusoidal"],
-        "layer_norm_epsilon": config["config"].get("layer_norm_epsilon"),
-        "min_seq_len": config["data_config"]["min_seq_len"],
-        "max_seq_len": config["data_config"]["max_seq_len"],
-        "seq_window_size": config["config"]["seq_window_size"],
-        "accumulate_grad_batches": config["trainer_config"]["accumulate_grad_batches"],
+        **{f"optimization_config/{k}": v for k, v in config["optimization_config"].items()},
+        **{f"config/{k}": v for k, v in config["config"].items()},
+        **{f"data_config/{k}": v for k, v in config["data_config"].items()},
+        **{f"trainer_config/{k}": v for k, v in config["trainer_config"].items()},
     })
 
     # Resolve Ray Tune search space objects in config
@@ -532,10 +518,10 @@ def main(cfg):
             "num_hidden_layers": tune.choice([4, 6, 8]),
             "head_dim": tune.choice([32, 64, 128]),
             "num_attention_heads": tune.choice([4, 8, 12]),
-            "intermediate_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "attention_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "input_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "resid_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "intermediate_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "attention_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "input_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "resid_dropout": tune.choice([0.1, 0.2, 0.3]),
             "max_grad_norm": tune.choice([1, 5, 10, 15]),
             "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
@@ -547,7 +533,7 @@ def main(cfg):
             "seq_window_size": tune.sample_from(get_seq_window_size),
         },
         "optimization_config": {
-            "init_lr": tune.loguniform(1e-5, 1e-1),
+            "init_lr": tune.loguniform(1e-4, 1e-01),
             "batch_size": tune.sample_from(get_batch_size),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
@@ -555,7 +541,7 @@ def main(cfg):
             "lr_scheduler_type": tune.choice([None, "cosine", "linear", "one_cycle", "reduce_on_plateau"]),
             "weight_decay": tune.loguniform(1e-5, 1e-2),
             "lr_decay_power": tune.uniform(0, 1),
-            "end_lr": tune.loguniform(1e-7, 1e-4),
+            "end_lr": tune.loguniform(1e-6, 1e-4),
             "max_epochs": tune.choice([50, 100, 150]),
         },
         "trainer_config": {
@@ -563,8 +549,8 @@ def main(cfg):
         },
         "data_config": {
             **data_config,
-            "min_seq_len": tune.randint(2, 50),
-            "max_seq_len": tune.randint(100, 750),
+            "min_seq_len": tune.randint(4, 50),
+            "max_seq_len": tune.randint(100, 1000),
         }
     }
 

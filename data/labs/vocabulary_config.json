@@ -9,8 +9,18 @@
   },
   "measurements_idxmap": {
     "event_type": 1,
-    "dynamic_indices": 2,
-    "dynamic_values": 3
+    "InitialA1c": 2,
+    "Female": 3,
+    "Married": 4,
+    "GovIns": 5,
+    "English": 6,
+    "AgeYears": 7,
+    "SDI_score": 8,
+    "Veteran": 9,
+    "static_indices": 10,
+    "static_measurement_indices": 11,
+    "dynamic_indices": 12,
+    "dynamic_values": 13
   },
   "measurements_per_generative_mode": {
     "single_label_classification": [

@@ -44,6 +44,7 @@ import chardet
 import io
 import chardet
 from tqdm import tqdm
+from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -54,6 +55,30 @@ from EventStream.data.types import DataModality, TemporalityType, NumericDataMod
 from EventStream.data.vocabulary import Vocabulary
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
+def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_indices = []
+    static_measurement_indices = []
+    for idx, col in enumerate(static_columns):
+        value = row[col]
+        if value is not None:
+            index = static_indices_vocab.get(f"{col}_{str(value)}", 0)
+            if index != 0:  # Only include non-zero indices
+                static_indices.append(pl.UInt32(index))
+                static_measurement_indices.append(pl.UInt32(static_measurement_indices_vocab[col]))
+    return [static_indices, static_measurement_indices]
+
+def fit_scaler_on_training_data(data):
+    scaler = StandardScaler()
+    mean = float(np.mean(data))
+    std = float(np.std(data))
+    return {'mean_': mean, 'std_': std}
+
+# Update events_df with single event types
+def split_event_type(event_type):
+    types = event_type.split('&')
+    return types[0] if len(types) == 1 else 'MULTIPLE'
+
 def try_convert_to_float(x, val_type):
     if val_type == 'Numeric':
         try:
@@ -62,15 +87,147 @@ def try_convert_to_float(x, val_type):
             return None
     return x  # Return as-is for non-numeric types
 
+def create_static_vocabularies(subjects_df):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    
+    static_indices_vocab = {}
+    static_measurement_indices_vocab = {}
+    
+    for idx, col in enumerate(static_columns):
+        unique_values = subjects_df[col].unique().sort()
+        static_indices_vocab[col] = {str(val): i + 1 for i, val in enumerate(unique_values)}
+        static_measurement_indices_vocab[col] = idx + 1
+    
+    return static_indices_vocab, static_measurement_indices_vocab
+
+def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_indices = []
+    static_measurement_indices = []
+    for idx, col in enumerate(static_columns):
+        value = row[col]
+        if value is not None:
+            index = static_indices_vocab.get(f"{col}_{str(value)}", 0)
+            if index != 0:  # Only include non-zero indices
+                static_indices.append(index)
+                static_measurement_indices.append(static_measurement_indices_vocab[col])
+    return [static_indices, static_measurement_indices]
+
 class ConcreteDataset(DatasetBase):
     PREPROCESSORS = {
         "standard_scaler": StandardScaler,
         # Add other preprocessors here if needed
     }
-    def __init__(self, config, subjects_df, events_df, dynamic_measurements_df, code_mapping, **kwargs):
+    def __init__(self, config, subjects_df, events_df, dynamic_measurements_df, code_mapping=None, static_indices_vocab=None, static_measurement_indices_vocab=None, **kwargs):
         super().__init__(config, subjects_df, events_df, dynamic_measurements_df, **kwargs)
         self.code_mapping = code_mapping or self._create_code_mapping()
         self.inverse_mapping = {v: k for k, v in self.code_mapping.items()}
+        
+        # Use the provided vocabularies or create them if not provided
+        self.static_indices_vocab = static_indices_vocab or create_static_vocabularies(subjects_df)[0]
+        self.static_measurement_indices_vocab = static_measurement_indices_vocab or create_static_vocabularies(subjects_df)[1]
+        
+        # Initialize initial_unified_measurements_idxmap
+        self._initial_unified_measurements_idxmap = self._create_initial_unified_measurements_idxmap()
+
+    def create_static_indices_and_measurements(self, row):
+        return create_static_indices_and_measurements(row, self.static_indices_vocab, self.static_measurement_indices_vocab)
+
+    def transform_measurements(self):
+        for measure, config in self.measurement_configs.items():
+            print(f"Processing measure: {measure}")
+            source_attr, id_col, source_df = self._get_source_df(config, do_only_train=False)
+            source_df = self._filter_col_inclusion(source_df, {measure: True})
+            updated_cols = []
+            try:
+                if measure in ['static_indices', 'static_measurement_indices']:
+                    # Keep these measures as List(UInt32) without casting to Categorical
+                    updated_cols.append(measure)
+                elif measure == 'dynamic_indices':
+                    if 'dynamic_indices' in source_df.columns:
+                        source_df = source_df.with_columns([
+                            pl.col('dynamic_indices').fill_null(0).cast(pl.UInt32)
+                        ])
+                        updated_cols.append('dynamic_indices')
+                elif config.modality == DataModality.MULTI_LABEL_CLASSIFICATION:
+                    print(f"Transforming multi-label classification measurement: {measure}")
+                    source_df = self._transform_multi_label_classification(measure, config, source_df)
+                    print(f"Transformed multi-label classification measurement: {measure}")
+                    updated_cols.append(measure)
+                else:
+                    if config.is_numeric:
+                        print(f"Transforming numerical measurement: {measure}")
+                        source_df = self._transform_numerical_measurement(measure, config, source_df)
+                        print(f"Transformed numerical measurement: {measure}")
+                        updated_cols.append(measure)
+
+                        if config.modality == DataModality.MULTIVARIATE_REGRESSION:
+                            updated_cols.append(config.values_column)
+
+                        if self.config.outlier_detector_config is not None:
+                            updated_cols.append(f"{measure}_is_inlier")
+
+                    if config.vocabulary is not None:
+                        print(f"Transforming categorical measurement: {measure}")
+                        source_df = self._transform_categorical_measurement(measure, config, source_df)
+                        print(f"Transformed categorical measurement: {measure}")
+                        updated_cols.append(measure)
+
+                print(f"Transformation status for {measure}: {'Dropped' if config.is_dropped else 'Retained'}")
+                
+                # Only update columns that exist in source_df
+                cols_to_update = list(dict.fromkeys([col for col in updated_cols if col in source_df.columns]))
+                self._update_attr_df(source_attr, id_col, source_df, cols_to_update)
+
+            except Exception as e:
+                print(f"Error transforming measurement {measure}: {str(e)}")
+                print(f"Config: {config}")
+                print(f"Source DataFrame schema: {source_df.schema}")
+                print(f"Source DataFrame sample: {source_df.head()}")
+                raise ValueError(f"Transforming measurement failed for measure {measure}!") from e
+
+            print("Sample of dynamic_measurements_df after transform_measurements:")
+            print(self.dynamic_measurements_df.head())
+            print("Data types:")
+            for col in self.dynamic_measurements_df.columns:
+                print(f"{col}: {self.dynamic_measurements_df[col].dtype}")
+
+            # Additional check for null values
+            null_counts = {}
+            for col in self.dynamic_measurements_df.columns:
+                null_count = self.dynamic_measurements_df[col].null_count()
+                null_counts[col] = null_count
+
+            print("Null value counts:")
+            print(null_counts)
+
+            # Sum all null counts across columns and rows
+            total_null_count = sum(null_counts.values())
+
+            # Check if any null values exist
+            if total_null_count > 0:
+                print("Warning: Null values found in dynamic_measurements_df")
+                for col, null_count in null_counts.items():
+                    if null_count > 0:
+                        print(f"  {col}: {null_count} null values")
+
+            # Handle the warning about casting static_indices to Categorical
+            if 'static_indices' in self.subjects_df.columns:
+                print("Handling static_indices column")
+                self.subjects_df = self.subjects_df.with_columns([
+                    pl.col('static_indices').cast(pl.List(pl.UInt32))
+                ])
+
+            if 'static_measurement_indices' in self.subjects_df.columns:
+                print("Handling static_measurement_indices column")
+                self.subjects_df = self.subjects_df.with_columns([
+                    pl.col('static_measurement_indices').cast(pl.List(pl.UInt32))
+                ])
+
+    def _create_initial_unified_measurements_idxmap(self):
+        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+        unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
+        return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
 
     def _get_flat_static_rep(self, feature_columns: list[str], **kwargs) -> pl.LazyFrame:
         static_features = [c for c in feature_columns if c.startswith("static/")]
@@ -123,21 +280,22 @@ class ConcreteDataset(DatasetBase):
 
             cols_to_drop_at_end = [col for col in config.measurement_metadata if col != measure and col in source_df.columns]
 
-            bound_cols = {
-                col: pl.col(col)
-                for col in [
-                    "drop_upper_bound",
-                    "drop_upper_bound_inclusive",
-                    "drop_lower_bound",
-                    "drop_lower_bound_inclusive",
-                    "censor_lower_bound",
-                    "censor_upper_bound",
-                ]
-                if col in source_df.columns
-            }
+            bound_cols = {}
+            for col in (
+                "drop_upper_bound",
+                "drop_upper_bound_inclusive",
+                "drop_lower_bound",
+                "drop_lower_bound_inclusive",
+                "censor_lower_bound",
+                "censor_upper_bound",
+            ):
+                if col in source_df:
+                    bound_cols[col] = pl.col(col)
 
             if bound_cols:
-                vals_col = self.drop_or_censor(vals_col, **bound_cols)
+                source_df = source_df.with_columns(
+                    self.drop_or_censor(pl.col(vals_col_name), **bound_cols).alias(vals_col_name)
+                )
 
             if 'value_type' in source_df.columns:
                 value_type = pl.col("value_type")
@@ -188,6 +346,12 @@ class ConcreteDataset(DatasetBase):
             
             # Rename the transformed columns back to their original names
             if measure != 'dynamic_values':
+                # Check if the original columns exist and drop them before renaming
+                if keys_col_name in result_df.columns:
+                    result_df = result_df.drop(keys_col_name)
+                if vals_col_name in result_df.columns:
+                    result_df = result_df.drop(vals_col_name)
+                
                 result_df = result_df.rename({
                     f"{keys_col_name}_transformed": keys_col_name,
                     f"{vals_col_name}_transformed": vals_col_name
@@ -627,7 +791,9 @@ class ConcreteDataset(DatasetBase):
                 metadata_as_polars = pl.DataFrame(
                     {key_col: [measure], **{c: [v] for c, v in metadata.items()}}
                 )
-                source_df = source_df.with_columns(pl.lit(measure).cast(pl.Categorical).alias(key_col))
+                # Check if 'const_key' already exists in the source_df
+                if key_col not in source_df.columns:
+                    source_df = source_df.with_columns(pl.lit(measure).cast(pl.Categorical).alias(key_col))
             elif config.modality == DataModality.MULTIVARIATE_REGRESSION:
                 key_col = measure
                 val_col = config.values_column
@@ -699,36 +865,78 @@ class ConcreteDataset(DatasetBase):
             print(f"Source DataFrame schema: {source_df.schema}")
             raise
 
-    def _fit_vocabulary(self, measure: str, config: MeasurementConfig, source_df: pl.DataFrame) -> Vocabulary:
-        if measure == 'dynamic_indices':
-            unique_codes = source_df['dynamic_indices'].drop_nulls().unique().sort()
-            vocab_elements = unique_codes.to_list()
-            el_counts = source_df.group_by('dynamic_indices').count().sort('dynamic_indices')['count'].to_list()
+    def _fit_vocabulary(self, measure: str, config: MeasurementConfig, source_df: DF_T) -> Vocabulary:
+        print(f"Fitting vocabulary for {measure}")
+        print(f"Source dataframe shape: {source_df.shape}")
+        print(f"Source dataframe columns: {source_df.columns}")
+        print(f"Sample of source dataframe:\n{source_df.head()}")
+        
+        if measure in ['static_indices', 'static_measurement_indices']:
+            # Handle static_indices and static_measurement_indices
+            observations = source_df.get_column(measure)
+            unique_values = set()
+            for row in observations:
+                if isinstance(row, pl.Series):
+                    unique_values.update(row.to_list())
+                elif isinstance(row, list):
+                    unique_values.update(row)
+                elif row is not None:
+                    unique_values.add(row)
+            
+            vocab_elements = sorted(list(unique_values))
+            el_counts = []
+            for elem in vocab_elements:
+                count = sum(1 for row in observations if elem in (row if isinstance(row, list) else row.to_list() if isinstance(row, pl.Series) else [row]))
+                el_counts.append(count)
+            
+            print(f"Number of unique elements: {len(vocab_elements)}")
+            print(f"Sample of vocab_elements: {vocab_elements[:5]}")
+            print(f"Sample of el_counts: {el_counts[:5]}")
             
             if len(vocab_elements) == 0:
+                print(f"WARNING: No unique elements found for {measure}. Using default vocabulary.")
                 return Vocabulary(vocabulary=["UNK"], obs_frequencies=[1])
             
             return Vocabulary(vocabulary=vocab_elements, obs_frequencies=el_counts)
         
-        elif config.modality == DataModality.MULTI_LABEL_CLASSIFICATION:
-            observations = source_df.get_column(measure).cast(pl.Utf8)
-            observations = observations.map_elements(lambda s: s.split("|") if s is not None else [], return_dtype=pl.List(pl.Utf8))
-            observations = observations.explode()
+        elif measure == 'dynamic_indices':
+            # Existing code for dynamic_indices
+            if 'dynamic_indices' not in source_df.columns:
+                raise ValueError("'dynamic_indices' column not found in source dataframe")
+            
+            if isinstance(source_df, pl.LazyFrame):
+                source_df = source_df.collect()
+            
+            unique_codes = source_df['dynamic_indices'].drop_nulls().unique().sort()
+            
+            vocab_elements = unique_codes.to_list()
+            el_counts = source_df.group_by('dynamic_indices').count().sort('dynamic_indices')['count'].to_list()
+            
+            print(f"Number of unique codes: {len(vocab_elements)}")
+            print(f"Number of element counts: {len(el_counts)}")
+            print(f"Sample of vocab_elements: {vocab_elements[:5]}")
+            print(f"Sample of el_counts: {el_counts[:5]}")
+            
+            if len(vocab_elements) == 0:
+                print("WARNING: No unique codes found. Using default vocabulary.")
+                return Vocabulary(vocabulary=["UNK"], obs_frequencies=[1])
+            
+            return Vocabulary(vocabulary=vocab_elements, obs_frequencies=el_counts)
+            
         else:
             observations = source_df.get_column(measure)
+            observations = observations.drop_nulls()
+            N = len(observations)
+            if N == 0:
+                return None
 
-        observations = observations.drop_nulls()
-        N = len(observations)
-        if N == 0:
-            return None
-
-        try:
-            value_counts = observations.value_counts().sort(by="count", descending=True)
-            vocab_elements = value_counts[measure].to_list()
-            el_counts = value_counts["count"].to_list()
-            return Vocabulary(vocabulary=vocab_elements, obs_frequencies=el_counts)
-        except AssertionError as e:
-            raise AssertionError(f"Failed to build vocabulary for {measure}") from e
+            try:
+                value_counts = observations.value_counts().sort(by="count", descending=True)
+                vocab_elements = value_counts[measure].to_list()
+                el_counts = value_counts["count"].to_list()
+                return Vocabulary(vocabulary=vocab_elements, obs_frequencies=el_counts)
+            except AssertionError as e:
+                raise AssertionError(f"Failed to build vocabulary for {measure}") from e
 
     def _add_time_dependent_measurements(self):
         exprs = []
@@ -795,6 +1003,7 @@ class ConcreteDataset(DatasetBase):
             .drop("old_event_id")
         )
 
+    @classmethod
     def _load_input_df(self, df, columns, subject_id_col=None, subject_ids_map=None, subject_id_dtype=None, filter_on=None, subject_id_source_col=None):
         if isinstance(df, (str, Path)):
             df = pl.read_csv(df, separator='|')
@@ -894,31 +1103,46 @@ class ConcreteDataset(DatasetBase):
             self.subject_ids.update(subjects_with_no_events)
 
     def _validate_initial_dfs(self, subjects_df, events_df, dynamic_measurements_df):
-        subjects_df, subjects_id_type = self._validate_initial_df(
-            subjects_df, "subject_id", TemporalityType.STATIC
-        )
-        events_df, event_id_type = self._validate_initial_df(
-            events_df,
-            "event_id",
-            TemporalityType.FUNCTIONAL_TIME_DEPENDENT,
-            {"subject_id": subjects_id_type} if subjects_df is not None else None,
-        )
+        try:
+            subjects_df, subjects_id_type = self._validate_initial_df(
+                subjects_df, "subject_id", TemporalityType.STATIC
+            )
+        except Exception as e:
+            print(f"Error validating subjects_df: {str(e)}")
+            subjects_df, subjects_id_type = None, None
+
+        try:
+            events_df, event_id_type = self._validate_initial_df(
+                events_df,
+                "event_id",
+                TemporalityType.FUNCTIONAL_TIME_DEPENDENT,
+                {"subject_id": subjects_id_type} if subjects_df is not None else None,
+            )
+        except Exception as e:
+            print(f"Error validating events_df: {str(e)}")
+            events_df, event_id_type = None, None
+
         if events_df is not None:
             if "event_type" not in events_df.columns:
-                raise ValueError("Missing event_type column!")
-            events_df = events_df.with_columns(pl.col("event_type").cast(pl.Categorical))
+                print("Warning: Missing event_type column!")
+            else:
+                events_df = events_df.with_columns(pl.col("event_type").cast(pl.Categorical))
 
             if "timestamp" not in events_df.columns or events_df.select("timestamp").dtypes[0] != pl.Datetime:
-                raise ValueError("Malformed timestamp column!")
+                print("Warning: Malformed timestamp column!")
 
         if dynamic_measurements_df is not None:
             linked_ids = {}
             if events_df is not None:
                 linked_ids["event_id"] = event_id_type
 
-            dynamic_measurements_df, dynamic_measurement_id_types = self._validate_initial_df(
-                dynamic_measurements_df, "measurement_id", TemporalityType.DYNAMIC, linked_ids
-            )
+            try:
+                dynamic_measurements_df, dynamic_measurement_id_types = self._validate_initial_df(
+                    dynamic_measurements_df, "measurement_id", TemporalityType.DYNAMIC, linked_ids
+                )
+            except Exception as e:
+                print(f"Error validating dynamic_measurements_df: {str(e)}")
+                dynamic_measurements_df, dynamic_measurement_id_types = None, None
 
         return subjects_df, events_df, dynamic_measurements_df
 
@@ -958,16 +1182,21 @@ class ConcreteDataset(DatasetBase):
                     cat_col, val_col = col, None
 
             if cat_col is not None and cat_col in source_df.columns:
-                if cfg.temporality != valid_temporality_type:
+                if cfg.temporality != valid_temporality_type and cat_col != 'dynamic_indices':
                     raise ValueError(f"Column {cat_col} found in dataframe of wrong temporality")
 
-                source_df = source_df.with_columns(pl.col(cat_col).cast(pl.Utf8).cast(pl.Categorical))
-
             if val_col is not None and val_col in source_df.columns:
-                if cfg.temporality != valid_temporality_type:
+                if cfg.temporality != valid_temporality_type and val_col != 'dynamic_values':
                     raise ValueError(f"Column {val_col} found in dataframe of wrong temporality")
 
-                source_df = source_df.with_columns(pl.col(val_col).cast(pl.Float64))
+                try:
+                    if val_col == "SDI_score":  # Special case for SDI_score column
+                        source_df = source_df.with_columns(pl.col(val_col).cast(pl.Float64))
+                    else:
+                        source_df = source_df.with_columns(pl.col(val_col).cast(pl.Float64))
+                except Exception as e:
+                    print(f"Warning: Failed to cast {val_col} to Float64. Error: {str(e)}")
+                    print(f"Column {val_col} data: {source_df[val_col].head()}")
 
         return source_df, id_col_dt
 
@@ -1003,6 +1232,14 @@ class ConcreteDataset(DatasetBase):
 
     def _transform_multi_label_classification(self, measure, config, source_df):
         print(f"Transforming multi-label classification measurement: {measure}")
+        if measure not in source_df.columns:
+            print(f"Warning: Measure {measure} not found in the source DataFrame.")
+            return source_df
+        
+        if measure in ['static_indices', 'static_measurement_indices']:
+            # For static_indices and static_measurement_indices, we keep the original list
+            return source_df
+        
         if measure == 'dynamic_indices':
             # For dynamic_indices, we preserve the original values
             source_df = source_df.with_columns([
@@ -1012,7 +1249,7 @@ class ConcreteDataset(DatasetBase):
             
             return source_df
         
-        # Original code for other measures (if any)
+        # Original code for other measures
         # Convert the column to string type
         source_df = source_df.with_columns(pl.col(measure).cast(str))
 
@@ -1170,8 +1407,12 @@ class ConcreteDataset(DatasetBase):
         if measure not in source_df.columns:
             print(f"Warning: Measure {measure} not found in the source DataFrame.")
             return source_df
-        if config.vocabulary is None:
+        if config.vocabulary is None and measure not in ['static_indices', 'static_measurement_indices']:
             print(f"Warning: Vocabulary is None for measure {measure}. Skipping transformation.")
+            return source_df
+
+        if measure in ['static_indices', 'static_measurement_indices']:
+            # These columns are already in the correct format, so we just return the dataframe as is
             return source_df
 
         vocab_el_col = pl.col(measure)
@@ -1191,15 +1432,35 @@ class ConcreteDataset(DatasetBase):
             vocab_as_strings = [str(v) for v in config.vocabulary.vocabulary]
             vocab_lit = pl.Series(vocab_as_strings).cast(pl.Categorical)
 
-            transform_expr = [
-                pl.when(vocab_el_col.is_null())
-                .then(vocab_el_col)  # Preserve null values
-                .when(~vocab_el_col.cast(pl.Utf8).is_in(vocab_lit))
-                .then(vocab_el_col)  # Preserve values not in vocabulary
-                .otherwise(vocab_el_col)
-                .cast(pl.Categorical)
-                .alias(measure)
-            ]
+            # Check the current data type of the column
+            current_dtype = source_df[measure].dtype
+            
+            # Check if the current dtype is numeric
+            is_numeric = isinstance(current_dtype, (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64))
+            
+            if is_numeric:
+                # If the column is numeric, first cast it to string before categorical
+                transform_expr = [
+                    pl.when(vocab_el_col.is_null())
+                    .then(vocab_el_col)  # Preserve null values
+                    .when(~vocab_el_col.cast(pl.Utf8).is_in(vocab_lit))
+                    .then(vocab_el_col)  # Preserve values not in vocabulary
+                    .otherwise(vocab_el_col)
+                    .cast(pl.Utf8)  # First cast to string
+                    .cast(pl.Categorical)  # Then cast to categorical
+                    .alias(measure)
+                ]
+            else:
+                # For non-numeric types, proceed as before
+                transform_expr = [
+                    pl.when(vocab_el_col.is_null())
+                    .then(vocab_el_col)  # Preserve null values
+                    .when(~vocab_el_col.cast(pl.Utf8).is_in(vocab_lit))
+                    .then(vocab_el_col)  # Preserve values not in vocabulary
+                    .otherwise(vocab_el_col)
+                    .cast(pl.Categorical)
+                    .alias(measure)
+                ]
 
         return source_df.with_columns(transform_expr)
 
@@ -1226,8 +1487,8 @@ class ConcreteDataset(DatasetBase):
         updated_df = updated_df.drop([f"{col}_right" for col in cols_to_update])
 
         setattr(self, attr, updated_df)
-
-    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False) -> pl.DataFrame:
+        
+    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False) -> DF_T:
         print("Starting build_DL_cached_representation")
         subject_measures, event_measures, dynamic_measures = [], [], ["dynamic_indices"]
         for m in self.unified_measurements_vocab[1:]:
@@ -1251,11 +1512,17 @@ class ConcreteDataset(DatasetBase):
             events_df = self.events_df
             dynamic_measurements_df = self.dynamic_measurements_df
 
+        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+        
+        # Remove 'static_indices' and 'static_measurement_indices' from subject_measures if they're there
+        subject_measures = [m for m in subject_measures if m not in ['static_indices', 'static_measurement_indices']]
+        
         static_data = subjects_df.select(
             "subject_id",
-            *[pl.col(m) for m in subject_measures],
-            "InitialA1c", "Female", "Married", "GovIns", 
-            "English", "AgeYears", "SDI_score", "Veteran"
+            *[pl.col(m) for m in subject_measures if m not in static_columns],
+            *[pl.col(col) for col in static_columns],
+            "static_indices",
+            "static_measurement_indices"
         )
 
         subject_id_dtype = pl.UInt32
@@ -1273,9 +1540,6 @@ class ConcreteDataset(DatasetBase):
             pl.col("dynamic_indices").cast(pl.UInt32),
             pl.col("dynamic_values").cast(pl.Float64)
         ])
-
-        # Handle dynamic_values (keep as Float64)
-        dynamic_data = dynamic_data.with_columns(pl.col("dynamic_values").cast(pl.Float64))
 
         event_data = events_df.select(
             "subject_id",
@@ -1295,13 +1559,23 @@ class ConcreteDataset(DatasetBase):
 
         event_data = event_data.with_columns([
             pl.col("dynamic_indices").cast(pl.UInt32),
-            pl.col("dynamic_values").cast(pl.Utf8)
+            pl.col("dynamic_values").cast(pl.Float64)
         ])
 
         if do_sort_outputs:
             event_data = event_data.sort("event_id")
 
         out = static_data.join(event_data, on="subject_id", how="inner")
+
+        # Add start_time column
+        out = out.with_columns(pl.col("timestamp").min().over("subject_id").alias("start_time"))
+
+        # Add time column (minutes since start_time)
+        out = out.with_columns((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes().alias("time"))
+
+        # Add dynamic_measurement_indices
+        dynamic_measurement_indices = [self.unified_measurements_idxmap[m] for m in dynamic_measures]
+        out = out.with_columns(pl.lit(dynamic_measurement_indices).alias("dynamic_measurement_indices"))
 
         if do_sort_outputs:
             out = out.sort("subject_id")
@@ -1540,6 +1814,8 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
         
+        pl.enable_string_cache()  # Enable global string cache
+        
         dfs = []
         total_rows = 0
         for parquet_file in parquet_files:
@@ -1548,7 +1824,7 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
                 df = pl.read_parquet(parquet_file)
                 self.logger.debug(f"File {parquet_file} shape: {df.shape}")
                 if self.task_df is not None:
-                    df = df.join(self.task_df, on='subject_id', how='inner')
+                    df = df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
                 dfs.append(df)
                 total_rows += df.shape[0]
             except Exception as e:
@@ -1567,13 +1843,9 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
 
         self.cached_data = pl.concat(dfs)
 
-        # Print some information about the loaded data
-        self.logger.info(f"Loaded {self.cached_data.shape[0]} rows of cached data")
-        self.logger.info(f"Cached data columns: {self.cached_data.columns}")
-        self.logger.info(f"Sample of dynamic_indices: {self.cached_data['dynamic_indices'].head(5)}")
+        pl.disable_string_cache()  # Disable global string cache after concatenation
 
-        self.logger.info(f"After filtering, {self.cached_data.shape[0]} rows remain")
-        self.logger.info(f"Sample of dynamic_indices after filtering: {self.cached_data['dynamic_indices'].head(5)}")
+        self.logger.info(f"Cached data loaded successfully for split: {self.split}")
 
     def __len__(self):
         return self.cached_data.shape[0]

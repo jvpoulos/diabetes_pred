@@ -30,21 +30,21 @@ def optimize_hyperparameters(config_path, epochs):
             "num_hidden_layers": tune.choice([4, 6, 8]),
             "head_dim": tune.choice([32, 64, 128]),
             "num_attention_heads": tune.choice([4, 8, 12]),
-            "intermediate_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "attention_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "input_dropout": tune.choice([0.0, 0.1, 0.3]),
-            "resid_dropout": tune.choice([0.0, 0.1, 0.3]),
+            "intermediate_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "attention_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "input_dropout": tune.choice([0.1, 0.2, 0.3]),
+            "resid_dropout": tune.choice([0.1, 0.2, 0.3]),
             "max_grad_norm": tune.choice([1, 5, 10, 15]),
             "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
             },
             "layer_norm_epsilon": tune.sample_from(
-                lambda spec: tune.loguniform(1e-7, 1e-5) if spec.config["config"]["use_layer_norm"] else None
+                lambda spec: tune.loguniform(1e-6, 1e-4) if spec.config["config"]["use_layer_norm"] else None
             ),
         },
         "optimization_config": {
-            "init_lr": tune.loguniform(1e-5, 1e-1),
+            "init_lr": tune.loguniform(1e-4, 1e-01),
             "batch_size": tune.sample_from(
                 lambda spec: tune.choice([512, 1024, 2048]) if spec.config["config"]["use_gradient_checkpointing"] 
                              else tune.choice([128, 256, 512, 1024])
@@ -60,8 +60,8 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "data_config": {
             **base_config.get('data_config', {}),
-            "min_seq_len": tune.randint(2, 50),  
-            "max_seq_len": tune.randint(100, 750),  
+            "min_seq_len": tune.randint(4, 50),
+            "max_seq_len": tune.randint(100, 1000),
         }
     }
 
@@ -84,7 +84,7 @@ def optimize_hyperparameters(config_path, epochs):
     )
 
     # Add end_lr and end_lr_frac_of_init_lr
-    search_space["optimization_config"]["end_lr"] = tune.loguniform(1e-7, 1e-4)
+    search_space["optimization_config"]["end_lr"] = tune.loguniform(1e-6, 1e-4)
     search_space["optimization_config"]["end_lr_frac_of_init_lr"] = tune.sample_from(
         lambda spec: spec.config["optimization_config"]["end_lr"] / spec.config["optimization_config"]["init_lr"]
     )
@@ -95,9 +95,7 @@ def optimize_hyperparameters(config_path, epochs):
     )
 
     # Add lr_scheduler_type only if use_lr_scheduler is True
-    search_space["optimization_config"]["lr_scheduler_type"] = tune.sample_from(
-        lambda spec: tune.choice(["cosine", "linear", "one_cycle", "reduce_on_plateau"]) if spec.config["optimization_config"]["use_lr_scheduler"] else None
-    )
+    search_space["optimization_config"]["lr_scheduler_type"] = tune.choice([None, "cosine", "linear", "one_cycle", "reduce_on_plateau"])
 
     # Add epochs to the search space
     search_space["optimization_config"]["max_epochs"] = epochs
