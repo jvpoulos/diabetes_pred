@@ -77,7 +77,14 @@ def fit_scaler_on_training_data(data):
 # Update events_df with single event types
 def split_event_type(event_type):
     types = event_type.split('&')
-    return types[0] if len(types) == 1 else 'MULTIPLE'
+    if 'LAB' in types:
+        return 'LAB'
+    elif 'DIAGNOSIS' in types:
+        return 'DIAGNOSIS'
+    elif 'PROCEDURE' in types:
+        return 'PROCEDURE'
+    else:
+        return 'UNKNOWN'
 
 def try_convert_to_float(x, val_type):
     if val_type == 'Numeric':
@@ -94,12 +101,36 @@ def create_static_vocabularies(subjects_df):
     static_measurement_indices_vocab = {}
     
     for idx, col in enumerate(static_columns):
-        unique_values = subjects_df[col].unique().sort()
-        static_indices_vocab[col] = {str(val): i + 1 for i, val in enumerate(unique_values)}
+        if col == 'InitialA1c':
+            unique_values = subjects_df.select(pl.col(col).round(2).alias(col)).unique().sort(col)
+            static_indices_vocab[col] = {str(round(val[0], 2)): i + 1 for i, val in enumerate(unique_values.rows())}
+        elif col in ['AgeYears', 'SDI_score']:
+            unique_values = subjects_df.select(pl.col(col).cast(pl.Float64).round(0).cast(pl.Int64).alias(col)).unique().sort(col)
+            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
+        else:
+            unique_values = subjects_df.select(col).unique().sort(col)
+            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
+        
         static_measurement_indices_vocab[col] = idx + 1
     
     return static_indices_vocab, static_measurement_indices_vocab
 
+def map_to_index(col, static_indices_vocab):
+    mapping_dict = {str(k): v for k, v in static_indices_vocab[col].items()}
+    
+    expr = pl.when(pl.col(col).is_null()).then(None)
+    
+    if col == 'InitialA1c':
+        for k, v in mapping_dict.items():
+            expr = expr.when(
+                pl.col(col).cast(pl.Float64).round(2).cast(pl.Utf8) == k
+            ).then(pl.lit(v).cast(pl.Int64))
+    else:
+        for k, v in mapping_dict.items():
+            expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(pl.lit(v).cast(pl.Int64))
+    
+    return expr.otherwise(None)
+    
 def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
     static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
     static_indices = []
@@ -121,7 +152,7 @@ class ConcreteDataset(DatasetBase):
     def __init__(self, config, subjects_df, events_df, dynamic_measurements_df, code_mapping=None, static_indices_vocab=None, static_measurement_indices_vocab=None, **kwargs):
         super().__init__(config, subjects_df, events_df, dynamic_measurements_df, **kwargs)
         self.code_mapping = code_mapping or self._create_code_mapping()
-        self.inverse_mapping = {v: k for k, v in self.code_mapping.items()}
+        self.inverse_mapping = {str(v): k for k, v in self.code_mapping.items()}
         
         # Use the provided vocabularies or create them if not provided
         self.static_indices_vocab = static_indices_vocab or create_static_vocabularies(subjects_df)[0]
@@ -146,7 +177,7 @@ class ConcreteDataset(DatasetBase):
                 elif measure == 'dynamic_indices':
                     if 'dynamic_indices' in source_df.columns:
                         source_df = source_df.with_columns([
-                            pl.col('dynamic_indices').fill_null(0).cast(pl.UInt32)
+                            pl.col('dynamic_indices').cast(pl.UInt32)
                         ])
                         updated_cols.append('dynamic_indices')
                 elif config.modality == DataModality.MULTI_LABEL_CLASSIFICATION:
@@ -1488,7 +1519,7 @@ class ConcreteDataset(DatasetBase):
 
         setattr(self, attr, updated_df)
         
-    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False) -> DF_T:
+    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False, static_indices_vocab=None, dynamic_measurement_indices_vocab=None) -> DF_T:
         print("Starting build_DL_cached_representation")
         subject_measures, event_measures, dynamic_measures = [], [], ["dynamic_indices"]
         for m in self.unified_measurements_vocab[1:]:
@@ -1514,21 +1545,56 @@ class ConcreteDataset(DatasetBase):
 
         static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
         
-        # Remove 'static_indices' and 'static_measurement_indices' from subject_measures if they're there
-        subject_measures = [m for m in subject_measures if m not in ['static_indices', 'static_measurement_indices']]
+        # Remove duplicates between subject_measures and static_columns
+        unique_subject_measures = list(set(subject_measures) - set(static_columns))
         
+        # Create static_data first
         static_data = subjects_df.select(
             "subject_id",
-            *[pl.col(m) for m in subject_measures if m not in static_columns],
-            *[pl.col(col) for col in static_columns],
-            "static_indices",
-            "static_measurement_indices"
+            *[pl.col(m) for m in unique_subject_measures],
+            *static_columns
         )
+
+        # Cast InitialA1c to Float64 and then round to two decimal places
+        static_data = static_data.with_columns([
+            pl.col("InitialA1c").cast(pl.Float64).round(2).alias("InitialA1c")
+        ])
+
+        # Create static_indices column
+        static_data = static_data.with_columns([
+            pl.struct(static_columns).map_elements(
+                lambda x: [
+                    static_indices_vocab[col].get(str(round(x[col], 2) if col == 'InitialA1c' else 
+                                                  int(float(x[col])) if col in ['AgeYears', 'SDI_score'] and x[col] is not None else 
+                                                  x[col]), 0) 
+                    for col in static_columns if x[col] is not None
+                ],
+                return_dtype=pl.List(pl.Int64)  # Use Int64 first
+            ).cast(pl.List(pl.UInt32)).alias("static_indices")  # Then cast the whole list to UInt32
+        ])
+
+        static_data = static_data.with_columns([
+            pl.col("SDI_score").map_elements(lambda x: float('nan') if x is None else x).alias("SDI_score")
+        ])       
+
+        # Create static_measurement_indices column
+        static_measurement_indices_vocab = self.static_measurement_indices_vocab
+        static_data = static_data.with_columns([
+            pl.struct(static_columns).map_elements(
+                lambda x: [static_measurement_indices_vocab[col] for col in static_columns if x[col] is not None],
+                return_dtype=pl.List(pl.Int64)  # Use Int64 first
+            ).cast(pl.List(pl.UInt32)).alias("static_measurement_indices")  # Then cast the whole list to UInt32
+        ])
 
         subject_id_dtype = pl.UInt32
         static_data = static_data.with_columns(pl.col("subject_id").cast(subject_id_dtype))
         events_df = events_df.with_columns(pl.col("subject_id").cast(subject_id_dtype))
         dynamic_measurements_df = dynamic_measurements_df.with_columns(pl.col("subject_id").cast(subject_id_dtype))
+
+        # Apply split_event_type to events_df
+        events_df = events_df.with_columns([
+            pl.col("event_type").map_elements(split_event_type).alias("event_type")
+        ])
 
         dynamic_data = dynamic_measurements_df.select(
             "event_id",
@@ -1536,10 +1602,39 @@ class ConcreteDataset(DatasetBase):
             "dynamic_values"
         )
 
+        # Join dynamic_data with events_df to get event_type
+        dynamic_data = dynamic_data.join(
+            events_df.select("event_id", "event_type"),
+            on="event_id"
+        )
+
+        # Define event_type_mapping
+        event_type_mapping = {"DIAGNOSIS": 1, "PROCEDURE": 2, "LAB": 3}
+
+        print("Sample of dynamic_data before transformation:")
+        print(dynamic_data.head())
+
+        def map_event_type(event_type):
+            return event_type_mapping.get(event_type, 0)  # Return 0 for unknown event types
+
         dynamic_data = dynamic_data.with_columns([
-            pl.col("dynamic_indices").cast(pl.UInt32),
-            pl.col("dynamic_values").cast(pl.Float64)
+            pl.col("event_type").map_elements(map_event_type).cast(pl.UInt32).alias("dynamic_measurement_indices")
         ])
+
+        print("Sample of dynamic_data after transformation:")
+        print(dynamic_data.head())
+
+        # Add a check for any unexpected values
+        unique_values = dynamic_data.select(pl.col("dynamic_measurement_indices").explode()).unique()
+        print("Unique values in dynamic_measurement_indices:", unique_values)
+
+        unexpected_values = set(unique_values.to_series().to_list()) - set([1, 2, 3])
+        if unexpected_values:
+            print(f"WARNING: Unexpected values found in dynamic_measurement_indices: {unexpected_values}")
+                
+        print("static_indices_vocab sample:", {k: v for k, v in list(static_indices_vocab.items())[:5]})
+        print("static_measurement_indices_vocab:", self.static_measurement_indices_vocab)
+        print("dynamic_measurement_indices_vocab:", event_type_mapping)
 
         event_data = events_df.select(
             "subject_id",
@@ -1553,32 +1648,33 @@ class ConcreteDataset(DatasetBase):
             how="left"
         )
 
-        for col in ["dynamic_indices", "dynamic_values"]:
-            if col not in event_data.columns:
-                event_data = event_data.with_columns(pl.lit(None).alias(col))
-
-        event_data = event_data.with_columns([
-            pl.col("dynamic_indices").cast(pl.UInt32),
-            pl.col("dynamic_values").cast(pl.Float64)
-        ])
-
-        if do_sort_outputs:
-            event_data = event_data.sort("event_id")
-
-        out = static_data.join(event_data, on="subject_id", how="inner")
-
         # Add start_time column
-        out = out.with_columns(pl.col("timestamp").min().over("subject_id").alias("start_time"))
+        event_data = event_data.with_columns(pl.col("timestamp").min().over("subject_id").alias("start_time"))
 
         # Add time column (minutes since start_time)
-        out = out.with_columns((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes().alias("time"))
+        event_data = event_data.with_columns((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes().alias("time"))
 
-        # Add dynamic_measurement_indices
-        dynamic_measurement_indices = [self.unified_measurements_idxmap[m] for m in dynamic_measures]
-        out = out.with_columns(pl.lit(dynamic_measurement_indices).alias("dynamic_measurement_indices"))
+        # Group by subject_id to create lists
+        out = event_data.group_by("subject_id").agg([
+            pl.col("start_time").first().alias("start_time"),
+            pl.col("time").alias("time"),
+            pl.col("dynamic_indices").alias("dynamic_indices"),
+            pl.col("dynamic_measurement_indices").alias("dynamic_measurement_indices"),
+            pl.col("dynamic_values").alias("dynamic_values")
+        ])
+
+        # Join with static data
+        out = static_data.join(out, on="subject_id", how="left")
 
         if do_sort_outputs:
             out = out.sort("subject_id")
+
+        # Save dynamic_indices vocab and dynamic_measurement_indices vocab
+        with open(self.config.save_dir / "dynamic_indices_vocab.json", "w") as f:
+            json.dump(self.code_mapping, f, indent=2)
+        
+        with open(self.config.save_dir / "dynamic_measurement_indices_vocab.json", "w") as f:
+            json.dump(event_type_mapping, f, indent=2)
 
         return out
 
@@ -1620,6 +1716,7 @@ def process_events_and_measurements_df(
         dynamic_cols.append(pl.col("CodeWithType").replace(code_to_index).alias("dynamic_indices"))
         dynamic_cols.append(pl.lit(None).cast(pl.Float64).alias("Result"))
         dynamic_cols.append(pl.lit(None).cast(pl.Float64).alias("dynamic_values"))
+        dynamic_cols.append(pl.lit(1).cast(pl.UInt32).alias("dynamic_measurement_indices"))
     elif event_type == 'LAB':
         dynamic_cols.append(pl.col("Code").replace(code_to_index).alias("dynamic_indices"))
         if "Result" in df.columns:
@@ -1628,20 +1725,13 @@ def process_events_and_measurements_df(
         else:
             dynamic_cols.append(pl.lit(None).cast(pl.Float64).alias("Result"))
             dynamic_cols.append(pl.lit(None).cast(pl.Float64).alias("dynamic_values"))
+        dynamic_cols.append(pl.lit(1).cast(pl.UInt32).alias("dynamic_measurement_indices"))
     
     dynamic_measurements_df = df.select(dynamic_cols)
 
     print(f"Output columns for {event_type}: {dynamic_measurements_df.columns}")
     print(f"Sample output for {event_type}:")
     print(dynamic_measurements_df.head())
-
-    # Fill null values with 0 for numeric columns
-    float_columns = [col for col in dynamic_measurements_df.columns 
-                     if dynamic_measurements_df[col].dtype in [pl.Float32, pl.Float64]]
-    
-    dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col(col).fill_null(0) for col in float_columns
-    ])
 
     return events_df, dynamic_measurements_df
         
@@ -1760,7 +1850,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.split = split
         self.dl_reps_dir = Path(dl_reps_dir)
         self.subjects_df = subjects_df
-        self.task_df = task_df
         self.df_dia = df_dia
         self.df_prc = df_prc
         self.df_labs = df_labs
@@ -1768,18 +1857,12 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
 
         self.has_task = task_df is not None
         if self.has_task:
-            task_columns = [col for col in task_df.columns if col != 'subject_id']
-            if len(task_columns) == 1:
-                self.tasks = ['label']
-                self.task_types = {'label': 'binary_classification'}
-            else:
-                self.tasks = task_columns
-                self.task_types = {task: 'binary_classification' for task in self.tasks}
+            # Instead of setting index, we'll keep the original DataFrame
+            self.task_df = task_df
         else:
-            self.tasks = []
-            self.task_types = {}
+            self.task_df = None
 
-        self.create_code_mapping()  # Create code mapping before loading cached data
+        self.create_code_mapping()
         self.load_cached_data()
 
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
@@ -1853,93 +1936,75 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         try:
             row = self.cached_data.row(idx)
-            raw_dynamic_indices = row[self.cached_data.columns.index('dynamic_indices')]
-            dynamic_indices = self.process_dynamic_indices(raw_dynamic_indices).clone()  # Add .clone() here
-            
-            if dynamic_indices.numel() == 0:
-                dynamic_indices = torch.tensor([0], dtype=torch.long)
+            subject_id = row[self.cached_data.columns.index('subject_id')]
             
             item = {
-                'dynamic_indices': dynamic_indices,
-                'labels': torch.tensor(row[self.cached_data.columns.index('label')], dtype=torch.float32).clone() if self.has_task else None,
+                'dynamic_indices': self.process_dynamic_indices(row[self.cached_data.columns.index('dynamic_indices')]),
+                'dynamic_values': self.process_dynamic_values(row[self.cached_data.columns.index('dynamic_values')]),
+                'static_indices': self.process_static_indices(row[self.cached_data.columns.index('static_indices')]),
+                'static_measurement_indices': self.process_static_indices(row[self.cached_data.columns.index('static_measurement_indices')]),
+                'subject_id': torch.tensor(subject_id, dtype=torch.long),
             }
             
-            if 'dynamic_values' in self.cached_data.columns:
-                raw_dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
-                item['dynamic_values'] = self.process_dynamic_values(raw_dynamic_values).clone()  # Add .clone() here
+            # Add time if it exists in the data
+            if 'time' in self.cached_data.columns:
+                item['time'] = torch.tensor(row[self.cached_data.columns.index('time')], dtype=torch.float)
+            
+            # Add start_time if it exists in the data
+            if 'start_time' in self.cached_data.columns:
+                item['start_time'] = torch.tensor(row[self.cached_data.columns.index('start_time')].timestamp(), dtype=torch.float)
+            
+            if self.has_task:
+                label = self.task_df.filter(pl.col('subject_id') == subject_id)['label'].item()
+                item['labels'] = torch.tensor(float(label), dtype=torch.float32)
             else:
-                item['dynamic_values'] = torch.tensor([0.0], dtype=torch.float32)
+                item['labels'] = torch.tensor(0.0, dtype=torch.float32)
             
-            static_features = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
-            for feature in static_features:
-                item[feature] = self.process_static_feature(row, feature).clone()  # Add .clone() here
-            
-            if 'A1cGreaterThan7' in self.cached_data.columns:
-                item['A1cGreaterThan7'] = self.process_static_feature(row, 'A1cGreaterThan7', dtype=torch.float32).clone()  # Add .clone() here
-            else:
-                item['A1cGreaterThan7'] = torch.tensor(0.0, dtype=torch.float32)
-            
-            return self.handle_nan_values(item)
+            return item
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
             return self.get_default_item()
 
-    def process_dynamic_values(self, raw_dynamic_values):
-        if raw_dynamic_values is None:
-            return torch.tensor([0.0], dtype=torch.float32)  # Default value for missing dynamic_values
-        
-        if isinstance(raw_dynamic_values, str):
-            try:
-                values = ast.literal_eval(raw_dynamic_values)
-                if isinstance(values, (list, tuple)):
-                    return torch.tensor(values, dtype=torch.float32)
-                else:
-                    return torch.tensor([float(values)], dtype=torch.float32)
-            except:
-                self.logger.warning(f"Failed to parse string dynamic_values: {raw_dynamic_values}, using default value")
-                return torch.tensor([0.0], dtype=torch.float32)
-        
-        if isinstance(raw_dynamic_values, (float, int)):
-            return torch.tensor([float(raw_dynamic_values)], dtype=torch.float32)
-        
-        if isinstance(raw_dynamic_values, (list, tuple)):
-            return torch.tensor(raw_dynamic_values, dtype=torch.float32)
-        
-        self.logger.error(f"Unexpected type for dynamic_values: {type(raw_dynamic_values)}")
-        return torch.tensor([0.0], dtype=torch.float32)
+    def get_default_item(self):
+        return {
+            'dynamic_indices': torch.tensor([], dtype=torch.long),
+            'dynamic_values': torch.tensor([], dtype=torch.float),
+            'static_indices': torch.tensor([], dtype=torch.long),
+            'static_measurement_indices': torch.tensor([], dtype=torch.long),
+            'subject_id': torch.tensor(0, dtype=torch.long),
+            'labels': torch.tensor(0.0, dtype=torch.float32),
+            'time': torch.tensor([], dtype=torch.float),
+            'start_time': torch.tensor(0.0, dtype=torch.float),
+        }
 
     def process_dynamic_indices(self, indices):
         if indices is None:
-            self.logger.warning(f"Received None for dynamic_indices, using default value")
             return torch.tensor([0], dtype=torch.long)
-        
-        if isinstance(indices, (int, np.integer)):
-            return torch.tensor([indices], dtype=torch.long)
-        
+        if isinstance(indices, (int, float)):
+            return torch.tensor([int(indices)], dtype=torch.long)
         if isinstance(indices, str):
-            try:
-                indices = ast.literal_eval(indices)
-            except:
-                self.logger.warning(f"Failed to parse string dynamic_indices: {indices}, using default value")
-                return torch.tensor([0], dtype=torch.long)
-        
+            indices = ast.literal_eval(indices)
         if isinstance(indices, list):
             return torch.tensor(indices, dtype=torch.long)
-        
-        self.logger.error(f"Unexpected type for dynamic_indices: {type(indices)}")
-        return torch.tensor([0], dtype=torch.long)
+        return torch.tensor([indices], dtype=torch.long)
 
-    def process_dynamic_counts(self, counts):
-        if counts is None:
+    def process_dynamic_values(self, values):
+        if values is None:
             return torch.tensor([0.0], dtype=torch.float32)
-        if isinstance(counts, str):
-            try:
-                counts = json.loads(counts)
-            except json.JSONDecodeError:
-                counts = [float(x) for x in counts.split(',')]
-        if isinstance(counts, (int, float)):
-            counts = [float(counts)]
-        return torch.tensor(counts, dtype=torch.float32)
+        if isinstance(values, (int, float)):
+            return torch.tensor([float(values)], dtype=torch.float32)
+        if isinstance(values, str):
+            values = ast.literal_eval(values)
+        if isinstance(values, list):
+            return torch.tensor(values, dtype=torch.float32)
+        return torch.tensor([values], dtype=torch.float32)
+
+    def process_static_indices(self, indices):
+        if indices is None:
+            return torch.tensor([], dtype=torch.long)
+        if isinstance(indices, str):
+            indices = ast.literal_eval(indices)
+        return torch.tensor(indices, dtype=torch.long)
 
     def process_static_feature(self, row, feature, dtype=None):
         if dtype is None:
@@ -1955,52 +2020,26 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
                 self.logger.warning(f"NaN values found in {key} for subject_id {item['subject_id']}")
                 item[key] = torch.nan_to_num(value, nan=0.0)
         return item
-
-    def get_default_item(self):
-        return {
-            'subject_id': -1,
-            'dynamic_indices': torch.tensor([1], dtype=torch.long),
-            'labels': torch.tensor(0.0, dtype=torch.float32) if self.has_task else None,
-            'InitialA1c': torch.tensor(0.0, dtype=torch.float32),
-            'Female': torch.tensor(0, dtype=torch.long),
-            'Married': torch.tensor(0, dtype=torch.long),
-            'GovIns': torch.tensor(0, dtype=torch.long),
-            'English': torch.tensor(0, dtype=torch.long),
-            'AgeYears': torch.tensor(0.0, dtype=torch.float32),
-            'SDI_score': torch.tensor(0.0, dtype=torch.float32),
-            'Veteran': torch.tensor(0, dtype=torch.long),
-            'A1cGreaterThan7': torch.tensor(0.0, dtype=torch.float32)
-        }
-
+        
     def get_max_index(self):
         return max(self.code_to_index.values())
 
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
     """
     Creates a scatter plot with gender-based coloring and saves it to a file.
-
-    Parameters:
-    - data: DataFrame with the data to plot.
-    - x_col: Column name to use for the x-axis.
-    - y_col: Column name to use for the y-axis.
-    - gender_col: Column name for gender representation.
-    - title: Title for the plot.
-    - y_label: Label for the y-axis.
-    - x_range: Tuple specifying the range of the x-axis (min, max).
-    - file_path: Path to save the plot as a PNG file.
     """
-    # Map gender to "Female" or "Male"
-    data[gender_col] = data[gender_col].map({1: "Female", 0: "Male"})
-
-    # Create the scatter plot
-    fig = px.scatter(data, x=x_col, y=y_col, color=gender_col,
-                     title=title,
-                     labels={x_col: 'Age', y_col: y_label, gender_col: 'Gender'},
-                     range_x=x_range)
-
-    # Save to file
-    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
-
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for gender in [0, 1]:  # 0 for Male, 1 for Female
+        subset = data[data[gender_col] == gender]
+        ax.scatter(subset[x_col], subset[y_col], label="Female" if gender == 1 else "Male", alpha=0.5)
+    ax.set_xlabel('Age')
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    ax.legend()
+    ax.set_xlim(x_range)
+    plt.savefig(file_path)
+    plt.close()
+    
 def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(df[x], df[y])
@@ -2009,7 +2048,6 @@ def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
     ax.set_title(title)
     plt.xticks(rotation=90)
 
-    # Add vertical dashed lines
     date1 = mdates.date2num(datetime(2000, 1, 1))
     date2 = mdates.date2num(datetime(2022, 6, 30))
     ax.axvline(date1, color='r', linestyle='--', label='Start of Study')
@@ -2019,10 +2057,10 @@ def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
     if x_range:
         ax.set_xlim(x_range)
 
-    plt.savefig(f'data_summaries/{filename}', dpi=300, bbox_inches='tight')
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
-def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
+def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df, filepath):
     # Convert timestamp to month
     dynamic_measurements_df = dynamic_measurements_df.with_columns(
         pl.col("timestamp").dt.strftime("%Y-%m").alias("month")
@@ -2045,7 +2083,7 @@ def plot_avg_measurements_per_patient_per_month(dynamic_measurements_df):
         measurements_per_patient_per_month_pd, 
         'month', 
         'avg_measurements_per_patient', 
-        'avg_measurements_per_patient_per_month.png', 
+        filepath, 
         'Month', 
         'Average Measurements per Patient', 
         'Average Measurements per Patient per Month',

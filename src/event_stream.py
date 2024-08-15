@@ -47,7 +47,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, fit_scaler_on_training_data
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, fit_scaler_on_training_data, map_to_index
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -145,7 +145,7 @@ def main(use_labs=False, debug=False):
                 _measurement_metadata=None,
             ),
         },
-        normalizer_config={'cls': 'standard_scaler'},
+        normalizer_config=None,
         save_dir=data_dir
     )
 
@@ -177,18 +177,20 @@ def main(use_labs=False, debug=False):
 
     # Create static vocabularies
     static_indices_vocab, static_measurement_indices_vocab = create_static_vocabularies(subjects_df)
+
+    dynamic_measurement_indices_vocab = {"dynamic_indices": 1}
+
+    # After creating static_indices_vocab and static_measurement_indices_vocab
+    with open(data_dir / "static_indices_vocab.json", "w") as f:
+        json.dump(static_indices_vocab, f, indent=2)
+
+    with open(data_dir / "static_measurement_indices_vocab.json", "w") as f:
+        json.dump(static_measurement_indices_vocab, f, indent=2)
     
     static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
 
-    def map_to_index(col):
-        mapping_dict = {str(k): v for k, v in static_indices_vocab[col].items()}
-        expr = pl.when(pl.col(col).is_null()).then(None)
-        for k, v in mapping_dict.items():
-            expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(v)
-        return expr.otherwise(None)
-
     # Create expressions for static_indices and static_measurement_indices
-    static_indices_expr = pl.concat_list([map_to_index(col) for col in static_columns]).alias("static_indices")
+    static_indices_expr = pl.concat_list([map_to_index(col, static_indices_vocab) for col in static_columns]).alias("static_indices")
     static_measurement_indices_expr = pl.concat_list([
         pl.when(pl.col(col).is_not_null())
         .then(pl.lit(static_measurement_indices_vocab[col]))
@@ -207,7 +209,7 @@ def main(use_labs=False, debug=False):
         pl.col("static_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32)),
         pl.col("static_measurement_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32))
     ])
-
+    
     print("Data types after processing:")
     print(subjects_df.dtypes)
     
@@ -326,16 +328,10 @@ def main(use_labs=False, debug=False):
     events_df = events_df.drop('original_event_id')
     dynamic_measurements_df = dynamic_measurements_df.drop('original_event_id')
 
-    # Convert dynamic_values to float, replacing non-numeric values with 0
+    # Convert dynamic_values to float
     dynamic_measurements_df = dynamic_measurements_df.with_columns(
-        pl.col('dynamic_values').cast(pl.Float64, strict=False).fill_null(0)
+        pl.col('dynamic_values').cast(pl.Float64, strict=False)
     )
-
-    # Fill null with 0 for Result column as well
-    dynamic_measurements_df = dynamic_measurements_df.with_columns([
-        pl.col('Result').fill_null(0),
-        pl.col('dynamic_values').fill_null(0)
-    ])
 
     print("Data type of dynamic_values after conversion:", dynamic_measurements_df['dynamic_values'].dtype)
 
@@ -396,6 +392,9 @@ def main(use_labs=False, debug=False):
     with open(data_dir / 'index_to_code.json', 'w') as f:
         json.dump(index_to_code, f)
 
+   # Define event_type_mapping
+    event_type_mapping = {"DIAGNOSIS": 1, "PROCEDURE": 2, "LAB": 3}
+    
     # Now create the Dataset object after saving the files
     ESD = ConcreteDataset(
         config=config,
@@ -414,7 +413,9 @@ def main(use_labs=False, debug=False):
     ESD.preprocess()
 
     # Cache deep learning representation
-    ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite)
+    ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite, 
+                                           static_indices_vocab=static_indices_vocab,
+                                           dynamic_measurement_indices_vocab=event_type_mapping)
 
     # Save dataset
     ESD.save(do_overwrite=do_overwrite)
