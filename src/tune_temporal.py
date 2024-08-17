@@ -45,10 +45,7 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.sample_from(
-                lambda spec: tune.choice([512, 1024, 2048]) if spec.config["config"]["use_gradient_checkpointing"] 
-                             else tune.choice([128, 256, 512, 1024])
-            ),
+            "batch_size": tune.choice([128, 256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -60,8 +57,8 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "data_config": {
             **base_config.get('data_config', {}),
-            "min_seq_len": tune.randint(4, 50),
-            "max_seq_len": tune.randint(100, 1000),
+            "min_seq_len": tune.randint(2, 100),
+            "max_seq_len": tune.randint(200, 2000),
         }
     }
 

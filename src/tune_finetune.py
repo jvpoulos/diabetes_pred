@@ -498,10 +498,6 @@ def main(cfg):
         max_seq_len = resolve_tune_value(spec.config["data_config"]["max_seq_len"])
         return np.random.randint(min_seq_len, max_seq_len + 1)
 
-    def get_batch_size(spec):
-        use_gradient_checkpointing = resolve_tune_value(spec.config["config"]["use_gradient_checkpointing"])
-        return int(np.random.choice([512, 1024, 2048] if use_gradient_checkpointing else [128, 256, 512, 1024]))
-
     search_space = {
         "config": {
             "use_layer_norm": tune.choice([True, False]),
@@ -534,7 +530,7 @@ def main(cfg):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.sample_from(get_batch_size),
+            "batch_size": tune.choice([128, 256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -549,8 +545,8 @@ def main(cfg):
         },
         "data_config": {
             **data_config,
-            "min_seq_len": tune.randint(4, 50),
-            "max_seq_len": tune.randint(100, 1000),
+            "min_seq_len": tune.randint(2, 100),
+            "max_seq_len": tune.randint(200, 2000),
         }
     }
 

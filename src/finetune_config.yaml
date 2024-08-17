@@ -50,8 +50,8 @@ optimization_config:
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.001  # This should be equal to end_lr / init_lr
   max_epochs: 100 
-  batch_size: 1024
-  validation_batch_size: 1024
+  batch_size: 256
+  validation_batch_size: 256
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01

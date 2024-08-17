@@ -27,7 +27,7 @@ if torch.cuda.is_available():
     torch.set_float32_matmul_precision('medium')
 import logging
 
-from data_utils import CustomPytorchDataset
+from data_utils import CustomPytorchDataset, create_dataset
 
 @hydra.main(version_base=None, config_path=".", config_name="finetune_config")
 def main(cfg: DictConfig):
@@ -122,15 +122,11 @@ def _main(cfg: dict, use_labs: bool = False):
         logger.info(f"Using device: {device}")
 
         logger.info("Creating CustomPytorchDataset instances")
-        train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir,
-                                         subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                         task_df=train_df, device=device)
-        tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir,
-                                          subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                          task_df=val_df, device=device)
-        held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir,
-                                            subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                            task_df=test_df, device=device)
+
+        # Create datasets
+        train_pyd = create_dataset(cfg.data_config, "train", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, train_df, max_seq_len=cfg.data_config.max_seq_len)
+        tuning_pyd = create_dataset(cfg.data_config, "tuning", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, val_df, max_seq_len=cfg.data_config.max_seq_len)
+        held_out_pyd = create_dataset(cfg.data_config, "held_out", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, test_df, max_seq_len=cfg.data_config.max_seq_len)
 
         logger.info(f"Train dataset length: {len(train_pyd)}")
         logger.info(f"Tuning dataset length: {len(tuning_pyd)}")

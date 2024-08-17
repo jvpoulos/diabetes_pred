@@ -70,7 +70,7 @@ def main(ESD, use_labs=False):
 
 
     # Process in smaller chunks and use lazy evaluation
-    chunk_size = 5000
+    chunk_size = 10000
     events_per_subject_at_age = (
         ESD.events_df.lazy()
         .join(ESD.subjects_df.lazy().select(['subject_id', 'AgeYears', 'Female']), on='subject_id')
@@ -198,8 +198,8 @@ def main(ESD, use_labs=False):
                   DATA_SUMMARIES_DIR / "measurements_per_subject_at_age_by_gender.png")
 
     # For measurements_per_subject_distribution
-    measurements_per_subject_pd = measurements_per_subject.to_pandas()
-    measurements_per_subject_pd = measurements_per_subject_pd.merge(ESD.subjects_df.select('subject_id', 'Female').to_pandas(), on='subject_id', how='left')
+    measurements_per_subject_pd = measurements_per_subject_at_age.to_pandas()
+    measurements_per_subject_pd = measurements_per_subject_pd.merge(ESD.subjects_df.select('subject_id', 'Female').to_pandas(), on=['AgeYears', 'Female'], how='left')
     measurements_per_subject_pd['Female'] = measurements_per_subject_pd['Female'].map({1: "Female", 0: "Male"})
 
     print("Unique values in Female column:", measurements_per_subject_pd['Female'].unique())
@@ -215,7 +215,6 @@ def main(ESD, use_labs=False):
     print("Sample of merged_data:")
     print(merged_data.head())
 
-    print("Shape of measurements_per_subject:", measurements_per_subject.shape)
     print("Shape of measurements_per_subject_pd:", measurements_per_subject_pd.shape)
     print("Sample of measurements_per_subject_pd:")
     print(measurements_per_subject_pd.head())

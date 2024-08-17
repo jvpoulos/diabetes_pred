@@ -55,6 +55,20 @@ from EventStream.data.types import DataModality, TemporalityType, NumericDataMod
 from EventStream.data.vocabulary import Vocabulary
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
+def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
+    dataset = CustomPytorchDataset(
+        config=config,
+        split=split,
+        dl_reps_dir=dl_reps_dir,
+        subjects_df=subjects_df,
+        df_dia=df_dia,
+        df_prc=df_prc,
+        df_labs=df_labs,
+        task_df=task_df,
+        max_seq_len=max_seq_len
+    )
+    return dataset
+            
 def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
     static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
     static_indices = []
@@ -1840,9 +1854,9 @@ def create_code_mapping(df_dia, df_prc, df_labs=None):
     print(f"Sample of code_to_index: {dict(list(code_to_index.items())[:5])}")
     
     return code_to_index
-    
+
 class CustomPytorchDataset(torch.utils.data.Dataset):
-    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None):
+    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None, max_seq_len=None):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
@@ -1854,20 +1868,60 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.df_prc = df_prc
         self.df_labs = df_labs
         self.device = device
+        self.task_df = task_df
+
+        self.max_seq_len = max_seq_len
 
         self.has_task = task_df is not None
         if self.has_task:
-            # Instead of setting index, we'll keep the original DataFrame
-            self.task_df = task_df
-        else:
-            self.task_df = None
+            # Convert task_df to a dictionary for faster lookup
+            self.task_dict = dict(zip(self.task_df['subject_id'].to_list(), self.task_df['label'].to_list()))
 
         self.create_code_mapping()
-        self.load_cached_data()
+        self.cached_data = self.load_cached_data()  # Load the cached data here
 
+        self.length = len(self.cached_data)  # Set the length after loading the data
         self.logger.info(f"CustomPytorchDataset initialized for split: {split}")
-        self.logger.info(f"Dataset length: {len(self.cached_data)}")
+        self.logger.info(f"Dataset length: {self.length}")
         self.logger.info(f"Has task: {self.has_task}")
+
+    def __getitem__(self, idx):
+        if idx < 0 or idx >= self.length:
+            raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
+
+        try:
+            row = self.cached_data.row(idx)
+            item = {}
+            for col in ['dynamic_indices', 'dynamic_measurement_indices', 'static_indices', 'static_measurement_indices']:
+                data = row[self.cached_data.columns.index(col)]
+                if data is None:
+                    self.logger.warning(f"None value found in {col} for index {idx}")
+                    data = []
+                item[col] = torch.tensor(data[:self.max_seq_len], dtype=torch.long)  # Truncate to max_seq_len
+
+            # Handle dynamic_values
+            dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
+            item['dynamic_values'] = torch.tensor([v if v is not None else 0.0 for v in dynamic_values[:self.max_seq_len]], dtype=torch.float)  # Truncate to max_seq_len
+
+            # Handle time
+            time = row[self.cached_data.columns.index('time')]
+            item['time'] = torch.tensor(time[:self.max_seq_len], dtype=torch.float)  # Truncate to max_seq_len
+
+            # Get the subject_id
+            subject_id = row[self.cached_data.columns.index('subject_id')]
+
+            # Get the label from task_dict
+            if self.has_task:
+                label = self.task_dict.get(subject_id, 0.0)
+                item['labels'] = torch.tensor(float(label), dtype=torch.float32)
+            else:
+                item['labels'] = torch.tensor(0.0, dtype=torch.float32)
+                    
+            return item
+        except Exception as e:
+            self.logger.error(f"Error getting item at index {idx}: {str(e)}")
+            self.logger.error(f"Dataset length: {self.length}")
+            raise
 
     def create_code_mapping(self):
         """Create a mapping from codes to indices for diagnoses, procedures, and labs."""
@@ -1884,126 +1938,101 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         
         self.logger.info(f"Total unique codes: {len(self.code_to_index)}")
         self.logger.info(f"Sample of code_to_index: {dict(list(self.code_to_index.items())[:5])}")
-        
+
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
         
         if not self.dl_reps_dir.exists():
             raise FileNotFoundError(f"Directory not found: {self.dl_reps_dir}")
-
+        
         parquet_files = list(self.dl_reps_dir.glob(f"{self.split}*.parquet"))
-        self.logger.debug(f"Found {len(parquet_files)} Parquet files")
-
+        self.logger.info(f"Found {len(parquet_files)} Parquet files")
+        
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
         
         pl.enable_string_cache()  # Enable global string cache
         
-        dfs = []
+        lazy_dfs = []
         total_rows = 0
-        for parquet_file in parquet_files:
-            self.logger.debug(f"Reading file: {parquet_file}")
+        for parquet_file in tqdm(parquet_files, desc="Loading data files"):
+            self.logger.debug(f"Scanning file: {parquet_file}")
             try:
-                df = pl.read_parquet(parquet_file)
-                self.logger.debug(f"File {parquet_file} shape: {df.shape}")
+                lazy_df = pl.scan_parquet(parquet_file)
                 if self.task_df is not None:
-                    df = df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
-                dfs.append(df)
-                total_rows += df.shape[0]
+                    lazy_df = lazy_df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
+                lazy_dfs.append(lazy_df)
+                # Estimate rows without loading the entire file
+                total_rows += lazy_df.select(pl.count()).collect().item()
             except Exception as e:
-                self.logger.error(f"Error reading Parquet file: {parquet_file}")
+                self.logger.error(f"Error scanning Parquet file: {parquet_file}")
                 self.logger.error(f"Error message: {str(e)}")
                 continue
 
-        if not dfs:
+        if not lazy_dfs:
             self.logger.error(f"No data loaded for split: {self.split}")
             raise ValueError(f"No data loaded for split: {self.split}")
 
-        self.logger.info(f"Loaded {total_rows} rows of cached data")
-
+        self.logger.info(f"Estimated total rows: {total_rows}")
+        
         if total_rows == 0:
             raise ValueError(f"No matching data found for split: {self.split}")
 
-        self.cached_data = pl.concat(dfs)
-
+        # Combine lazy DataFrames and collect the result
+        cached_data = pl.concat(lazy_dfs).collect()
+        
+        self.logger.info(f"Final cached_data shape: {cached_data.shape}")
         pl.disable_string_cache()  # Disable global string cache after concatenation
-
+        
         self.logger.info(f"Cached data loaded successfully for split: {self.split}")
+        self.logger.info(f"Dataset size: {len(cached_data)}")
+        self.logger.debug("Data types of cached data:")
+        self.logger.debug(cached_data.dtypes)
+
+        # Optionally, you can add a data summary here
+        self.logger.info("Data summary:")
+        self.logger.info(cached_data.describe())
+
+        return cached_data
 
     def __len__(self):
-        return self.cached_data.shape[0]
-
-    def __getitem__(self, idx):
-        try:
-            row = self.cached_data.row(idx)
-            subject_id = row[self.cached_data.columns.index('subject_id')]
-            
-            item = {
-                'dynamic_indices': self.process_dynamic_indices(row[self.cached_data.columns.index('dynamic_indices')]),
-                'dynamic_values': self.process_dynamic_values(row[self.cached_data.columns.index('dynamic_values')]),
-                'static_indices': self.process_static_indices(row[self.cached_data.columns.index('static_indices')]),
-                'static_measurement_indices': self.process_static_indices(row[self.cached_data.columns.index('static_measurement_indices')]),
-                'subject_id': torch.tensor(subject_id, dtype=torch.long),
-            }
-            
-            # Add time if it exists in the data
-            if 'time' in self.cached_data.columns:
-                item['time'] = torch.tensor(row[self.cached_data.columns.index('time')], dtype=torch.float)
-            
-            # Add start_time if it exists in the data
-            if 'start_time' in self.cached_data.columns:
-                item['start_time'] = torch.tensor(row[self.cached_data.columns.index('start_time')].timestamp(), dtype=torch.float)
-            
-            if self.has_task:
-                label = self.task_df.filter(pl.col('subject_id') == subject_id)['label'].item()
-                item['labels'] = torch.tensor(float(label), dtype=torch.float32)
-            else:
-                item['labels'] = torch.tensor(0.0, dtype=torch.float32)
-            
-            return item
-        except Exception as e:
-            self.logger.error(f"Error getting item at index {idx}: {str(e)}")
-            return self.get_default_item()
+        return self.length  # Use the stored length
 
     def get_default_item(self):
         return {
-            'dynamic_indices': torch.tensor([], dtype=torch.long),
-            'dynamic_values': torch.tensor([], dtype=torch.float),
-            'static_indices': torch.tensor([], dtype=torch.long),
-            'static_measurement_indices': torch.tensor([], dtype=torch.long),
-            'subject_id': torch.tensor(0, dtype=torch.long),
+            'dynamic_indices': torch.zeros(1, dtype=torch.long),
+            'dynamic_values': torch.zeros(1, dtype=torch.float),
+            'dynamic_measurement_indices': torch.zeros(1, dtype=torch.long),
+            'static_indices': torch.zeros(1, dtype=torch.long),
+            'static_measurement_indices': torch.zeros(1, dtype=torch.long),
+            'time': torch.tensor([0.0], dtype=torch.float),
             'labels': torch.tensor(0.0, dtype=torch.float32),
-            'time': torch.tensor([], dtype=torch.float),
-            'start_time': torch.tensor(0.0, dtype=torch.float),
         }
 
+    def pad_sequence(self, sequence, max_length, pad_value=0):
+        if isinstance(sequence, list):
+            padded = sequence[:max_length] + [pad_value] * max(0, max_length - len(sequence))
+        else:
+            try:
+                padded = sequence[:max_length].tolist() + [pad_value] * max(0, max_length - len(sequence))
+            except AttributeError:
+                self.logger.warning(f"Unexpected sequence type: {type(sequence)}")
+                padded = [pad_value] * max_length
+        return torch.tensor(padded, dtype=torch.float32 if pad_value == 0.0 else torch.long)
+
     def process_dynamic_indices(self, indices):
-        if indices is None:
+        if indices is None or len(indices) == 0:
             return torch.tensor([0], dtype=torch.long)
-        if isinstance(indices, (int, float)):
-            return torch.tensor([int(indices)], dtype=torch.long)
-        if isinstance(indices, str):
-            indices = ast.literal_eval(indices)
-        if isinstance(indices, list):
-            return torch.tensor(indices, dtype=torch.long)
-        return torch.tensor([indices], dtype=torch.long)
+        return torch.tensor(indices, dtype=torch.long)
 
     def process_dynamic_values(self, values):
-        if values is None:
+        if values is None or len(values) == 0:
             return torch.tensor([0.0], dtype=torch.float32)
-        if isinstance(values, (int, float)):
-            return torch.tensor([float(values)], dtype=torch.float32)
-        if isinstance(values, str):
-            values = ast.literal_eval(values)
-        if isinstance(values, list):
-            return torch.tensor(values, dtype=torch.float32)
-        return torch.tensor([values], dtype=torch.float32)
+        return torch.tensor(values, dtype=torch.float32)
 
     def process_static_indices(self, indices):
-        if indices is None:
-            return torch.tensor([], dtype=torch.long)
-        if isinstance(indices, str):
-            indices = ast.literal_eval(indices)
+        if indices is None or len(indices) == 0:
+            return torch.tensor([0], dtype=torch.long)
         return torch.tensor(indices, dtype=torch.long)
 
     def process_static_feature(self, row, feature, dtype=None):
