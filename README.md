@@ -168,7 +168,7 @@ $ python3 src/event_stream.py --use_labs
 
 2. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
-$ python3 src/tune_temporal.py --epochs 100
+$ python3 src/tune_temporal.py --epochs 200
 ```
 
 3. Train the transformer from scratch:

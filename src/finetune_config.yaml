@@ -8,8 +8,8 @@ pretrained_weights_fp: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
   output_attentions: true
-  output_hidden_states: false
-  output_scores: false
+  output_hidden_states: true
+  output_scores: true
   use_gradient_checkpointing: false
   use_cache: true # must be false if use_gradient_checkpointing is true
   use_labs: true
@@ -49,9 +49,9 @@ optimization_config:
   init_lr: 1e-2  # Initial learning rate
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.001  # This should be equal to end_lr / init_lr
-  max_epochs: 100 
-  batch_size: 256
-  validation_batch_size: 256
+  max_epochs: 200 
+  batch_size: 2048
+  validation_batch_size: 2048
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01
@@ -81,7 +81,7 @@ data_config:
 
 trainer_config:
   accelerator: auto
-  devices: 3
+  devices: 1
   precision: "16-mixed"
   detect_anomaly: false
   log_every_n_steps: 100

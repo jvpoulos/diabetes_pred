@@ -139,13 +139,13 @@ def create_datasets(cfg, device):
 
     train_pyd = CustomPytorchDataset(data_config, split="train", dl_reps_dir=dl_reps_dir,
                                      subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                     task_df=train_df, device=device)
+                                     task_df=train_df, device=device, max_seq_len=data_config.get('max_seq_len'))
     tuning_pyd = CustomPytorchDataset(data_config, split="tuning", dl_reps_dir=dl_reps_dir,
                                       subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                      task_df=val_df, device=device)
+                                      task_df=val_df, device=device, max_seq_len=data_config.get('max_seq_len'))
     held_out_pyd = CustomPytorchDataset(data_config, split="held_out", dl_reps_dir=dl_reps_dir,
                                         subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, df_labs=df_labs,
-                                        task_df=test_df, device=device)
+                                        task_df=test_df, device=device, max_seq_len=data_config.get('max_seq_len'))
     return train_pyd, tuning_pyd, held_out_pyd
 
 def train_function(config):
@@ -226,10 +226,6 @@ def train_function(config):
     # Ensure vocab_size is set correctly after the update
     config["config"]["vocab_size"] = vocab_size
 
-    # Update config with the hyperparameters from Ray Tune
-    config["config"].update(config.get("config", {}))
-    config["optimization_config"].update(config.get("optimization_config", {}))
-
     if config["config"]["use_layer_norm"]:
         if "layer_norm_epsilon" not in config["config"] or config["config"]["layer_norm_epsilon"] is None:
             config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-6, 1e-4)
@@ -256,9 +252,11 @@ def train_function(config):
     if "intermediate_dropout" not in config["config"]:
         config["config"]["intermediate_dropout"] = config["config"].get("dropout", 0.1)  # Default to 0.1 if not specified
 
-    # Ensure max_training_steps and weight_decay are in optimization_config
+    # Ensure optimization_config is fully specified
     if "validation_batch_size" not in config["optimization_config"]:
         config["optimization_config"]["validation_batch_size"] = int(config["optimization_config"]["batch_size"])
+    if "num_dataloader_workers" not in config["optimization_config"]:
+        config["optimization_config"]["num_dataloader_workers"] = int(config["optimization_config"]["num_dataloader_workers"])
     if "weight_decay" not in config["optimization_config"]:
         config["optimization_config"]["weight_decay"] = config["optimization_config"].get("weight_decay", 0.01)
     
@@ -530,7 +528,7 @@ def main(cfg):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([128, 256, 512, 1024]),
+            "batch_size": tune.choice([256, 512, 1024, 2048]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -546,7 +544,7 @@ def main(cfg):
         "data_config": {
             **data_config,
             "min_seq_len": tune.randint(2, 100),
-            "max_seq_len": tune.randint(200, 2000),
+            "max_seq_len": tune.randint(256, 2560),
         }
     }
 

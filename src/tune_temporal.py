@@ -45,7 +45,7 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([128, 256, 512, 1024]),
+            "batch_size": tune.choice([256, 512, 1024, 2048]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -58,7 +58,7 @@ def optimize_hyperparameters(config_path, epochs):
         "data_config": {
             **base_config.get('data_config', {}),
             "min_seq_len": tune.randint(2, 100),
-            "max_seq_len": tune.randint(200, 2000),
+            "max_seq_len": tune.randint(256, 2560),
         }
     }
 
@@ -130,7 +130,7 @@ def optimize_hyperparameters(config_path, epochs):
         ),
         name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 4, "gpu": 0.33},  # Allocate 3 CPU and 0.33 GPU per trial
+        resources_per_trial={"cpu": 4, "gpu": 0.5},  # Allocate 3 CPU and 0.5 GPU per trial
         callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 
