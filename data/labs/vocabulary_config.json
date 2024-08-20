@@ -1,0 +1,42 @@
+{
+  "vocab_sizes_by_measurement": {
+    "event_type": 3,
+    "dynamic_indices": 3237
+  },
+  "vocab_offsets_by_measurement": {
+    "event_type": 1,
+    "dynamic_indices": 4
+  },
+  "measurements_idxmap": {
+    "event_type": 1,
+    "InitialA1c": 2,
+    "Female": 3,
+    "Married": 4,
+    "GovIns": 5,
+    "English": 6,
+    "AgeYears": 7,
+    "SDI_score": 8,
+    "Veteran": 9,
+    "static_indices": 10,
+    "static_measurement_indices": 11,
+    "dynamic_indices": 12,
+    "dynamic_values": 13
+  },
+  "measurements_per_generative_mode": {
+    "single_label_classification": [
+      "event_type"
+    ],
+    "multi_label_classification": [
+      "dynamic_indices",
+      "dynamic_values"
+    ],
+    "multivariate_regression": [
+      "dynamic_values"
+    ]
+  },
+  "event_types_idxmap": {
+    "DIAGNOSIS": 1,
+    "LAB": 2,
+    "PROCEDURE": 3
+  }
+}

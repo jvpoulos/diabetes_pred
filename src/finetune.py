@@ -7,6 +7,7 @@ import wandb
 if wandb.run:
     wandb.finish()
 
+import argparse
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
@@ -18,16 +19,36 @@ from EventStream.data.dataset_config import DatasetConfig
 from EventStream.data.dataset_polars import Dataset
 from EventStream.data.pytorch_dataset import PytorchDataset
 from pytorch_lightning.loggers import WandbLogger
+from EventStream.data.vocabulary import VocabularyConfig
 import polars as pl
 import torch
+if torch.cuda.is_available():
+    # Set float32 matmul precision to 'medium' for better performance on Tensor Core enabled devices
+    torch.set_float32_matmul_precision('medium')
 import logging
 
-from data_utils import CustomPytorchDataset
+from data_utils import CustomPytorchDataset, create_dataset
 
 @hydra.main(version_base=None, config_path=".", config_name="finetune_config")
-def main(cfg: FinetuneConfig):
+def main(cfg: DictConfig):
+    # Convert DictConfig to a regular dictionary
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    
+    # Extract use_labs from the config
+    use_labs = cfg_dict.get('use_labs', False)
+    
+    # Now call the actual main function with both arguments
+    _main(cfg_dict, use_labs)
+
+def _main(cfg: dict, use_labs: bool = False):
+
     logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
+
+    logger.info("Loading vocabulary config")
+    with open("data/vocabulary_config.json", "r") as f:
+        vocabulary_config_dict = json.load(f)
+    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
     
     logger.info("Starting main function")
     
@@ -48,11 +69,19 @@ def main(cfg: FinetuneConfig):
         else:
             cfg = FinetuneConfig(**cfg)
 
-        cfg.data_config.dl_reps_dir = Path("data/DL_reps")
         logger.info("Loaded FinetuneConfig:")
         logger.info(str(cfg))
 
-        DATA_DIR = Path("data")
+        if use_labs:
+            DATA_DIR = Path.cwd() / "data/labs"
+        else:
+            DATA_DIR = Path.cwd() / "data"
+
+        logger.info(f"Data directory: {DATA_DIR}")
+
+        # Update dl_reps_dir using the setter method
+        cfg.data_config.set_dl_reps_dir(str(DATA_DIR / "DL_reps"))
+        logger.info(f"DL_reps directory: {cfg.data_config.dl_reps_dir}")
 
         logger.info("Checking parquet files.")
 
@@ -81,15 +110,23 @@ def main(cfg: FinetuneConfig):
         logger.debug(f"Diagnosis DataFrame shape: {df_dia.shape}")
         logger.debug(f"Procedure DataFrame shape: {df_prc.shape}")
 
+        # Load df_labs if it exists
+        df_labs = None
+        if (DATA_DIR / "df_labs.parquet").exists():
+            df_labs = pl.read_parquet(DATA_DIR / "df_labs.parquet")
+            logger.debug(f"Labs DataFrame shape: {df_labs.shape}")
+
         logger.info(f"dl_reps_dir: {cfg.data_config.dl_reps_dir}")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {device}")
 
         logger.info("Creating CustomPytorchDataset instances")
-        train_pyd = CustomPytorchDataset(cfg.data_config, split="train", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=train_df, device=device)
-        tuning_pyd = CustomPytorchDataset(cfg.data_config, split="tuning", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=val_df, device=device)
-        held_out_pyd = CustomPytorchDataset(cfg.data_config, split="held_out", dl_reps_dir=cfg.data_config.dl_reps_dir, subjects_df=subjects_df, df_dia=df_dia, df_prc=df_prc, task_df=test_df, device=device)
+
+        # Create datasets
+        train_pyd = create_dataset(cfg.data_config, "train", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, train_df, max_seq_len=cfg.data_config.max_seq_len)
+        tuning_pyd = create_dataset(cfg.data_config, "tuning", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, val_df, max_seq_len=cfg.data_config.max_seq_len)
+        held_out_pyd = create_dataset(cfg.data_config, "held_out", cfg.data_config.dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, test_df, max_seq_len=cfg.data_config.max_seq_len)
 
         logger.info(f"Train dataset length: {len(train_pyd)}")
         logger.info(f"Tuning dataset length: {len(tuning_pyd)}")
@@ -106,22 +143,17 @@ def main(cfg: FinetuneConfig):
         )
 
         cfg.config.vocab_size = max_index + 1
+        oov_index = cfg.config.vocab_size  # Set oov_index to vocab_size
         logger.info(f"Set vocab_size to {cfg.config.vocab_size}")
+        logger.info(f"Set oov_index to {oov_index}")
 
         logger.debug(f"Train dataset cached data: {[df.shape for df in train_pyd.cached_data_list] if hasattr(train_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
         logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
         logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
 
-        wandb_logger_kwargs = {k: v for k, v in cfg.wandb_logger_kwargs.items() if k not in ['do_log_graph', 'team']}
-        wandb_logger = WandbLogger(
-            **wandb_logger_kwargs,
-            save_dir=cfg.save_dir,
-        )
-
         logger.info("Starting training process")
         try:
-            wandb.init(config=cfg.to_dict())
-            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, wandb_logger=wandb_logger)
+            _, tuning_metrics, held_out_metrics = train(cfg, train_pyd, tuning_pyd, held_out_pyd, vocabulary_config=vocabulary_config, oov_index=oov_index)
         except Exception as e:
             logger.exception(f"Error during training: {str(e)}")
             logger.error(f"Train dataset length: {len(train_pyd)}")

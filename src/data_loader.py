@@ -65,15 +65,15 @@ def main(use_dask=False, use_labs=False):
     print("Validation set size:", validation_df.shape[0])
     print("Test set size:", test_df.shape[0])
 
-    # Extracting 'EMPI' identifiers for each set
-    train_empi = train_df['EMPI']
-    validation_empi = validation_df['EMPI']
-    test_empi = test_df['EMPI']
+    # Extracting 'StudyID' identifiers for each set
+    train_empi = train_df['StudyID']
+    validation_empi = validation_df['StudyID']
+    test_empi = test_df['StudyID']
 
-    # Save the 'EMPI' identifiers to files
-    train_empi.to_csv('train_empi.csv', index=False)
-    validation_empi.to_csv('validation_empi.csv', index=False)
-    test_empi.to_csv('test_empi.csv', index=False)
+    # Save the 'StudyID' identifiers to files
+    train_empi.to_csv('train_ID.csv', index=False)
+    validation_empi.to_csv('validation_ID.csv', index=False)
+    test_empi.to_csv('test_ID.csv', index=False)
 
     print("Replacing missing values in ", 'SDI_score')
 
@@ -117,9 +117,9 @@ def main(use_dask=False, use_labs=False):
     print("Initializing one-hot encoder for diagnoses data.")
 
     # Splitting the DataFrame while preserving the order
-    train_rows_dia = df_dia[df_dia['EMPI'].isin(train_empi)].copy()
-    validation_rows_dia = df_dia[df_dia['EMPI'].isin(validation_empi)].copy()
-    test_rows_dia = df_dia[df_dia['EMPI'].isin(test_empi)].copy()
+    train_rows_dia = df_dia[df_dia['StudyID'].isin(train_empi)].copy()
+    validation_rows_dia = df_dia[df_dia['StudyID'].isin(validation_empi)].copy()
+    test_rows_dia = df_dia[df_dia['StudyID'].isin(test_empi)].copy()
 
     # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
     train_rows_dia['order'] = train_rows_dia.index
@@ -164,9 +164,9 @@ def main(use_dask=False, use_labs=False):
     print("Initializing one-hot encoder for procedures data.")
 
     # Splitting the DataFrame while preserving the order
-    train_rows_prc = df_prc[df_prc['EMPI'].isin(train_empi)].copy()
-    validation_rows_prc = df_prc[df_prc['EMPI'].isin(validation_empi)].copy()
-    test_rows_prc = df_prc[df_prc['EMPI'].isin(test_empi)].copy()
+    train_rows_prc = df_prc[df_prc['StudyID'].isin(train_empi)].copy()
+    validation_rows_prc = df_prc[df_prc['StudyID'].isin(validation_empi)].copy()
+    test_rows_prc = df_prc[df_prc['StudyID'].isin(test_empi)].copy()
 
     # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
     train_rows_prc['order'] = train_rows_prc.index
@@ -209,9 +209,9 @@ def main(use_dask=False, use_labs=False):
         print("Initializing one-hot encoder for labs data.")
 
         # Splitting the DataFrame while preserving the order
-        train_rows_labs = df_labs[df_labs['EMPI'].isin(train_empi)].copy()
-        validation_rows_labs = df_labs[df_labs['EMPI'].isin(validation_empi)].copy()
-        test_rows_labs = df_labs[df_labs['EMPI'].isin(test_empi)].copy()
+        train_rows_labs = df_labs[df_labs['StudyID'].isin(train_empi)].copy()
+        validation_rows_labs = df_labs[df_labs['StudyID'].isin(validation_empi)].copy()
+        test_rows_labs = df_labs[df_labs['StudyID'].isin(test_empi)].copy()
 
         # Add an 'order' column to each subset based on the original DataFrame's index or another unique identifier
         train_rows_labs['order'] = train_rows_labs.index
@@ -318,9 +318,9 @@ def main(use_dask=False, use_labs=False):
         print("Combining labs features splits into a single sparse matrix.")
 
         # Convert the encoded DataFrames to sparse matrices
-        train_encoded_labs_matrix = sp.csr_matrix(train_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
-        validation_encoded_labs_matrix = sp.csr_matrix(validation_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
-        test_encoded_labs_matrix = sp.csr_matrix(test_encoded_labs.drop(['EMPI', 'Code', 'Result'], axis=1).astype(float).values)
+        train_encoded_labs_matrix = sp.csr_matrix(train_encoded_labs.drop(['StudyID', 'Code', 'Result'], axis=1).astype(float).values)
+        validation_encoded_labs_matrix = sp.csr_matrix(validation_encoded_labs.drop(['StudyID', 'Code', 'Result'], axis=1).astype(float).values)
+        test_encoded_labs_matrix = sp.csr_matrix(test_encoded_labs.drop(['StudyID', 'Code', 'Result'], axis=1).astype(float).values)
 
         # Combine the horizontally stacked train, validation, and test data into a single sparse matrix
         encoded_data_labs = sp.vstack([train_encoded_labs_matrix, validation_encoded_labs_matrix, test_encoded_labs_matrix], format='csr')
@@ -332,7 +332,7 @@ def main(use_dask=False, use_labs=False):
         encoded_df_labs = pd.DataFrame.sparse.from_spmatrix(encoded_data_labs, columns=labs_encoded_feature_names, index=new_index)
 
         # Concatenate the encoded DataFrame with the original DataFrame
-        encoded_df_labs = pd.concat([df_labs.reset_index(drop=True)[['EMPI', 'Code', 'Result']], encoded_df_labs], axis=1)
+        encoded_df_labs = pd.concat([df_labs.reset_index(drop=True)[['StudyID', 'Code', 'Result']], encoded_df_labs], axis=1)
 
     print("Combining and updating encoded feature names.")
 
@@ -397,7 +397,7 @@ def main(use_dask=False, use_labs=False):
     if use_labs:
         df_labs.drop('Code', axis=1, inplace=True)
 
-    print("Starting aggregation by EMPI.")
+    print("Starting aggregation by StudyID.")
 
     agg_dict_dia = {col: 'max' for col in dia_encoded_feature_names}
     agg_dict_prc = {col: 'max' for col in prc_encoded_feature_names}
@@ -405,7 +405,7 @@ def main(use_dask=False, use_labs=False):
         agg_dict_labs = {col: 'max' for col in labs_encoded_feature_names}
 
     if use_dask:
-        print("Starting aggregation by EMPI directly with Dask DataFrame operations.")
+        print("Starting aggregation by StudyID directly with Dask DataFrame operations.")
         print("Converting diagnoses to Dask DataFrame.")
         df_dia = dd.from_pandas(df_dia, npartitions=npartitions)
         df_prc = dd.from_pandas(df_prc, npartitions=npartitions)
@@ -413,9 +413,9 @@ def main(use_dask=False, use_labs=False):
             df_labs = dd.from_pandas(df_labs, npartitions=npartitions)
 
         print("Perform the groupby and aggregation in parallel.")
-        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
-        df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
-        df_labs_agg = df_prc.groupby('EMPI').agg(agg_dict_labs)
+        df_dia_agg = df_dia.groupby('StudyID').agg(agg_dict_dia)
+        df_prc_agg = df_prc.groupby('StudyID').agg(agg_dict_prc)
+        df_labs_agg = df_prc.groupby('StudyID').agg(agg_dict_labs)
 
         print("Convert splits to Dask DataFrame.")
         train_df = dd.from_pandas(train_df, npartitions=npartitions)
@@ -424,10 +424,10 @@ def main(use_dask=False, use_labs=False):
         client.close()
     else:
         print("Perform groupby and aggregation using pandas.")
-        df_dia_agg = df_dia.groupby('EMPI').agg(agg_dict_dia)
-        df_prc_agg = df_prc.groupby('EMPI').agg(agg_dict_prc)
+        df_dia_agg = df_dia.groupby('StudyID').agg(agg_dict_dia)
+        df_prc_agg = df_prc.groupby('StudyID').agg(agg_dict_prc)
         if use_labs:
-            df_labs_agg = df_labs.groupby('EMPI').agg(agg_dict_labs)
+            df_labs_agg = df_labs.groupby('StudyID').agg(agg_dict_labs)
 
     print("Number of diagnoses before or on Index, after aggregation:", len(df_dia_agg))
     print("Number of procedures before or on Index, after aggregation:", len(df_prc_agg))
@@ -435,14 +435,14 @@ def main(use_dask=False, use_labs=False):
         print("Number of labs before or on Index, after aggregation:", len(df_labs_agg))
 
     print("Merge outcomes splits with aggregated diagnoses.")
-    merged_train_df = train_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
-    merged_validation_df = validation_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
-    merged_test_df = test_df.merge(df_dia_agg, on='EMPI', how='inner').merge(df_prc_agg, on='EMPI', how='inner')
+    merged_train_df = train_df.merge(df_dia_agg, on='StudyID', how='inner').merge(df_prc_agg, on='StudyID', how='inner')
+    merged_validation_df = validation_df.merge(df_dia_agg, on='StudyID', how='inner').merge(df_prc_agg, on='StudyID', how='inner')
+    merged_test_df = test_df.merge(df_dia_agg, on='StudyID', how='inner').merge(df_prc_agg, on='StudyID', how='inner')
 
-    print("Select numeric columns and drop EMPI using Pandas.")
-    numeric_train_df = merged_train_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
-    numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
-    numeric_test_df = merged_test_df.select_dtypes(include=[np.number]).drop(columns=['EMPI'], errors='ignore')
+    print("Select numeric columns and drop StudyID using Pandas.")
+    numeric_train_df = merged_train_df.select_dtypes(include=[np.number]).drop(columns=['StudyID'], errors='ignore')
+    numeric_validation_df = merged_validation_df.select_dtypes(include=[np.number]).drop(columns=['StudyID'], errors='ignore')
+    numeric_test_df = merged_test_df.select_dtypes(include=[np.number]).drop(columns=['StudyID'], errors='ignore')
 
     print("Merged training set size:", numeric_train_df.shape[0])
     print("Merged validation set size:", numeric_validation_df.shape[0])
