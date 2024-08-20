@@ -256,7 +256,7 @@ def train_function(config):
     if "validation_batch_size" not in config["optimization_config"]:
         config["optimization_config"]["validation_batch_size"] = int(config["optimization_config"]["batch_size"])
     if "num_dataloader_workers" not in config["optimization_config"]:
-        config["optimization_config"]["num_dataloader_workers"] = int(config["optimization_config"]["num_dataloader_workers"])
+        config["optimization_config"]["num_dataloader_workers"] = 0 
     if "weight_decay" not in config["optimization_config"]:
         config["optimization_config"]["weight_decay"] = config["optimization_config"].get("weight_decay", 0.01)
     
@@ -502,7 +502,7 @@ def main(cfg):
             "use_batch_norm": tune.choice([True, False]),
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
-            "use_gradient_checkpointing": tune.choice([True, False]),
+            "use_gradient_checkpointing": tune.choice([False]),
             "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -522,13 +522,13 @@ def main(cfg):
                 "pooling_method": tune.choice(["max", "mean"])
             },
             "layer_norm_epsilon": tune.sample_from(
-                lambda spec: np.random.uniform(1e-7, 1e-5) if resolve_tune_value(spec.config["config"]["use_layer_norm"]) else None
+                lambda spec: np.random.uniform(1e-6, 1e-4) if resolve_tune_value(spec.config["config"]["use_layer_norm"]) else None
             ),
             "seq_window_size": tune.sample_from(get_seq_window_size),
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([256, 512, 1024, 2048]),
+            "batch_size": tune.choice([256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -543,8 +543,8 @@ def main(cfg):
         },
         "data_config": {
             **data_config,
-            "min_seq_len": tune.randint(2, 100),
-            "max_seq_len": tune.randint(256, 2560),
+            "min_seq_len": tune.randint(2, 50),
+            "max_seq_len": tune.randint(100, 512),
         }
     }
 
@@ -603,7 +603,7 @@ def main(cfg):
         progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
         name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 4, "gpu": 0.33},  # Allocate 3 CPU and 0.33 GPU per trial
+        resources_per_trial={"cpu": 4, "gpu": 1},
         callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 

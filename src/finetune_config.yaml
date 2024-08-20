@@ -7,9 +7,9 @@ dataset_path: null
 pretrained_weights_fp: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
-  output_attentions: true
-  output_hidden_states: true
-  output_scores: true
+  output_attentions: false
+  output_hidden_states: false
+  output_scores: false
   use_gradient_checkpointing: false
   use_cache: true # must be false if use_gradient_checkpointing is true
   use_labs: true
@@ -50,8 +50,8 @@ optimization_config:
   end_lr: 1e-5   # Final learning rate
   end_lr_frac_of_init_lr: 0.001  # This should be equal to end_lr / init_lr
   max_epochs: 200 
-  batch_size: 2048
-  validation_batch_size: 2048
+  batch_size: 512
+  validation_batch_size: 512
   lr_frac_warmup_steps: 0.05
   lr_decay_power: 0.01
   weight_decay: 0.01

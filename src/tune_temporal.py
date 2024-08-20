@@ -20,7 +20,7 @@ def optimize_hyperparameters(config_path, epochs):
             "use_batch_norm": tune.choice([True, False]),
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
-            "use_gradient_checkpointing": tune.choice([True, False]),
+            "use_gradient_checkpointing": tune.choice([False]),
             "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -40,12 +40,12 @@ def optimize_hyperparameters(config_path, epochs):
                 "pooling_method": tune.choice(["max", "mean"])
             },
             "layer_norm_epsilon": tune.sample_from(
-                lambda spec: tune.loguniform(1e-6, 1e-4) if spec.config["config"]["use_layer_norm"] else None
+                lambda config: tune.loguniform(1e-6, 1e-4).sample() if config["config"]["use_layer_norm"] else None
             ),
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([256, 512, 1024, 2048]),
+            "batch_size": tune.choice([256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
@@ -57,17 +57,17 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "data_config": {
             **base_config.get('data_config', {}),
-            "min_seq_len": tune.randint(2, 100),
-            "max_seq_len": tune.randint(256, 2560),
+            "min_seq_len": tune.randint(2, 50),
+            "max_seq_len": tune.randint(100, 512),
         }
     }
 
     # Ensure seq_window_size is within bounds of min_seq_len and max_seq_len
     search_space["config"]["seq_window_size"] = tune.sample_from(
-        lambda spec: tune.randint(
-            spec.config["data_config"]["min_seq_len"],
-            spec.config["data_config"]["max_seq_len"]
-        )
+        lambda config: tune.randint(
+            config["data_config"]["min_seq_len"],
+            config["data_config"]["max_seq_len"]
+        ).sample()
     )
 
     search_space["wandb_logger_kwargs"] = {
@@ -77,18 +77,18 @@ def optimize_hyperparameters(config_path, epochs):
 
     # Add hidden_size based on head_dim and num_attention_heads
     search_space["config"]["hidden_size"] = tune.sample_from(
-        lambda spec: spec.config.config.head_dim * spec.config.config.num_attention_heads
-    )
+        lambda config: config["config"]["head_dim"] * config["config"]["num_attention_heads"]
+    ),
 
     # Add end_lr and end_lr_frac_of_init_lr
     search_space["optimization_config"]["end_lr"] = tune.loguniform(1e-6, 1e-4)
     search_space["optimization_config"]["end_lr_frac_of_init_lr"] = tune.sample_from(
-        lambda spec: spec.config["optimization_config"]["end_lr"] / spec.config["optimization_config"]["init_lr"]
+        lambda config: config["optimization_config"]["end_lr"] / config["optimization_config"]["init_lr"]
     )
 
     # Add clip_grad_value only if use_grad_value_clipping is True
     search_space["optimization_config"]["clip_grad_value"] = tune.sample_from(
-        lambda spec: tune.choice([0.5, 1.0, 5.0]) if spec.config["optimization_config"]["use_grad_value_clipping"] else None
+        lambda config: tune.choice([0.5, 1.0, 5.0]).sample() if config["optimization_config"]["use_grad_value_clipping"] else None
     )
 
     # Add lr_scheduler_type only if use_lr_scheduler is True
@@ -99,7 +99,7 @@ def optimize_hyperparameters(config_path, epochs):
 
     # Set use_cache based on use_gradient_checkpointing
     search_space["config"]["use_cache"] = tune.sample_from(
-        lambda spec: not spec.config["config"]["use_gradient_checkpointing"]
+        lambda config: not config["config"]["use_gradient_checkpointing"]
     )
 
     # Get the current working directory
@@ -129,8 +129,9 @@ def optimize_hyperparameters(config_path, epochs):
             metric_columns=["val_auc_epoch", "training_iteration"]
         ),
         name="diabetes_sweep_labs",
+        trial_name_creator=lambda trial: f"default_run_{trial.trial_id}",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 4, "gpu": 0.5},  # Allocate 3 CPU and 0.5 GPU per trial
+        resources_per_trial={"cpu": 5, "gpu": 0.33},  # Allocate 5 CPU and 0.33 GPU per trial
         callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 
