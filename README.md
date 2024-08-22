@@ -62,8 +62,8 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 - `tune_temporal.py` [temporal analyses]
 	- Hyperparameter optimization for temporal transfomer models using Ray Tune.
 
-- `hp_sweep.py` [temporal analyses]
-	- Perform hyperparameter tuning for the temporal analyses by loading the dataset, creating the model, and training it.
+- `visualize_attention.py` [temporal analyses]
+	- Loads a model checkpoint and extract the attention weights from it. Visualizes the attention weights, focusing on the average normalized attention weights per attention head for each feature value within each outcome group. The script will produce both a heatmap visualization and a table.
 
 - `train.py` [static analyses]
 	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
@@ -175,4 +175,10 @@ $ python3 src/tune_temporal.py --epochs 200
 
 ```bash
 $ python3 src/finetune.py use_labs=true
+```
+
+4. Load a model checkpoint and extract and visualize the attention weights from it.
+
+```bash
+$ python3 src/visualize_attention.py experiments/finetune/2024-08-20_22-55-12/checkpoints/last.ckpt use_labs=true
 ```

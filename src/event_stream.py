@@ -187,15 +187,17 @@ def main(use_labs=False, debug=False):
     with open(data_dir / "static_measurement_indices_vocab.json", "w") as f:
         json.dump(static_measurement_indices_vocab, f, indent=2)
     
-    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
+    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
+    all_static_columns = static_categorical_columns + static_continuous_columns
 
-    # Create expressions for static_indices and static_measurement_indices
-    static_indices_expr = pl.concat_list([map_to_index(col, static_indices_vocab) for col in static_columns]).alias("static_indices")
+    # Create static_indices and static_measurement_indices expressions
+    static_indices_expr = pl.concat_list([map_to_index(col, static_indices_vocab) for col in static_categorical_columns]).alias("static_indices")
     static_measurement_indices_expr = pl.concat_list([
         pl.when(pl.col(col).is_not_null())
         .then(pl.lit(static_measurement_indices_vocab[col]))
         .otherwise(None)
-        for col in static_columns
+        for col in static_categorical_columns
     ]).alias("static_measurement_indices")
 
     # Apply the expressions to the DataFrame

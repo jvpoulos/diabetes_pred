@@ -32,6 +32,30 @@ import atexit
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class FailureDetectionCallback(tune.Callback):
+    def __init__(self, metric="val_auc_epoch", threshold=float('-inf'), grace_period=1):
+        self.metric = metric
+        self.threshold = threshold
+        self.grace_period = grace_period
+        self.trial_iterations = {}
+
+    def on_trial_result(self, iteration, trials, trial, result, **info):
+        if self.metric not in result:
+            return
+        
+        if trial not in self.trial_iterations:
+            self.trial_iterations[trial] = 0
+        self.trial_iterations[trial] += 1
+
+        if self.trial_iterations[trial] > self.grace_period and result[self.metric] <= self.threshold:
+            print(f"Stopping trial {trial} due to poor performance: {result[self.metric]} <= {self.threshold}")
+            return True  # Stop the trial
+
+    def on_trial_error(self, iteration, trials, trial, **info):
+        print(f"Trial {trial} errored, stopping it.")
+        return True  # Stop the trial
+        
 def resolve_tune_value(value):
     if isinstance(value, tune.search.sample.Categorical):
         return value.categories[0]  # Use the first category as a default
@@ -232,7 +256,6 @@ def train_function(config):
     else:
         config["config"]["layer_norm_epsilon"] = None
 
-    
     # Handle embedding dimensions based on do_split_embeddings
     if not config["config"].get("do_split_embeddings", False):
         config["config"]["categorical_embedding_dim"] = None
@@ -403,17 +426,40 @@ def train_function(config):
         original_dir = os.getcwd()
         os.chdir("/home/jvp/diabetes_pred/data/labs")
         try:
-            _, tuning_metrics, _ = train(
-                train_config, 
-                train_pyd, 
-                tuning_pyd, 
-                held_out_pyd, 
-                wandb_logger=wandb_run,
-                vocabulary_config=vocabulary_config,
-                oov_index=oov_index
-            )
+            # Run the training process
+            initialized = False
+            try:
+                _, tuning_metrics, _ = train(
+                    train_config, 
+                    train_pyd, 
+                    tuning_pyd, 
+                    held_out_pyd, 
+                    wandb_logger=wandb_run,
+                    vocabulary_config=vocabulary_config,
+                    oov_index=oov_index
+                )
+                initialized = True
+            except Exception as e:
+                logger.error(f"Initialization failed: {str(e)}")
+                raise Exception("Trial failed to initialize") from e
+
+            if initialized and tuning_metrics is not None and 'auroc' in tuning_metrics:
+                tune.report(initialized=initialized, val_auc_epoch=tuning_metrics['auroc'])
+            else:
+                tune.report(initialized=initialized, val_auc_epoch=float('-inf'))  # Report a default value for failed trials
+        except Exception as e:
+            print(f"An error occurred during training: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
+            tune.report(initialized=False, val_auc_epoch=float('-inf'))
         finally:
+            # Make sure to finish the wandb run
+            wandb_run.finish()
             os.chdir(original_dir)
+
+        # Report the initialization status
+        ray.train.report({"initialized": initialized})
 
         # Report the results back to Ray Tune
         if tuning_metrics is not None and 'auroc' in tuning_metrics:
@@ -429,7 +475,6 @@ def train_function(config):
         # Report a failure to Ray Tune
         ray.train.report({"val_auc_epoch": float('-inf')})
     finally:
-      
         # Make sure to finish the wandb run
         wandb_run.finish()
 
@@ -598,15 +643,28 @@ def main(cfg):
     analysis = tune.run(
         train_function,
         config=search_space,  
-        num_samples=30,  # Number of trials
-        scheduler=ASHAScheduler(metric="val_auc_epoch", mode="max"),
-        progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
+        num_samples=50,  # Number of trials
+        scheduler=ASHAScheduler(
+            time_attr='training_iteration',
+            metric="val_auc_epoch",
+            mode="max",
+            max_t=config.get("max_epochs", 100),
+            grace_period=1,
+            reduction_factor=2
+        ),
+        progress_reporter=tune.CLIReporter(
+            metric_columns=["initialized", "val_auc_epoch", "training_iteration"]
+        ),
         name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
         resources_per_trial={"cpu": 4, "gpu": 1},
-        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
+        callbacks=[
+            WandbLoggerCallback(project="diabetes_sweep_labs"),
+            FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=1)
+        ],
+        stop={"training_iteration": config.get("max_epochs", 100)},
+        raise_on_failed_trial=False  # This will allow Ray Tune to continue with other trials if one fails
     )
-
     # Print the best config
     best_config = analysis.get_best_config(metric="val_auc_epoch", mode="max")
     print("Best hyperparameters found were: ", best_config)

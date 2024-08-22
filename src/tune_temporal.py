@@ -6,7 +6,10 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 import os
 import yaml
 from tune_finetune import main as finetune_main
+from tune_finetune import FailureDetectionCallback
 import argparse
+
+import time
 
 def optimize_hyperparameters(config_path, epochs):
     # Load the base configuration
@@ -111,28 +114,28 @@ def optimize_hyperparameters(config_path, epochs):
     # Configure the Ray Tune run
     analysis = tune.run(
         finetune_main,
-        config=search_space,
-        num_samples=30,  # Number of trials
+        config=search_space,  
+        num_samples=50,  # Number of trials
         scheduler=ASHAScheduler(
-            time_attr='epoch',
+            time_attr='training_iteration',
             metric="val_auc_epoch",
             mode="max",
             max_t=epochs,
             grace_period=1,
             reduction_factor=2
         ),
-        search_alg=OptunaSearch(
-            metric="val_auc_epoch",
-            mode="max"
-        ),
         progress_reporter=tune.CLIReporter(
-            metric_columns=["val_auc_epoch", "training_iteration"]
+            metric_columns=["initialized", "val_auc_epoch", "training_iteration"]
         ),
         name="diabetes_sweep_labs",
-        trial_name_creator=lambda trial: f"default_run_{trial.trial_id}",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 5, "gpu": 0.33},  # Allocate 5 CPU and 0.33 GPU per trial
-        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
+        resources_per_trial={"cpu": 4, "gpu": 1},
+        callbacks=[
+            WandbLoggerCallback(project="diabetes_sweep_labs"),
+            FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=1)
+        ],
+        stop={"training_iteration": epochs},
+        raise_on_failed_trial=False  # This will allow Ray Tune to continue with other trials if one fails
     )
 
     print("Best hyperparameters found were: ", analysis.best_config)

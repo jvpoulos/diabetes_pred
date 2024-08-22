@@ -109,39 +109,34 @@ def try_convert_to_float(x, val_type):
     return x  # Return as-is for non-numeric types
 
 def create_static_vocabularies(subjects_df):
-    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
+    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
+    all_static_columns = static_categorical_columns + static_continuous_columns
     
     static_indices_vocab = {}
     static_measurement_indices_vocab = {}
     
-    for idx, col in enumerate(static_columns):
-        if col == 'InitialA1c':
-            unique_values = subjects_df.select(pl.col(col).round(2).alias(col)).unique().sort(col)
-            static_indices_vocab[col] = {str(round(val[0], 2)): i + 1 for i, val in enumerate(unique_values.rows())}
-        elif col in ['AgeYears', 'SDI_score']:
-            unique_values = subjects_df.select(pl.col(col).cast(pl.Float64).round(0).cast(pl.Int64).alias(col)).unique().sort(col)
-            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
-        else:
-            unique_values = subjects_df.select(col).unique().sort(col)
-            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
-        
+    for idx, col in enumerate(static_categorical_columns):
+        unique_values = subjects_df.select(col).unique().sort(col)
+        static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
+        static_measurement_indices_vocab[col] = idx + 1
+    
+    # Add continuous columns to static_measurement_indices_vocab
+    for idx, col in enumerate(static_continuous_columns, start=len(static_categorical_columns)):
         static_measurement_indices_vocab[col] = idx + 1
     
     return static_indices_vocab, static_measurement_indices_vocab
 
 def map_to_index(col, static_indices_vocab):
+    if col not in static_indices_vocab:
+        return pl.lit(None)  # Return None for continuous variables
+    
     mapping_dict = {str(k): v for k, v in static_indices_vocab[col].items()}
     
     expr = pl.when(pl.col(col).is_null()).then(None)
     
-    if col == 'InitialA1c':
-        for k, v in mapping_dict.items():
-            expr = expr.when(
-                pl.col(col).cast(pl.Float64).round(2).cast(pl.Utf8) == k
-            ).then(pl.lit(v).cast(pl.Int64))
-    else:
-        for k, v in mapping_dict.items():
-            expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(pl.lit(v).cast(pl.Int64))
+    for k, v in mapping_dict.items():
+        expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(pl.lit(v).cast(pl.Int64))
     
     return expr.otherwise(None)
     
@@ -174,6 +169,23 @@ class ConcreteDataset(DatasetBase):
         
         # Initialize initial_unified_measurements_idxmap
         self._initial_unified_measurements_idxmap = self._create_initial_unified_measurements_idxmap()
+
+        # Initialize _unified_measurements_vocab as a private attribute
+        self._unified_measurements_vocab = ["event_type"] + list(self.config.measurement_configs.keys())
+
+    def _create_initial_unified_measurements_idxmap(self):
+        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+        unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
+        return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
+
+    # Override the unified_measurements_vocab property to make it settable
+    @property
+    def unified_measurements_vocab(self):
+        return self._unified_measurements_vocab
+
+    @unified_measurements_vocab.setter
+    def unified_measurements_vocab(self, value):
+        self._unified_measurements_vocab = value
 
     def create_static_indices_and_measurements(self, row):
         return create_static_indices_and_measurements(row, self.static_indices_vocab, self.static_measurement_indices_vocab)
@@ -268,11 +280,6 @@ class ConcreteDataset(DatasetBase):
                 self.subjects_df = self.subjects_df.with_columns([
                     pl.col('static_measurement_indices').cast(pl.List(pl.UInt32))
                 ])
-
-    def _create_initial_unified_measurements_idxmap(self):
-        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
-        unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
-        return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
 
     def _get_flat_static_rep(self, feature_columns: list[str], **kwargs) -> pl.LazyFrame:
         static_features = [c for c in feature_columns if c.startswith("static/")]
@@ -1557,47 +1564,40 @@ class ConcreteDataset(DatasetBase):
             events_df = self.events_df
             dynamic_measurements_df = self.dynamic_measurements_df
 
-        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+        static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
+        static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
+        all_static_columns = static_categorical_columns + static_continuous_columns
         
-        # Remove duplicates between subject_measures and static_columns
-        unique_subject_measures = list(set(subject_measures) - set(static_columns))
-        
-        # Create static_data first
+        # Create static_data first, avoiding duplicate columns
+        unique_columns = list(dict.fromkeys(["subject_id"] + subject_measures + all_static_columns))
         static_data = subjects_df.select(
-            "subject_id",
-            *[pl.col(m) for m in unique_subject_measures],
-            *static_columns
+            *[pl.col(m) for m in unique_columns]
         )
 
-        # Cast InitialA1c to Float64 and then round to two decimal places
-        static_data = static_data.with_columns([
-            pl.col("InitialA1c").cast(pl.Float64).round(2).alias("InitialA1c")
-        ])
+        # Handle continuous variables
+        for col in static_continuous_columns:
+            static_data = static_data.with_columns([
+                pl.col(col).cast(pl.Float64).alias(col)
+            ])
 
         # Create static_indices column
         static_data = static_data.with_columns([
-            pl.struct(static_columns).map_elements(
+            pl.struct(static_categorical_columns).map_elements(
                 lambda x: [
-                    static_indices_vocab[col].get(str(round(x[col], 2) if col == 'InitialA1c' else 
-                                                  int(float(x[col])) if col in ['AgeYears', 'SDI_score'] and x[col] is not None else 
-                                                  x[col]), 0) 
-                    for col in static_columns if x[col] is not None
+                    pl.UInt32(static_indices_vocab[col].get(str(x[col]), 0))
+                    for col in static_categorical_columns if x[col] is not None
                 ],
-                return_dtype=pl.List(pl.Int64)  # Use Int64 first
-            ).cast(pl.List(pl.UInt32)).alias("static_indices")  # Then cast the whole list to UInt32
+                return_dtype=pl.List(pl.UInt32)
+            ).alias("static_indices")
         ])
-
-        static_data = static_data.with_columns([
-            pl.col("SDI_score").map_elements(lambda x: float('nan') if x is None else x).alias("SDI_score")
-        ])       
 
         # Create static_measurement_indices column
         static_measurement_indices_vocab = self.static_measurement_indices_vocab
         static_data = static_data.with_columns([
-            pl.struct(static_columns).map_elements(
-                lambda x: [static_measurement_indices_vocab[col] for col in static_columns if x[col] is not None],
-                return_dtype=pl.List(pl.Int64)  # Use Int64 first
-            ).cast(pl.List(pl.UInt32)).alias("static_measurement_indices")  # Then cast the whole list to UInt32
+            pl.struct(all_static_columns).map_elements(
+                lambda x: [pl.UInt32(static_measurement_indices_vocab[col]) for col in all_static_columns if x[col] is not None],
+                return_dtype=pl.List(pl.UInt32)
+            ).alias("static_measurement_indices")
         ])
 
         subject_id_dtype = pl.UInt32
