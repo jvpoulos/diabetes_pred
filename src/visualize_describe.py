@@ -161,53 +161,96 @@ def main(ESD, use_labs=False):
         del chunk, chunk_measurements
         gc.collect()
 
-    measurements_per_subject_at_age = pl.concat(measurements_per_subject_at_age_list)
-    del measurements_per_subject_at_age_list
-    gc.collect()
+    measurements_per_subject_at_age = (
+        ESD.dynamic_measurements_df.lazy()
+        .join(ESD.subjects_df.lazy().select(['subject_id', 'AgeYears', 'Female']), on='subject_id')
+        .group_by(['AgeYears', 'Female'])
+        .agg(pl.count('measurement_id').alias('num_measurements'))
+        .collect()
+    )
 
-    # For measurements_per_subject_at_age_by_gender
+    subjects_with_measurements = (
+        ESD.subjects_df.lazy()
+        .join(ESD.dynamic_measurements_df.lazy().select('subject_id').unique(), on='subject_id')
+        .group_by(['AgeYears', 'Female'])
+        .agg(pl.count('subject_id').alias('count'))
+        .collect()
+    )
+
+    # Convert to pandas and merge
     measurements_per_subject_at_age_pd = measurements_per_subject_at_age.to_pandas()
-    subjects_with_measurements_pd = subjects_with_measurements_by_age_gender.to_pandas()
+    subjects_with_measurements_pd = subjects_with_measurements.to_pandas()
 
-    print("Unique AgeYears in measurements_per_subject_at_age_pd:", measurements_per_subject_at_age_pd['AgeYears'].unique())
-    print("Unique AgeYears in subjects_with_measurements_pd:", subjects_with_measurements_pd['AgeYears'].unique())
-    print("Unique Female in measurements_per_subject_at_age_pd:", measurements_per_subject_at_age_pd['Female'].unique())
-    print("Unique Female in subjects_with_measurements_pd:", subjects_with_measurements_pd['Female'].unique())
-
-    # Ensure AgeYears is treated as float in both dataframes
-    measurements_per_subject_at_age_pd['AgeYears'] = pd.to_numeric(measurements_per_subject_at_age_pd['AgeYears'], errors='coerce')
-    subjects_with_measurements_pd['AgeYears'] = pd.to_numeric(subjects_with_measurements_pd['AgeYears'], errors='coerce')
-
-    # Ensure Female is treated as int in both dataframes
-    measurements_per_subject_at_age_pd['Female'] = measurements_per_subject_at_age_pd['Female'].astype(int)
-    subjects_with_measurements_pd['Female'] = subjects_with_measurements_pd['Female'].astype(int)
-
-    merged_data = pd.merge(measurements_per_subject_at_age_pd, subjects_with_measurements_pd, on=['AgeYears', 'Female'], how='inner')
+    merged_data = pd.merge(measurements_per_subject_at_age_pd, subjects_with_measurements_pd, on=['AgeYears', 'Female'], how='outer')
     merged_data['measurements_per_subject'] = merged_data['num_measurements'] / merged_data['count']
-    merged_data['Female'] = merged_data['Female'].map({1: "Female", 0: "Male"})
 
-    print("Shape of merged_data after merge:", merged_data.shape)
-    print("Sample of merged_data after merge:")
+    print("Shape of merged_data:", merged_data.shape)
+    print("Sample of merged_data:")
     print(merged_data.head())
 
-    if merged_data.empty:
-        print("Warning: merged_data is empty. Skipping plot creation.")
+    if not merged_data.empty:
+        fig = px.scatter(merged_data, x='AgeYears', y='measurements_per_subject', color='Female',
+                         title='Average number of measurements per patient, grouped by age and gender',
+                         labels={'measurements_per_subject': 'Avg. measurements per patient', 'AgeYears': 'Age'},
+                         color_discrete_map={0: "blue", 1: "orange"})
+        fig.update_layout(
+            xaxis_title="Age",
+            yaxis_title="Average measurements per patient",
+            yaxis_range=[0, merged_data['measurements_per_subject'].max() * 1.1],
+            xaxis=dict(tickmode='linear', dtick=5, autorange="reversed"),
+            legend_title_text='Gender'
+        )
+        fig.update_traces(marker=dict(size=8))
+        
+        # Update legend
+        fig.for_each_trace(lambda t: t.update(name='Female' if t.name == '1' else 'Male'))
+        
+        fig.update_layout(legend=dict(
+            itemsizing='constant',
+            title_text='Gender',
+            title_font_family='Arial',
+            font=dict(family='Arial', size=12, color='black'),
+            bordercolor='Black',
+            borderwidth=1
+        ))
+        fig.write_image(str(DATA_SUMMARIES_DIR / "measurements_per_subject_at_age_by_gender.png"))
     else:
-        save_plot(merged_data, 'AgeYears', 'measurements_per_subject', 'Female',
-                  'Average number of measurements per patient, grouped by age and gender', 'Avg. measurements per patient', (13, 80),
-                  DATA_SUMMARIES_DIR / "measurements_per_subject_at_age_by_gender.png")
+        print("Warning: merged_data is empty. Skipping plot creation.")
 
     # For measurements_per_subject_distribution
-    measurements_per_subject_pd = measurements_per_subject_at_age.to_pandas()
-    measurements_per_subject_pd = measurements_per_subject_pd.merge(ESD.subjects_df.select('subject_id', 'Female').to_pandas(), on=['AgeYears', 'Female'], how='left')
-    measurements_per_subject_pd['Female'] = measurements_per_subject_pd['Female'].map({1: "Female", 0: "Male"})
+    measurements_per_subject_pd = (
+        ESD.dynamic_measurements_df.lazy()
+        .group_by('subject_id')
+        .agg(pl.count('measurement_id').alias('num_measurements'))
+        .collect()
+        .to_pandas()
+    )
+
+    # Merge with subjects_df to get Female and AgeYears
+    measurements_per_subject_pd = measurements_per_subject_pd.merge(
+        ESD.subjects_df.lazy().select('subject_id', 'Female', 'AgeYears').collect().to_pandas(), 
+        on='subject_id', 
+        how='left'
+    )
 
     print("Unique values in Female column:", measurements_per_subject_pd['Female'].unique())
+    print("Columns in measurements_per_subject_pd:", measurements_per_subject_pd.columns)
+    print("Sample of measurements_per_subject_pd:")
+    print(measurements_per_subject_pd.head())
 
-    if measurements_per_subject_pd.empty:
-        print("Warning: measurements_per_subject_pd is empty. Skipping plot creation.")
+    if not measurements_per_subject_pd.empty:
+        fig = px.box(measurements_per_subject_pd, x='Female', y='num_measurements', 
+                     color='Female', 
+                     labels={'num_measurements': 'Number of Measurements', 'Female': 'Gender'},
+                     title='Distribution of measurements per patient',
+                     color_discrete_map={0: "blue", 1: "orange"})
+        fig.update_layout(
+            xaxis=dict(tickmode='array', tickvals=[0, 1], ticktext=['Male', 'Female']),
+            showlegend=False  # Hide the Gender legend
+        )
+        fig.write_image(str(DATA_SUMMARIES_DIR / "measurements_per_subject_distribution.png"))
     else:
-        save_plot_measurements_per_subject(measurements_per_subject_pd, 'num_measurements', 'Female', 'Distribution of measurements per patient', 'Number of Measurements', DATA_SUMMARIES_DIR / "measurements_per_subject_distribution.png")
+        print("Warning: measurements_per_subject_pd is empty. Skipping plot creation.")
 
     print("Shape of measurements_per_subject_at_age:", measurements_per_subject_at_age.shape)
     print("Shape of subjects_with_measurements_by_age_gender:", subjects_with_measurements_by_age_gender.shape)
@@ -224,7 +267,14 @@ def main(ESD, use_labs=False):
 
     # Temporal distribution of measurements:
     temporal_distribution_measurements = temporal_dist_pd(ESD.dynamic_measurements_df, 'measurement_id')
-    save_plot_line(temporal_distribution_measurements.to_pandas(), 'day', 'count', 
+
+    # Check if temporal_distribution_measurements is already a pandas DataFrame
+    if isinstance(temporal_distribution_measurements, pd.DataFrame):
+        df_to_plot = temporal_distribution_measurements
+    else:
+        df_to_plot = temporal_distribution_measurements.to_pandas()
+
+    save_plot_line(df_to_plot, 'day', 'count', 
                    DATA_SUMMARIES_DIR / 'temporal_distribution_measurements.png', 
                    'Day', 'Count of Measurements', 'Temporal distribution of measurements (daily)', 
                    x_range=(mdates.date2num(datetime(1990, 1, 1)), mdates.date2num(datetime(2022, 12, 31))))

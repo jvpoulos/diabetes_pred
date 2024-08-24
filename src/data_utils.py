@@ -3,11 +3,12 @@ import torch
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MaxAbsScaler
-from sklearn.impute import SimpleImputer
 from torch.utils.data import TensorDataset 
 import io
 from tqdm import tqdm
 import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 import gc
 import math
 from math import ceil
@@ -44,7 +45,6 @@ import chardet
 import io
 import chardet
 from tqdm import tqdm
-from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -53,7 +53,6 @@ from EventStream.data.dataset_base import DatasetBase
 from EventStream.data.measurement_config import MeasurementConfig
 from EventStream.data.types import DataModality, TemporalityType, NumericDataModalitySubtype
 from EventStream.data.vocabulary import Vocabulary
-from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
     dataset = CustomPytorchDataset(
@@ -70,23 +69,68 @@ def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_l
     return dataset
             
 def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
-    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
+    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
+    
     static_indices = []
     static_measurement_indices = []
-    for idx, col in enumerate(static_columns):
+    
+    # Handle categorical variables
+    for col in static_categorical_columns:
         value = row[col]
         if value is not None:
-            index = static_indices_vocab.get(f"{col}_{str(value)}", 0)
+            index = static_indices_vocab[col].get(str(value), 0)
             if index != 0:  # Only include non-zero indices
                 static_indices.append(pl.UInt32(index))
                 static_measurement_indices.append(pl.UInt32(static_measurement_indices_vocab[col]))
+    
+    # Handle continuous variables
+    for col in static_continuous_columns:
+        static_data = static_data.with_columns([
+            pl.when(pl.col(f"{col}_normalized").is_not_null())
+            .then(pl.col(f"{col}_normalized"))
+            .otherwise(pl.lit(None))
+            .alias(f"{col}_normalized")
+        ])
+    
     return [static_indices, static_measurement_indices]
 
-def fit_scaler_on_training_data(data):
+def fit_imputer_and_scaler_on_training_data(data):
+    imputer = SimpleImputer(strategy='mean')
     scaler = StandardScaler()
-    mean = float(np.mean(data))
-    std = float(np.std(data))
-    return {'mean_': mean, 'std_': std}
+    
+    # Reshape data if it's 1D
+    if len(data.shape) == 1:
+        data = data.reshape(-1, 1)
+    
+    # Fit and transform with imputer
+    imputed_data = imputer.fit_transform(data)
+    
+    # Fit scaler on imputed data
+    scaled_data = scaler.fit_transform(imputed_data)
+    
+    return {
+        'imputer': imputer,
+        'scaler': scaler,
+        'mean_': float(scaler.mean_[0]),
+        'std_': float(scaler.scale_[0])
+    }
+
+def transform_with_imputer_and_scaler(data, fitted_params):
+    imputer = fitted_params['imputer']
+    scaler = fitted_params['scaler']
+    
+    # Reshape data if it's 1D
+    if len(data.shape) == 1:
+        data = data.reshape(-1, 1)
+    
+    # Transform with imputer
+    imputed_data = imputer.transform(data)
+    
+    # Transform with scaler
+    scaled_data = scaler.transform(imputed_data)
+    
+    return scaled_data.flatten()
 
 # Update events_df with single event types
 def split_event_type(event_type):
@@ -110,20 +154,14 @@ def try_convert_to_float(x, val_type):
 
 def create_static_vocabularies(subjects_df):
     static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
-    all_static_columns = static_categorical_columns + static_continuous_columns
     
     static_indices_vocab = {}
     static_measurement_indices_vocab = {}
     
-    for idx, col in enumerate(static_categorical_columns):
+    for idx, col in enumerate(static_categorical_columns, start=1):
         unique_values = subjects_df.select(col).unique().sort(col)
         static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
-        static_measurement_indices_vocab[col] = idx + 1
-    
-    # Add continuous columns to static_measurement_indices_vocab
-    for idx, col in enumerate(static_continuous_columns, start=len(static_categorical_columns)):
-        static_measurement_indices_vocab[col] = idx + 1
+        static_measurement_indices_vocab[col] = idx
     
     return static_indices_vocab, static_measurement_indices_vocab
 
@@ -1540,7 +1578,7 @@ class ConcreteDataset(DatasetBase):
 
         setattr(self, attr, updated_df)
         
-    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False, static_indices_vocab=None, dynamic_measurement_indices_vocab=None) -> DF_T:
+    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False, static_indices_vocab=None, dynamic_measurement_indices_vocab=None, fitted_params: dict = None) -> DF_T:
         print("Starting build_DL_cached_representation")
         subject_measures, event_measures, dynamic_measures = [], [], ["dynamic_indices"]
         for m in self.unified_measurements_vocab[1:]:
@@ -1574,31 +1612,105 @@ class ConcreteDataset(DatasetBase):
             *[pl.col(m) for m in unique_columns]
         )
 
+        # Handle categorical variables
+        static_indices_expr = pl.concat_list([
+            pl.when(pl.col(col).is_not_null())
+            .then(pl.col(col).cast(pl.Utf8).map_elements(lambda x: static_indices_vocab[col].get(x, None), return_dtype=pl.UInt32))
+            .otherwise(None)
+            for col in static_categorical_columns
+        ]).alias("static_indices")
+
+        # Use only categorical columns for static_measurement_indices
+        static_measurement_indices_expr = pl.concat_list([
+            pl.when(pl.col(col).is_not_null())
+            .then(pl.lit(self.static_measurement_indices_vocab[col]).cast(pl.UInt32))
+            .otherwise(pl.lit(None))
+            for col in static_categorical_columns
+        ]).alias("static_measurement_indices")
+
+        static_data = static_data.with_columns([
+            static_indices_expr,
+            static_measurement_indices_expr
+        ])
+
         # Handle continuous variables
+        if fitted_params is None:
+            self.fitted_params = {}
+            fit_mode = True
+        else:
+            fit_mode = False
+        
         for col in static_continuous_columns:
+            # Extract the column and convert to numpy array
+            col_data = static_data[col].to_numpy().reshape(-1, 1)
+            
+            if fit_mode:
+                # Fit imputer and scaler
+                imputer = SimpleImputer(strategy='mean')
+                scaler = StandardScaler()
+                
+                col_data_imputed = imputer.fit_transform(col_data)
+                col_data_normalized = scaler.fit_transform(col_data_imputed)
+                
+                self.fitted_params[col] = {
+                    'imputer': imputer,
+                    'scaler': scaler
+                }
+            else:
+                # Use provided fitted parameters
+                imputer = fitted_params[col]['imputer']
+                scaler = fitted_params[col]['scaler']
+                
+                col_data_imputed = imputer.transform(col_data)
+                col_data_normalized = scaler.transform(col_data_imputed)
+            
+            # Add the normalized data back to the DataFrame
             static_data = static_data.with_columns([
-                pl.col(col).cast(pl.Float64).alias(col)
+                pl.Series(name=f"{col}_normalized", values=col_data_normalized.flatten())
             ])
 
-        # Create static_indices column
+        # Filter out None values and cast to UInt32
         static_data = static_data.with_columns([
-            pl.struct(static_categorical_columns).map_elements(
-                lambda x: [
-                    pl.UInt32(static_indices_vocab[col].get(str(x[col]), 0))
-                    for col in static_categorical_columns if x[col] is not None
-                ],
-                return_dtype=pl.List(pl.UInt32)
-            ).alias("static_indices")
+            pl.col("static_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32)),
+            pl.col("static_measurement_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32))
+        ])
+
+        # Create static_indices column
+        for col in static_categorical_columns:
+            static_data = static_data.with_columns([
+                pl.when(pl.col(col).is_null())
+                .then(pl.lit(None))
+                .otherwise(
+                    pl.col(col).cast(pl.Utf8).map_elements(
+                        lambda x: static_indices_vocab[col].get(x, 0)
+                    ).cast(pl.UInt32)
+                )
+                .alias(f"{col}_index")
+            ])
+        
+        static_data = static_data.with_columns([
+            pl.concat_list([pl.col(f"{col}_index") for col in static_categorical_columns])
+            .alias("static_indices")
         ])
 
         # Create static_measurement_indices column
         static_measurement_indices_vocab = self.static_measurement_indices_vocab
+        for col in static_categorical_columns:  # Change this line
+            static_data = static_data.with_columns([
+                pl.when(pl.col(col).is_not_null())
+                .then(pl.lit(static_measurement_indices_vocab[col]).cast(pl.UInt32))
+                .otherwise(pl.lit(None))
+                .alias(f"{col}_measurement_index")
+            ])
+
         static_data = static_data.with_columns([
-            pl.struct(all_static_columns).map_elements(
-                lambda x: [pl.UInt32(static_measurement_indices_vocab[col]) for col in all_static_columns if x[col] is not None],
-                return_dtype=pl.List(pl.UInt32)
-            ).alias("static_measurement_indices")
+            pl.concat_list([pl.col(f"{col}_measurement_index") for col in static_categorical_columns])  # Change this line
+            .alias("static_measurement_indices")
         ])
+
+        # Remove temporary columns
+        static_data = static_data.drop([f"{col}_index" for col in static_categorical_columns] + 
+                                       [f"{col}_measurement_index" for col in static_categorical_columns])
 
         subject_id_dtype = pl.UInt32
         static_data = static_data.with_columns(pl.col("subject_id").cast(subject_id_dtype))
@@ -1689,6 +1801,11 @@ class ConcreteDataset(DatasetBase):
         
         with open(self.config.save_dir / "dynamic_measurement_indices_vocab.json", "w") as f:
             json.dump(event_type_mapping, f, indent=2)
+
+        # Save fitted parameters
+        if self.split == 'train':
+            with open(self.config.save_dir / "fitted_params.pkl", "wb") as f:
+                pickle.dump(fitted_params, f)
 
         return out
 
@@ -1888,10 +2005,12 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         if idx < 0 or idx >= self.length:
             raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
-
+        
         try:
             row = self.cached_data.row(idx)
             item = {}
+            
+            # Dynamic and static features
             for col in ['dynamic_indices', 'dynamic_measurement_indices', 'static_indices', 'static_measurement_indices']:
                 data = row[self.cached_data.columns.index(col)]
                 if data is None:
@@ -1909,6 +2028,10 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
 
             # Get the subject_id
             subject_id = row[self.cached_data.columns.index('subject_id')]
+
+            # Add normalized static features
+            for col in ['InitialA1c_normalized', 'AgeYears_normalized', 'SDI_score_normalized']:
+                item[col] = torch.tensor(row[self.cached_data.columns.index(col)], dtype=torch.float)
 
             # Get the label from task_dict
             if self.has_task:

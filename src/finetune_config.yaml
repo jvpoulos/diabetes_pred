@@ -7,8 +7,6 @@ dataset_path: null
 pretrained_weights_fp: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
-  output_attentions: false
-  output_hidden_states: false
   output_scores: false
   use_gradient_checkpointing: false
   use_cache: true # must be false if use_gradient_checkpointing is true

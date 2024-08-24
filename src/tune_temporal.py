@@ -115,7 +115,7 @@ def optimize_hyperparameters(config_path, epochs):
     analysis = tune.run(
         finetune_main,
         config=search_space,  
-        num_samples=50,  # Number of trials
+        num_samples=30,  # Number of trials
         scheduler=ASHAScheduler(
             time_attr='training_iteration',
             metric="val_auc_epoch",
@@ -134,8 +134,12 @@ def optimize_hyperparameters(config_path, epochs):
             WandbLoggerCallback(project="diabetes_sweep_labs"),
             FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=1)
         ],
-        stop={"training_iteration": epochs},
-        raise_on_failed_trial=False  # This will allow Ray Tune to continue with other trials if one fails
+        stop={
+            "training_iteration": epochs,
+            "time_total_s": 24 * 60 * 60  # 1 day in seconds
+        },
+        raise_on_failed_trial=False,  # This will allow Ray Tune to continue with other trials if one fails
+        time_budget_s=7 * 24 * 60 * 60  # 7 days total time budget
     )
 
     print("Best hyperparameters found were: ", analysis.best_config)

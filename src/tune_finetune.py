@@ -175,17 +175,14 @@ def create_datasets(cfg, device):
 def train_function(config):
     global DATA_DIR
 
-    # Check for wandb_logger_kwargs and provide a default if not present
-    wandb_logger_kwargs = config.get("wandb_logger_kwargs", {})
-    if not wandb_logger_kwargs:
-        wandb_logger_kwargs = {
-            "project": "diabetes_sweep_labs",
-            "entity": "default_entity",  # replace with your wandb entity
-            "name": f"trial_{tune.get_trial_id()}",
-        }
-
-    # Set up wandb
-    wandb_run = setup_wandb(config=config, project="diabetes_sweep_labs")
+    # Set up wandb logger once
+    wandb_logger_kwargs = {
+        "project": "diabetes_sweep_labs",
+        "entity": "jvpoulos",  # replace with your wandb entity
+        "name": f"trial_{tune.get_trial_id()}",
+        "config": config,
+    }
+    wandb_run = wandb.init(**wandb_logger_kwargs)
     
     # Set DATA_DIR based on the config
     DATA_DIR = Path(get_data_dir(config)).resolve()
@@ -249,7 +246,7 @@ def train_function(config):
 
     # Ensure vocab_size is set correctly after the update
     config["config"]["vocab_size"] = vocab_size
-
+    
     if config["config"]["use_layer_norm"]:
         if "layer_norm_epsilon" not in config["config"] or config["config"]["layer_norm_epsilon"] is None:
             config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-6, 1e-4)
