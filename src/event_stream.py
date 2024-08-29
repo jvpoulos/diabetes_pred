@@ -47,7 +47,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, map_to_index
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, map_to_index, is_numeric
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -158,6 +158,7 @@ def main(use_labs=False, debug=False):
     # Process subjects data
     subjects_df = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
     subjects_df = subjects_df.group_by('StudyID').agg([
+        pl.col('IndexDate').first(),
         pl.col('InitialA1c').first(),
         pl.col('A1cGreaterThan7').first(),
         pl.col('Female').first(),
@@ -167,6 +168,10 @@ def main(use_labs=False, debug=False):
         pl.col('AgeYears').first(),
         pl.col('SDI_score').first(),
         pl.col('Veteran').first()
+    ])
+
+    subjects_df = subjects_df.with_columns([
+        pl.col('IndexDate').str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S.%f").alias('IndexDate')
     ])
 
     # Create subject_id mapping
@@ -232,8 +237,8 @@ def main(use_labs=False, debug=False):
     print("Columns in subjects_df:", subjects_df.columns)
 
     print("Processing diagnosis and procedure data...")
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01))
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(subjects_df.height*0.01))
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select)
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select)
 
     # Add subject_id to df_dia and df_prc
     df_dia = df_dia.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
@@ -241,7 +246,7 @@ def main(use_labs=False, debug=False):
 
     if use_labs:
         print("Processing labs data...")
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, min_frequency=ceil(subjects_df.height*0.01), debug=debug)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, debug=debug)
         df_labs = optimize_labs_data(df_labs)
         df_labs = df_labs.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
 
@@ -326,6 +331,17 @@ def main(use_labs=False, debug=False):
         pl.col('event_type').str.split('&').list.first().alias('event_type')
     ])
 
+    # Join events_df with subjects_df to get IndexDate
+    events_df = events_df.join(
+        subjects_df.select(['subject_id', 'IndexDate']),
+        on='subject_id'
+    )
+
+    # Calculate time_to_index
+    events_df = events_df.with_columns([
+        ((pl.col('timestamp') - pl.col('IndexDate')).dt.total_minutes()).alias('time_to_index')
+    ])
+
     # Rename existing 'event_id' column
     events_df = events_df.rename({"event_id": "original_event_id"})
     dynamic_measurements_df = dynamic_measurements_df.rename({"event_id": "original_event_id"})
@@ -364,8 +380,8 @@ def main(use_labs=False, debug=False):
     config.vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
         'dynamic_indices': len(code_to_index),
-        'static_indices': len(static_indices_vocab),  # You'll need to create this vocabulary
-        'static_measurement_indices': len(static_measurement_indices_vocab),  # You'll need to create this vocabulary
+        'static_indices': len(static_indices_vocab),  
+        'static_measurement_indices': len(static_measurement_indices_vocab),
     }
 
     config.vocab_offsets_by_measurement = {

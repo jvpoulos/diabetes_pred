@@ -188,6 +188,13 @@ def main(ESD, use_labs=False):
     print("Sample of merged_data:")
     print(merged_data.head())
 
+    # Convert AgeYears to numeric and sort
+    merged_data['AgeYears'] = pd.to_numeric(merged_data['AgeYears'], errors='coerce')
+    merged_data = merged_data.sort_values('AgeYears')
+
+    # Remove any rows with NaN AgeYears
+    merged_data = merged_data.dropna(subset=['AgeYears'])
+
     if not merged_data.empty:
         fig = px.scatter(merged_data, x='AgeYears', y='measurements_per_subject', color='Female',
                          title='Average number of measurements per patient, grouped by age and gender',
@@ -197,14 +204,14 @@ def main(ESD, use_labs=False):
             xaxis_title="Age",
             yaxis_title="Average measurements per patient",
             yaxis_range=[0, merged_data['measurements_per_subject'].max() * 1.1],
-            xaxis=dict(tickmode='linear', dtick=5, autorange="reversed"),
+            xaxis=dict(tickmode='linear', dtick=5),
             legend_title_text='Gender'
         )
         fig.update_traces(marker=dict(size=8))
-        
+
         # Update legend
         fig.for_each_trace(lambda t: t.update(name='Female' if t.name == '1' else 'Male'))
-        
+
         fig.update_layout(legend=dict(
             itemsizing='constant',
             title_text='Gender',

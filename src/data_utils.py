@@ -54,6 +54,13 @@ from EventStream.data.measurement_config import MeasurementConfig
 from EventStream.data.types import DataModality, TemporalityType, NumericDataModalitySubtype
 from EventStream.data.vocabulary import Vocabulary
 
+def is_numeric(value):
+    try:
+        float(value)
+        return True
+    except ValueError:
+        return False
+
 def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
     dataset = CustomPytorchDataset(
         config=config,
@@ -1633,25 +1640,25 @@ class ConcreteDataset(DatasetBase):
             static_measurement_indices_expr
         ])
 
-        # Handle continuous variables
         if fitted_params is None:
             self.fitted_params = {}
             fit_mode = True
         else:
             fit_mode = False
         
+        # Handle continuous variables
         for col in static_continuous_columns:
             # Extract the column and convert to numpy array
             col_data = static_data[col].to_numpy().reshape(-1, 1)
-            
+
             if fit_mode:
                 # Fit imputer and scaler
                 imputer = SimpleImputer(strategy='mean')
                 scaler = StandardScaler()
-                
+
                 col_data_imputed = imputer.fit_transform(col_data)
                 col_data_normalized = scaler.fit_transform(col_data_imputed)
-                
+
                 self.fitted_params[col] = {
                     'imputer': imputer,
                     'scaler': scaler
@@ -1660,10 +1667,10 @@ class ConcreteDataset(DatasetBase):
                 # Use provided fitted parameters
                 imputer = fitted_params[col]['imputer']
                 scaler = fitted_params[col]['scaler']
-                
+
                 col_data_imputed = imputer.transform(col_data)
                 col_data_normalized = scaler.transform(col_data_imputed)
-            
+
             # Add the normalized data back to the DataFrame
             static_data = static_data.with_columns([
                 pl.Series(name=f"{col}_normalized", values=col_data_normalized.flatten())
@@ -1704,13 +1711,18 @@ class ConcreteDataset(DatasetBase):
             ])
 
         static_data = static_data.with_columns([
-            pl.concat_list([pl.col(f"{col}_measurement_index") for col in static_categorical_columns])  # Change this line
+            pl.concat_list([pl.col(f"{col}_measurement_index") for col in static_categorical_columns])
             .alias("static_measurement_indices")
         ])
 
         # Remove temporary columns
         static_data = static_data.drop([f"{col}_index" for col in static_categorical_columns] + 
                                        [f"{col}_measurement_index" for col in static_categorical_columns])
+
+        # Add the normalized data as separate columns
+        static_data = static_data.with_columns([
+            pl.Series(name=f"{col}_normalized", values=col_data_normalized.flatten())
+        ])
 
         subject_id_dtype = pl.UInt32
         static_data = static_data.with_columns(pl.col("subject_id").cast(subject_id_dtype))
@@ -1772,18 +1784,30 @@ class ConcreteDataset(DatasetBase):
             dynamic_data,
             on="event_id",
             how="left"
+        ).join(
+            subjects_df.select("subject_id", "IndexDate"),
+            on="subject_id",
+            how="left"
         )
 
         # Add start_time column
         event_data = event_data.with_columns(pl.col("timestamp").min().over("subject_id").alias("start_time"))
 
         # Add time column (minutes since start_time)
-        event_data = event_data.with_columns((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes().alias("time"))
+        event_data = event_data.with_columns(
+            ((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes()).alias("time")
+        )
+
+        # Add time_to_index column
+        event_data = event_data.with_columns(
+            ((pl.col("timestamp") - pl.col("IndexDate")).dt.total_minutes()).alias("time_to_index")
+        )
 
         # Group by subject_id to create lists
         out = event_data.group_by("subject_id").agg([
             pl.col("start_time").first().alias("start_time"),
             pl.col("time").alias("time"),
+            pl.col("time_to_index").alias("time_to_index"),
             pl.col("dynamic_indices").alias("dynamic_indices"),
             pl.col("dynamic_measurement_indices").alias("dynamic_measurement_indices"),
             pl.col("dynamic_values").alias("dynamic_values")
@@ -2005,11 +2029,11 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         if idx < 0 or idx >= self.length:
             raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
-        
+
         try:
             row = self.cached_data.row(idx)
             item = {}
-            
+
             # Dynamic and static features
             for col in ['dynamic_indices', 'dynamic_measurement_indices', 'static_indices', 'static_measurement_indices']:
                 data = row[self.cached_data.columns.index(col)]
@@ -2026,20 +2050,21 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             time = row[self.cached_data.columns.index('time')]
             item['time'] = torch.tensor(time[:self.max_seq_len], dtype=torch.float)  # Truncate to max_seq_len
 
+            # Add normalized static features as separate tensors
+            for col in ['InitialA1c_normalized', 'AgeYears_normalized', 'SDI_score_normalized']:
+                value = row[self.cached_data.columns.index(col)]
+                item[col] = torch.tensor([value], dtype=torch.float)  # Wrap in list to create 1D tensor
+
             # Get the subject_id
             subject_id = row[self.cached_data.columns.index('subject_id')]
-
-            # Add normalized static features
-            for col in ['InitialA1c_normalized', 'AgeYears_normalized', 'SDI_score_normalized']:
-                item[col] = torch.tensor(row[self.cached_data.columns.index(col)], dtype=torch.float)
 
             # Get the label from task_dict
             if self.has_task:
                 label = self.task_dict.get(subject_id, 0.0)
-                item['labels'] = torch.tensor(float(label), dtype=torch.float32)
+                item['labels'] = torch.tensor([float(label)], dtype=torch.float32)
             else:
-                item['labels'] = torch.tensor(0.0, dtype=torch.float32)
-                    
+                item['labels'] = torch.tensor([0.0], dtype=torch.float32)
+
             return item
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
@@ -2064,57 +2089,77 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
-        
+
         if not self.dl_reps_dir.exists():
             raise FileNotFoundError(f"Directory not found: {self.dl_reps_dir}")
-        
+
         parquet_files = list(self.dl_reps_dir.glob(f"{self.split}*.parquet"))
         self.logger.info(f"Found {len(parquet_files)} Parquet files")
-        
+
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
-        
+
         pl.enable_string_cache()  # Enable global string cache
-        
-        lazy_dfs = []
+
+        dfs = []
         total_rows = 0
         for parquet_file in tqdm(parquet_files, desc="Loading data files"):
             self.logger.debug(f"Scanning file: {parquet_file}")
             try:
-                lazy_df = pl.scan_parquet(parquet_file)
+                df = pl.read_parquet(parquet_file)
                 if self.task_df is not None:
-                    lazy_df = lazy_df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
-                lazy_dfs.append(lazy_df)
-                # Estimate rows without loading the entire file
-                total_rows += lazy_df.select(pl.count()).collect().item()
+                    df = df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
+                dfs.append(df)
+                total_rows += len(df)
             except Exception as e:
-                self.logger.error(f"Error scanning Parquet file: {parquet_file}")
+                self.logger.error(f"Error reading Parquet file: {parquet_file}")
                 self.logger.error(f"Error message: {str(e)}")
                 continue
 
-        if not lazy_dfs:
+        if not dfs:
             self.logger.error(f"No data loaded for split: {self.split}")
             raise ValueError(f"No data loaded for split: {self.split}")
 
-        self.logger.info(f"Estimated total rows: {total_rows}")
-        
+        self.logger.info(f"Total rows: {total_rows}")
+
         if total_rows == 0:
             raise ValueError(f"No matching data found for split: {self.split}")
 
-        # Combine lazy DataFrames and collect the result
-        cached_data = pl.concat(lazy_dfs).collect()
-        
+        # Combine DataFrames
+        cached_data = pl.concat(dfs)
+
+        # Ensure continuous static variables are properly loaded and processed
+        continuous_static_columns = ['InitialA1c_normalized', 'AgeYears_normalized', 'SDI_score_normalized']
+        for col in continuous_static_columns:
+            if col not in cached_data.columns:
+                self.logger.warning(f"Column {col} not found in cached data. Adding it with default values.")
+                cached_data = cached_data.with_columns([
+                    pl.lit(0.0).alias(col)
+                ])
+            else:
+                # Ensure the column is of float type
+                cached_data = cached_data.with_columns([
+                    pl.col(col).cast(pl.Float32)
+                ])
+
         self.logger.info(f"Final cached_data shape: {cached_data.shape}")
         pl.disable_string_cache()  # Disable global string cache after concatenation
-        
+
         self.logger.info(f"Cached data loaded successfully for split: {self.split}")
         self.logger.info(f"Dataset size: {len(cached_data)}")
         self.logger.debug("Data types of cached data:")
         self.logger.debug(cached_data.dtypes)
 
-        # Optionally, you can add a data summary here
-        self.logger.info("Data summary:")
-        self.logger.info(cached_data.describe())
+        # Log summary statistics for continuous static variables
+        self.logger.info("Summary statistics for continuous static variables:")
+        for col in continuous_static_columns:
+            stats = cached_data.select([
+                pl.col(col).mean().alias("mean"),
+                pl.col(col).std().alias("std"),
+                pl.col(col).min().alias("min"),
+                pl.col(col).max().alias("max"),
+            ])
+            self.logger.info(f"{col}: {stats}")
 
         return cached_data
 
@@ -2382,7 +2427,24 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
 
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False).cast(pl.Datetime('us')))
-        
+ 
+    if df_name =='Procedures':
+        # Excluding rows in df_prc with CodeWithType values corresponding to labs
+        # Count rows before filtering
+        rows_before = df.shape[0]
+
+        # Filter out rows with CodeWithType corresponding to labs
+        df = df.filter(
+            ~(pl.col('CodeWithType').str.extract(r'(\d+)').cast(pl.Int32).is_between(82000, 87999))
+        )
+
+        # Count rows after filtering
+        rows_after = df.shape[0]
+
+        # Print the number of excluded rows
+        excluded_rows = rows_before - rows_after
+        print(f"Number of rows excluded from df_prc due to lab CPT codes: {excluded_rows}")
+
     if df_name in ['Diagnoses', 'Procedures']:
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
         if min_frequency is not None:
@@ -2396,6 +2458,21 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
 
     elif df_name == 'Labs':
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
+
+        # Excluding rows with no numeric values in the 'Result' column
+        # Count rows before filtering
+        rows_before = df.shape[0]
+
+        # Filter out rows with non-numeric 'Result'
+        df = df.filter(pl.col('Result').map_elements(is_numeric))
+
+        # Count rows after filtering
+        rows_after = df.shape[0]
+
+        # Print the number of excluded rows
+        excluded_rows = rows_before - rows_after
+        print(f"Number of rows excluded from df_labs due to non-numeric 'Result': {excluded_rows}")
+
         if min_frequency is not None:
             code_counts = df.group_by('Code').agg(pl.count('Code').alias('count'))
             if isinstance(min_frequency, int):

@@ -51,7 +51,7 @@ labs_columns = {
 
 # Select columns to read in each dataset (temporal analyses)
 
-outcomes_columns_select = ['StudyID', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
+outcomes_columns_select = ['StudyID', 'IndexDate', 'InitialA1c','A1cGreaterThan7', 'Female', 'Married', 'GovIns', 'English','AgeYears', 'SDI_score', 'Veteran']
 
 dia_columns_select = ['StudyID', 'Date', 'CodeWithType']
 

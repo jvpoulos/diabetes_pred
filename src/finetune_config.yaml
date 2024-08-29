@@ -44,9 +44,9 @@ config:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 0.01  # Initial learning rate
-  end_lr: 0.000001   # Final learning rate
-  end_lr_frac_of_init_lr: 0.0001  # This should be equal to end_lr / init_lr
+  init_lr: 0.0075  # Initial learning rate
+  end_lr: 0.00075   # Final learning rate
+  end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
   max_epochs: 300 
   batch_size: 512
   validation_batch_size: 512
