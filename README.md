@@ -180,5 +180,5 @@ $ python3 src/finetune.py use_labs=true
 4. Load a model checkpoint and extract and visualize the attention weights from it.
 
 ```bash
-$ python3 src/visualize_attention.py experiments/finetune/2024-08-20_22-55-12/checkpoints/last.ckpt use_labs=true
+$ python3 src/visualize_attention.py experiments/finetune/2024-08-27_17-06-58/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml --create_heatmaps
 ```

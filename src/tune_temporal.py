@@ -129,7 +129,7 @@ def optimize_hyperparameters(config_path, epochs):
         ),
         name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 4, "gpu": 1},
+        resources_per_trial={"cpu": 3, "gpu": 0.33},
         callbacks=[
             WandbLoggerCallback(project="diabetes_sweep_labs"),
             FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=1)
