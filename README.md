@@ -168,7 +168,7 @@ $ python3 src/event_stream.py --use_labs
 
 2. (Optional) Hyperparameter optimization for transfomer model:
 ```bash
-$ python3 src/tune_temporal.py --epochs 200
+$ python3 src/tune_temporal.py --epochs 300
 ```
 
 3. Train the transformer from scratch:
@@ -180,5 +180,5 @@ $ python3 src/finetune.py use_labs=true
 4. Load a model checkpoint and extract and visualize the attention weights from it.
 
 ```bash
-$ python3 src/visualize_attention.py experiments/finetune/2024-08-27_17-06-58/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml --create_heatmaps
+$ python3 src/visualize_attention.py experiments/finetune/2024-08-30_08-35-05/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml --create_heatmaps
 ```

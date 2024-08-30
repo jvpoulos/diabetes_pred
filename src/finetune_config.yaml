@@ -30,22 +30,22 @@ config:
   num_hidden_layers: 6
   seq_attention_types: ["global", "local"]
   seq_window_size: 168
-  head_dim: 32
+  head_dim: 64
   num_attention_heads: 8
   max_grad_norm: 1
-  intermediate_dropout: 0.1
-  attention_dropout: 0.1
-  input_dropout: 0.1
-  resid_dropout: 0.1
-  hidden_size: 256  # 32*8 = 256, consistent with head_dim and num_attention_heads
+  intermediate_dropout: 0.2
+  attention_dropout: 0.2
+  input_dropout: 0.2
+  resid_dropout: 0.2
+  hidden_size: 512  # consistent with head_dim and num_attention_heads
   intermediate_size: 512
   layer_norm_epsilon: 0.00001
   task_specific_params:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 0.0075  # Initial learning rate
-  end_lr: 0.00075   # Final learning rate
+  init_lr: 0.001  # Initial learning rate
+  end_lr: 0.0001   # Final learning rate
   end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
   max_epochs: 300 
   batch_size: 512
@@ -55,11 +55,11 @@ optimization_config:
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: true  # Flag to enable grad_value clipping
-  patience: 5
+  patience: 10
   lr_num_warmup_steps: 200  
   max_training_steps: 316500 # steps per epoch = training samples/effective batch size
   use_lr_scheduler: true
-  lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau", or "null"
+  lr_scheduler_type: "one_cycle"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau", or "null"
   num_dataloader_workers: 0
   
 data_config:
@@ -82,7 +82,7 @@ trainer_config:
   devices: 1
   precision: "16-mixed"
   detect_anomaly: false
-  log_every_n_steps: 100
+  log_every_n_steps: 10
   strategy: "ddp_find_unused_parameters_true"
   accumulate_grad_batches: 4
 
