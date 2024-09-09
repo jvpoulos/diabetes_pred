@@ -65,6 +65,9 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 - `visualize_attention.py` [temporal analyses]
 	- Loads a model checkpoint and extract the attention weights from it. Visualizes the attention weights, focusing on the average normalized attention weights per attention head for each feature value within each outcome group. The script will produce both a heatmap visualization and a table.
 
+- `attribution.py` [temporal analyses]
+	- Loads a model checkpoint and applies different Captum attribution techniques to analyze the transformer model for single-label classification. 
+
 - `train.py` [static analyses]
 	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
 
@@ -177,8 +180,9 @@ $ python3 src/tune_temporal.py --epochs 300
 $ python3 src/finetune.py use_labs=true
 ```
 
-4. Load a model checkpoint and extract and visualize the attention weights from it.
+4. Load a model checkpoint and interpret it. 
 
 ```bash
 $ python3 src/visualize_attention.py experiments/finetune/2024-08-30_08-35-05/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml --create_heatmaps
+$ python3 src/attribution.py experiments/finetune/2024-08-30_08-35-05/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs
 ```

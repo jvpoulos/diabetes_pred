@@ -151,7 +151,7 @@ def main(use_labs=False, debug=False):
 
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/DiagnosesICD10.txt'
-    procedures_file_path = 'data/ProceduresICD10.txt'
+    procedures_file_path = 'data/Procedures_NoLabs.txt'
     if use_labs:
         labs_file_path = 'data/Labs_numeric.txt'
 
@@ -160,7 +160,6 @@ def main(use_labs=False, debug=False):
     subjects_df = subjects_df.group_by('StudyID').agg([
         pl.col('IndexDate').first(),
         pl.col('InitialA1c').first(),
-        pl.col('A1cGreaterThan7').first(),
         pl.col('Female').first(),
         pl.col('Married').first(),
         pl.col('GovIns').first(),
@@ -181,14 +180,23 @@ def main(use_labs=False, debug=False):
     ])
 
     # Create static vocabularies
-    static_indices_vocab, static_measurement_indices_vocab = create_static_vocabularies(subjects_df)
+    static_indices_vocab, static_measurement_indices_vocab, subjects_df = create_static_vocabularies(subjects_df)
 
     print("Sample of static_indices_vocab:")
     print(dict(list(static_indices_vocab.items())[:5]))
     print("Sample of static_measurement_indices_vocab:")
     print(dict(list(static_measurement_indices_vocab.items())[:5]))
 
-    dynamic_measurement_indices_vocab = {"dynamic_indices": 1}
+    # Print the columns of subjects_df to verify
+    print("Columns in subjects_df:", subjects_df.columns)
+
+    # Print the first few rows of subjects_df
+    print("First few rows of subjects_df:")
+    print(subjects_df.head())
+
+    # Print data types of columns
+    print("Data types of columns in subjects_df:")
+    print(subjects_df.dtypes)
 
     # After creating static_indices_vocab and static_measurement_indices_vocab
     with open(data_dir / "static_indices_vocab.json", "w") as f:
@@ -445,9 +453,7 @@ def main(use_labs=False, debug=False):
     # Cache deep learning representation
     ESD.cache_deep_learning_representation(
         DL_chunk_size, 
-        do_overwrite=do_overwrite,
-        static_indices_vocab=static_indices_vocab,
-        dynamic_measurement_indices_vocab=event_type_mapping
+        do_overwrite=do_overwrite
     )
     
     # Save dataset

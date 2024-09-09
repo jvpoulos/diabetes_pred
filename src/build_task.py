@@ -17,19 +17,31 @@ def main(ESD, use_labs=False):
     else:
         DATA_DIR = Path("data")
 
-    # Create the task_dfs directory inside the data directory
     TASK_DF_DIR = DATA_DIR / "task_dfs"
     TASK_DF_DIR.mkdir(exist_ok=True, parents=True)
 
-    # Finetuning objective: Predict A1cGreaterThan7 using single-label classification
+    # Load the original outcomes data
+    outcomes_file_path = 'data/DiabetesOutcomes.txt'
+    outcomes_df = pl.read_csv(outcomes_file_path, separator='|')
+
+    # Create a task labels DataFrame and convert it to LazyFrame
+    task_labels = (
+        outcomes_df.select(
+            pl.col("StudyID"),
+            pl.col("A1cGreaterThan7").cast(pl.Boolean).fill_null(False).alias("label")
+        )
+    ).lazy()
+
+    # Join task labels with subjects_df
     a1c_greater_than_7 = (
         ESD.subjects_df.lazy()
+        .join(task_labels, left_on="StudyID", right_on="StudyID")
         .select(
             pl.col("subject_id"),
-            pl.col("A1cGreaterThan7").cast(pl.Boolean).fill_null(False).alias("label"),
+            pl.col("label"),
+            pl.lit(None, dtype=pl.Datetime).alias("start_time"),
+            pl.lit(None, dtype=pl.Datetime).alias("end_time")
         )
-        .with_columns(pl.lit(None, dtype=pl.Datetime).alias("start_time"))
-        .with_columns(pl.lit(None, dtype=pl.Datetime).alias("end_time"))
     )
 
     # Collect the lazy DataFrame
@@ -46,7 +58,6 @@ def main(ESD, use_labs=False):
     test_df.write_parquet(TASK_DF_DIR / "a1c_greater_than_7_test.parquet")
 
     # Summarize
-
     result = summarize_binary_task(train_df)
     print("Summary of binary task:")
     print(result)

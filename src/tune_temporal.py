@@ -151,7 +151,7 @@ def optimize_hyperparameters(config_path, epochs):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=300, help='Number of epochs to train')
     parser.add_argument('--config', type=str, default='finetune_config.yaml', help='Path to the config file')
     args = parser.parse_args()
 

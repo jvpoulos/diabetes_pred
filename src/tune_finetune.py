@@ -299,7 +299,7 @@ def train_function(config):
             lr_scheduler_type = lr_scheduler_type.categories[0]
 
     # Resolve the values before calculation
-    max_epochs = resolve_tune_value(config["optimization_config"].get("max_epochs", 100))
+    max_epochs = config["optimization_config"].get("max_epochs", 300)  # Default to 100 if not specified
     batch_size = resolve_tune_value(config["optimization_config"].get("batch_size", 32))
 
     # Now calculate max_training_steps with resolved values
