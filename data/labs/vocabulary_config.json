@@ -1,7 +1,7 @@
 {
   "vocab_sizes_by_measurement": {
     "event_type": 3,
-    "dynamic_indices": 3237
+    "dynamic_indices": 33803
   },
   "vocab_offsets_by_measurement": {
     "event_type": 1,

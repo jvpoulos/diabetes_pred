@@ -46,6 +46,11 @@ import io
 import chardet
 from tqdm import tqdm
 import plotly.graph_objects as go
+from scipy import stats
+import pandas as pd
+import numpy as np
+import math
+import polars as pl
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -54,6 +59,27 @@ from EventStream.data.dataset_base import DatasetBase
 from EventStream.data.measurement_config import MeasurementConfig
 from EventStream.data.types import DataModality, TemporalityType, NumericDataModalitySubtype
 from EventStream.data.vocabulary import Vocabulary
+
+def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
+    dataset = CustomPytorchDataset(
+        config=config,
+        split=split,
+        dl_reps_dir=dl_reps_dir,
+        subjects_df=subjects_df,
+        df_dia=df_dia,
+        df_prc=df_prc,
+        df_labs=df_labs,
+        task_df=task_df,
+        max_seq_len=max_seq_len
+    )
+    return dataset
+
+def is_numeric(value):
+    try:
+        float(value)
+        return True
+    except ValueError:
+        return False
 
 def discretize_variable(values, num_bins=50):
     """
@@ -72,53 +98,62 @@ def discretize_variable(values, num_bins=50):
     bin_mapping = {i: f"{bin_edges[i].left:.2f}-{bin_edges[i].right:.2f}" for i in range(len(bin_edges))}
     return bins, bin_mapping
 
-def is_numeric(value):
-    try:
-        float(value)
-        return True
-    except ValueError:
-        return False
-
-def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
-    dataset = CustomPytorchDataset(
-        config=config,
-        split=split,
-        dl_reps_dir=dl_reps_dir,
-        subjects_df=subjects_df,
-        df_dia=df_dia,
-        df_prc=df_prc,
-        df_labs=df_labs,
-        task_df=task_df,
-        max_seq_len=max_seq_len
-    )
-    return dataset
-            
-def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
+def create_static_vocabularies(subjects_df):
     static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
     static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
     
+    static_indices_vocab = {}
+    static_measurement_indices_vocab = {}
+    
+    idx = 1
+    for col in static_categorical_columns + static_continuous_columns:
+        if col in static_continuous_columns:
+            values = subjects_df[col].to_numpy()
+            bins, bin_mapping = discretize_variable(values)
+            subjects_df = subjects_df.with_columns([
+                pl.Series(name=f"{col}_discretized", values=bins)
+            ])
+            static_indices_vocab[col] = {bin_mapping[i]: i + idx for i in range(len(bin_mapping))}
+            if col == 'SDI_score':
+                static_indices_vocab[col]['NaN'] = len(bin_mapping) + idx
+            static_measurement_indices_vocab[col] = idx
+            idx += len(static_indices_vocab[col])
+        else:
+            unique_values = subjects_df.select(col).unique().sort(col)
+            static_indices_vocab[col] = {str(val[0]): i + idx for i, val in enumerate(unique_values.rows())}
+            static_measurement_indices_vocab[col] = idx
+            idx += len(static_indices_vocab[col])
+    
+    # Create static_indices and static_measurement_indices columns
     static_indices = []
     static_measurement_indices = []
     
-    # Handle categorical variables
-    for col in static_categorical_columns:
-        value = row[col]
-        if value is not None:
-            index = static_indices_vocab[col].get(str(value), 0)
-            if index != 0:  # Only include non-zero indices
-                static_indices.append(int(index))
-                static_measurement_indices.append(int(static_measurement_indices_vocab[col]))
+    for row in subjects_df.iter_rows(named=True):
+        subject_static_indices = []
+        subject_static_measurement_indices = []
+        for col in static_categorical_columns + static_continuous_columns:
+            if col in static_continuous_columns:
+                val = row[f"{col}_discretized"]
+                if col == 'SDI_score' and (val is None or pd.isna(val)):
+                    val = 'NaN'
+                else:
+                    val = bin_mapping[int(val)]
+            else:
+                val = str(row[col])
+            if val is not None:
+                idx = static_indices_vocab[col].get(val)
+                if idx is not None:
+                    subject_static_indices.append(idx)
+                    subject_static_measurement_indices.append(static_measurement_indices_vocab[col])
+        static_indices.append(subject_static_indices)
+        static_measurement_indices.append(subject_static_measurement_indices)
     
-    # Handle discretized continuous variables
-    for col in static_continuous_columns:
-        discretized_value = row[f"{col}_discretized"]
-        if discretized_value is not None:
-            index = static_indices_vocab[col].get(str(discretized_value), 0)
-            if index != 0:  # Only include non-zero indices
-                static_indices.append(int(index))
-                static_measurement_indices.append(int(static_measurement_indices_vocab[col]))
+    subjects_df = subjects_df.with_columns([
+        pl.Series(name="static_indices", values=static_indices).cast(pl.List(pl.UInt32)),
+        pl.Series(name="static_measurement_indices", values=static_measurement_indices).cast(pl.List(pl.UInt32))
+    ])
     
-    return static_indices, static_measurement_indices
+    return static_indices_vocab, static_measurement_indices_vocab, subjects_df
 
 def fit_imputer_and_scaler_on_training_data(data):
     imputer = SimpleImputer(strategy='mean')
@@ -177,64 +212,6 @@ def try_convert_to_float(x, val_type):
             return None
     return x  # Return as-is for non-numeric types
 
-def create_static_vocabularies(subjects_df):
-    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
-    
-    static_indices_vocab = {}
-    static_measurement_indices_vocab = {}
-    
-    idx = 1
-    for col in static_categorical_columns:
-        unique_values = subjects_df.select(col).unique().sort(col)
-        static_indices_vocab[col] = {str(val[0]): i + idx for i, val in enumerate(unique_values.rows())}
-        static_measurement_indices_vocab[col] = idx
-        idx += len(static_indices_vocab[col])
-    
-    # Discretize continuous variables
-    for col in static_continuous_columns:
-        values = subjects_df[col].to_numpy()
-        bins, bin_mapping = discretize_variable(values)
-        static_indices_vocab[col] = {str(bin_mapping[i]): i + idx for i in range(len(bin_mapping))}
-        static_measurement_indices_vocab[col] = idx
-        idx += len(bin_mapping)
-        
-        # Update the subjects_df with discretized values
-        subjects_df = subjects_df.with_columns(pl.Series(name=f"{col}_discretized", values=bins))
-    
-    # Create static_indices and static_measurement_indices columns
-    for col in static_categorical_columns + static_continuous_columns:
-        col_name = f"{col}_discretized" if col in static_continuous_columns else col
-        mapping = static_indices_vocab[col]
-        
-        def map_values(x):
-            return mapping.get(str(x), None)
-        
-        index_values = [map_values(x) for x in subjects_df[col_name].to_list()]
-        measurement_index_values = [static_measurement_indices_vocab[col] if x is not None else None for x in subjects_df[col_name].to_list()]
-        
-        subjects_df = subjects_df.with_columns([
-            pl.Series(name=f"{col}_index", values=index_values),
-            pl.Series(name=f"{col}_measurement_index", values=measurement_index_values)
-        ])
-    
-    # Combine individual index columns
-    static_indices = [f"{col}_index" for col in static_categorical_columns + static_continuous_columns]
-    static_measurement_indices = [f"{col}_measurement_index" for col in static_categorical_columns + static_continuous_columns]
-    
-    static_indices_values = [list(row) for row in zip(*[subjects_df[col].to_list() for col in static_indices])]
-    static_measurement_indices_values = [list(row) for row in zip(*[subjects_df[col].to_list() for col in static_measurement_indices])]
-    
-    subjects_df = subjects_df.with_columns([
-        pl.Series(name="static_indices", values=static_indices_values),
-        pl.Series(name="static_measurement_indices", values=static_measurement_indices_values)
-    ])
-    
-    # Drop temporary columns
-    subjects_df = subjects_df.drop(static_indices + static_measurement_indices)
-    
-    return static_indices_vocab, static_measurement_indices_vocab, subjects_df
-
 def map_to_index(col, static_indices_vocab):
     if col not in static_indices_vocab:
         return pl.lit(None)  # Return None for continuous variables
@@ -273,6 +250,20 @@ class ConcreteDataset(DatasetBase):
         unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
         return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
 
+    def _create_static_indices_vocab(self):
+        static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
+        vocab = {}
+        idx = 1
+        for col in static_categorical_columns:
+            unique_values = self.subjects_df.select(col).unique().sort(col)
+            vocab[col] = {str(val[0]): i + idx for i, val in enumerate(unique_values.rows())}
+            idx += len(vocab[col])
+        return vocab
+
+    def _create_static_measurement_indices_vocab(self):
+        static_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran', 'InitialA1c', 'AgeYears', 'SDI_score']
+        return {col: idx for idx, col in enumerate(static_columns, start=1)}
+
     # Override the unified_measurements_vocab property to make it settable
     @property
     def unified_measurements_vocab(self):
@@ -281,9 +272,6 @@ class ConcreteDataset(DatasetBase):
     @unified_measurements_vocab.setter
     def unified_measurements_vocab(self, value):
         self._unified_measurements_vocab = value
-
-    def create_static_indices_and_measurements(self, row):
-        return create_static_indices_and_measurements(row, self.static_indices_vocab, self.static_measurement_indices_vocab)
 
     def transform_measurements(self):
         for measure, config in self.measurement_configs.items():
@@ -480,14 +468,14 @@ class ConcreteDataset(DatasetBase):
                 inliers_col = ~M.predict_from_polars(vals_col, pl.col("outlier_model")).alias(inliers_col_name)
                 source_df = source_df.with_columns(inliers_col)
 
-            # Apply normalization
-            if self.config.normalizer_config is not None:
-                M = self._get_preprocessing_model(self.config.normalizer_config, for_fit=False)
-                if "normalizer" in source_df.columns:
-                    normalized_vals_col = M.predict_from_polars(vals_col, pl.col("normalizer"))
-                    source_df = source_df.with_columns(normalized_vals_col.alias(vals_col_name))
-                else:
-                    print(f"Warning: 'normalizer' column not found for measure {measure}. Skipping normalization.")
+            # # Apply normalization
+            # if self.config.normalizer_config is not None:
+            #     M = self._get_preprocessing_model(self.config.normalizer_config, for_fit=False)
+            #     if "normalizer" in source_df.columns:
+            #         normalized_vals_col = M.predict_from_polars(vals_col, pl.col("normalizer"))
+            #         source_df = source_df.with_columns(normalized_vals_col.alias(vals_col_name))
+            #     else:
+            #         print(f"Warning: 'normalizer' column not found for measure {measure}. Skipping normalization.")
 
             result_df = source_df.drop(cols_to_drop_at_end)
             
@@ -1635,7 +1623,7 @@ class ConcreteDataset(DatasetBase):
 
         setattr(self, attr, updated_df)
         
-    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False) -> DF_T:
+    def build_DL_cached_representation(self, subject_ids: list[int] | None = None, do_sort_outputs: bool = False, static_indices_vocab=None, dynamic_measurement_indices_vocab=None) -> DF_T:
         print("Starting build_DL_cached_representation")
         subject_measures, event_measures, dynamic_measures = [], [], ["dynamic_indices"]
         for m in self.unified_measurements_vocab[1:]:
@@ -1662,40 +1650,44 @@ class ConcreteDataset(DatasetBase):
         static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
         static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
         all_static_columns = static_categorical_columns + static_continuous_columns
-
-        # Create static_data, including discretized versions of continuous columns
-        unique_columns = list(dict.fromkeys(["subject_id"] + static_categorical_columns + [f"{col}_discretized" for col in static_continuous_columns]))
         
-        # Filter out columns that don't exist in subjects_df
-        existing_columns = [col for col in unique_columns if col in subjects_df.columns]
-        static_data = subjects_df.select(
-            *[pl.col(m) for m in existing_columns]
-        )
+        # Create static_data first, avoiding duplicate columns
+        unique_columns = list(dict.fromkeys(["subject_id"] + all_static_columns))
+        static_data = subjects_df.select(*unique_columns)
 
-        # Use the create_static_indices_and_measurements function
-        static_indices_and_measurements = [
-            create_static_indices_and_measurements(row, self.static_indices_vocab, self.static_measurement_indices_vocab)
-            for row in static_data.iter_rows(named=True)
-        ]
+        print("Sample of static_data before transformation:")
+        print(static_data.head())
 
-        static_indices = [item[0] for item in static_indices_and_measurements]
-        static_measurement_indices = [item[1] for item in static_indices_and_measurements]
+        print("static_indices_vocab:", self.static_indices_vocab)
+        print("static_measurement_indices_vocab:", self.static_measurement_indices_vocab)
 
+        # Create static_indices column (only for categorical columns)
         static_data = static_data.with_columns([
-            pl.Series(name="static_indices", values=static_indices, dtype=pl.List(pl.UInt32)),
-            pl.Series(name="static_measurement_indices", values=static_measurement_indices, dtype=pl.List(pl.UInt32))
+            pl.struct(static_categorical_columns).map_elements(
+                lambda x: [
+                    self.static_indices_vocab[col].get(str(x[col]), 0)
+                    for col in static_categorical_columns if x[col] is not None
+                ]
+            ).cast(pl.List(pl.UInt32)).alias("static_indices")
         ])
 
-        # Remove any normalized columns if they exist
-        columns_to_drop = [f"{col}_normalized" for col in static_continuous_columns]
-        existing_columns = [col for col in columns_to_drop if col in static_data.columns]
-        if existing_columns:
-            static_data = static_data.drop(existing_columns)
+        # Create static_measurement_indices column (for all static columns)
+        static_data = static_data.with_columns([
+            pl.struct(all_static_columns).map_elements(
+                lambda x: [
+                    self.static_measurement_indices_vocab[col]
+                    for col in all_static_columns if x[col] is not None
+                ]
+            ).cast(pl.List(pl.UInt32)).alias("static_measurement_indices")
+        ])
 
-        # Remove original continuous columns if they exist
-        existing_continuous_columns = [col for col in static_continuous_columns if col in static_data.columns]
-        if existing_continuous_columns:
-            static_data = static_data.drop(existing_continuous_columns)
+        print("Sample of static_data after transformation:")
+        print(static_data.head())
+
+        print("Sample values of static_indices:")
+        print(static_data['static_indices'].head())
+        print("Sample values of static_measurement_indices:")
+        print(static_data['static_measurement_indices'].head())
 
         subject_id_dtype = pl.UInt32
         static_data = static_data.with_columns(pl.col("subject_id").cast(subject_id_dtype))
@@ -1722,12 +1714,30 @@ class ConcreteDataset(DatasetBase):
         # Define event_type_mapping
         event_type_mapping = {"DIAGNOSIS": 1, "PROCEDURE": 2, "LAB": 3}
 
+        print("Sample of dynamic_data before transformation:")
+        print(dynamic_data.head())
+
         def map_event_type(event_type):
             return event_type_mapping.get(event_type, 0)  # Return 0 for unknown event types
 
         dynamic_data = dynamic_data.with_columns([
             pl.col("event_type").map_elements(map_event_type).cast(pl.UInt32).alias("dynamic_measurement_indices")
         ])
+
+        print("Sample of dynamic_data after transformation:")
+        print(dynamic_data.head())
+
+        # Add a check for any unexpected values
+        unique_values = dynamic_data.select(pl.col("dynamic_measurement_indices").explode()).unique()
+        print("Unique values in dynamic_measurement_indices:", unique_values)
+
+        unexpected_values = set(unique_values.to_series().to_list()) - set([1, 2, 3])
+        if unexpected_values:
+            print(f"WARNING: Unexpected values found in dynamic_measurement_indices: {unexpected_values}")
+                
+        print("static_indices_vocab sample:", {k: v for k, v in list(static_indices_vocab.items())[:5]})
+        print("static_measurement_indices_vocab:", self.static_measurement_indices_vocab)
+        print("dynamic_measurement_indices_vocab:", event_type_mapping)
 
         event_data = events_df.select(
             "subject_id",
@@ -1739,30 +1749,18 @@ class ConcreteDataset(DatasetBase):
             dynamic_data,
             on="event_id",
             how="left"
-        ).join(
-            subjects_df.select("subject_id", "IndexDate"),
-            on="subject_id",
-            how="left"
         )
 
         # Add start_time column
         event_data = event_data.with_columns(pl.col("timestamp").min().over("subject_id").alias("start_time"))
 
         # Add time column (minutes since start_time)
-        event_data = event_data.with_columns(
-            ((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes()).alias("time")
-        )
-
-        # Add time_to_index column
-        event_data = event_data.with_columns(
-            ((pl.col("timestamp") - pl.col("IndexDate")).dt.total_minutes()).alias("time_to_index")
-        )
+        event_data = event_data.with_columns((pl.col("timestamp") - pl.col("start_time")).dt.total_minutes().alias("time"))
 
         # Group by subject_id to create lists
         out = event_data.group_by("subject_id").agg([
             pl.col("start_time").first().alias("start_time"),
             pl.col("time").alias("time"),
-            pl.col("time_to_index").alias("time_to_index"),
             pl.col("dynamic_indices").alias("dynamic_indices"),
             pl.col("dynamic_measurement_indices").alias("dynamic_measurement_indices"),
             pl.col("dynamic_values").alias("dynamic_values")
@@ -1777,6 +1775,9 @@ class ConcreteDataset(DatasetBase):
         # Save dynamic_indices vocab and dynamic_measurement_indices vocab
         with open(self.config.save_dir / "dynamic_indices_vocab.json", "w") as f:
             json.dump(self.code_mapping, f, indent=2)
+        
+        with open(self.config.save_dir / "dynamic_measurement_indices_vocab.json", "w") as f:
+            json.dump(event_type_mapping, f, indent=2)
 
         return out
 
@@ -2077,17 +2078,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"Dataset size: {len(cached_data)}")
         self.logger.debug("Data types of cached data:")
         self.logger.debug(cached_data.dtypes)
-
-        # Log summary statistics for continuous static variables
-        self.logger.info("Summary statistics for continuous static variables:")
-        for col in continuous_static_columns:
-            stats = cached_data.select([
-                pl.col(col).mean().alias("mean"),
-                pl.col(col).std().alias("std"),
-                pl.col(col).min().alias("min"),
-                pl.col(col).max().alias("max"),
-            ])
-            self.logger.info(f"{col}: {stats}")
 
         return cached_data
 

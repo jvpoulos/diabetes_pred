@@ -47,7 +47,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, map_to_index, is_numeric
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, map_to_index, is_numeric
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -181,6 +181,8 @@ def main(use_labs=False, debug=False):
 
     # Create static vocabularies
     static_indices_vocab, static_measurement_indices_vocab, subjects_df = create_static_vocabularies(subjects_df)
+
+    dynamic_measurement_indices_vocab = {"dynamic_indices": 1}
 
     print("Sample of static_indices_vocab:")
     print(dict(list(static_indices_vocab.items())[:5]))
@@ -453,7 +455,9 @@ def main(use_labs=False, debug=False):
     # Cache deep learning representation
     ESD.cache_deep_learning_representation(
         DL_chunk_size, 
-        do_overwrite=do_overwrite
+        do_overwrite=do_overwrite,
+        static_indices_vocab=static_indices_vocab,
+        dynamic_measurement_indices_vocab=dynamic_measurement_indices_vocab,
     )
     
     # Save dataset

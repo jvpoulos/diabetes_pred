@@ -1,7 +1,10 @@
 {
   "Female": 1,
-  "Married": 2,
-  "GovIns": 3,
-  "English": 4,
-  "Veteran": 5
+  "Married": 3,
+  "GovIns": 5,
+  "English": 7,
+  "Veteran": 9,
+  "InitialA1c": 11,
+  "AgeYears": 42,
+  "SDI_score": 80
 }

@@ -177,7 +177,7 @@ $ python3 src/tune_temporal.py --epochs 300
 3. Train the transformer from scratch:
 
 ```bash
-$ python3 src/finetune.py use_labs=true
+$ CUDA_VISIBLE_DEVICES=2 python3 src/finetune.py use_labs=true
 ```
 
 4. Load a model checkpoint and interpret it. 

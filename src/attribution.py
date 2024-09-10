@@ -46,6 +46,10 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
     config.num_attention_heads = finetune_config['config']['num_attention_heads']
     config.head_dim = finetune_config['config']['head_dim']
 
+    # Add default value for intermediate_dropout if not present
+    if not hasattr(config, 'intermediate_dropout'):
+        config.intermediate_dropout = finetune_config['config'].get('intermediate_dropout', 0.1)
+
     # Update seq_attention_types
     seq_attention_types = finetune_config['config'].get('seq_attention_types', ['global', 'local'])
     config.seq_attention_types = seq_attention_types * config.num_hidden_layers
@@ -55,17 +59,35 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
     config.seq_attention_layers = config.seq_attention_types
     config.attention_layers = config.seq_attention_layers
 
+    # Load the state dict from the checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+    state_dict = checkpoint['state_dict']
+
+    # Update vocab size in config
+    static_embedding_weight = state_dict.get('model.static_indices_embedding.weight')
+    if static_embedding_weight is not None:
+        config.vocab_size = static_embedding_weight.shape[0]
+
+    # Set oov_index to be the last index of the vocabulary
+    oov_index = config.vocab_size - 1
+
+    # Update vocabulary_config with the new vocab_size
+    vocabulary_config.vocab_sizes_by_measurement = {k: min(v, config.vocab_size) for k, v in vocabulary_config.vocab_sizes_by_measurement.items()}
+
     # Initialize the model with the updated config
     model = ESTForStreamClassification(
         config=config,
         vocabulary_config=vocabulary_config,
         optimization_config=optimization_config,
-        oov_index=config.vocab_size
+        oov_index=oov_index
     )
 
-    # Load the state dict from the checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-    state_dict = checkpoint['state_dict']
+    # Manually update the encoder's input layer
+    model.encoder.input_layer = ConditionallyIndependentPointProcessInputLayer(
+        config=config,
+        vocab_sizes_by_measurement=vocabulary_config.vocab_sizes_by_measurement,
+        oov_index=oov_index
+    )
 
     # Remove the 'model.' prefix from the state dict keys
     new_state_dict = {}
