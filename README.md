@@ -62,14 +62,11 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 - `tune_temporal.py` [temporal analyses]
 	- Hyperparameter optimization for temporal transfomer models using Ray Tune.
 
-- `visualize_attention.py` [temporal analyses]
-	- Loads a model checkpoint and extract the attention weights from it. Visualizes the attention weights, focusing on the average normalized attention weights per attention head for each feature value within each outcome group. The script will produce both a heatmap visualization and a table.
-
 - `attribution.py` [temporal analyses]
-	- Loads a model checkpoint and applies different Captum attribution techniques to analyze the transformer model for single-label classification. 
+	- Loads a model checkpoint and applies different attribution techniques from Captum, including Integrated Gradients for feature attribution and Conductance for layer and neuron attribution, to better understand the transformer predicting single-label classification.
 
 - `train.py` [static analyses]
-	- Trains transformer model, supporting Tab Transformer and FT Transformer. Optional pretraining with CutMix and Mixup. 
+	- Trains transformer model, supporting Tab Transformer and FT Transformer.
 
 ## Getting started ([credit](https://gist.github.com/Ravi2712/47f070a6578153d3caee92bb67134963))
 
@@ -169,7 +166,7 @@ $ echo $PYTHONPATH
 $ python3 src/event_stream.py --use_labs
 ```
 
-2. (Optional) Hyperparameter optimization for transfomer model:
+2. (Optional) Hyperparameter optimization for transformer model:
 ```bash
 $ python3 src/tune_temporal.py --epochs 300
 ```
@@ -180,9 +177,8 @@ $ python3 src/tune_temporal.py --epochs 300
 $ CUDA_VISIBLE_DEVICES=2 python3 src/finetune.py use_labs=true
 ```
 
-4. Load a model checkpoint and interpret it. 
+4. Loads a model checkpoint and apply different attribution techniques from Captum.
 
 ```bash
-$ python3 src/visualize_attention.py experiments/finetune/2024-08-30_08-35-05/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml --create_heatmaps
-$ python3 src/attribution.py experiments/finetune/2024-08-30_08-35-05/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs
+$ python3 src/attribution.py experiments/finetune/2024-09-10_17-32-55/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs
 ```

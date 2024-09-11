@@ -14,6 +14,7 @@ from captum.attr import IntegratedGradients, LayerConductance, NeuronConductance
 from EventStream.transformer.fine_tuning_model import ESTForStreamClassification
 from EventStream.transformer.lightning_modules.fine_tuning import ESTForStreamClassificationLM
 from EventStream.transformer.config import StructuredTransformerConfig, OptimizationConfig
+from EventStream.transformer.transformer import ConditionallyIndependentPointProcessInputLayer
 from EventStream.data.vocabulary import VocabularyConfig
 
 def load_model_and_data(checkpoint_path, config_path, use_labs):
@@ -101,12 +102,18 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
     model.load_state_dict(new_state_dict, strict=False)
 
     # Load input data
-    dynamic_indices, dynamic_values = load_dynamic_data(DATA_DIR)
-    continuous_features = load_continuous_features(DATA_DIR)
+    dynamic_data = load_dynamic_data(DATA_DIR)
+    static_data = load_static_data(DATA_DIR)
 
     # Create input tensor
-    input_data = np.concatenate([dynamic_indices, dynamic_values, continuous_features], axis=-1)
-    input_data = torch.tensor(input_data, dtype=torch.float32)
+    input_data = {
+        'dynamic_indices': torch.tensor(dynamic_data['dynamic_indices'], dtype=torch.long),
+        'dynamic_values': torch.tensor(dynamic_data['dynamic_values'], dtype=torch.float),
+        'dynamic_measurement_indices': torch.tensor(dynamic_data['dynamic_measurement_indices'], dtype=torch.long),
+        'static_indices': torch.tensor(static_data['static_indices'], dtype=torch.long),
+        'static_measurement_indices': torch.tensor(static_data['static_measurement_indices'], dtype=torch.long),
+        'time': torch.tensor(dynamic_data['time'], dtype=torch.float),
+    }
 
     # Load labels
     labels_df = load_labels(DATA_DIR)
@@ -124,22 +131,30 @@ def load_dynamic_data(directory, max_seq_length=1000):
         df = pd.concat(dfs, ignore_index=True)
         df = df.sort_values('subject_id')
 
-        def truncate_or_pad_array(arr, max_len, pad_value):
-            if len(arr) > max_len:
-                return arr[:max_len]
-            return np.pad(arr, (0, max_len - len(arr)), 'constant', constant_values=pad_value)
+        def pad_sequence(seq, max_len, pad_value):
+            seq = np.array(seq)
+            if len(seq) > max_len:
+                return seq[:max_len]
+            return np.pad(seq, (0, max_len - len(seq)), 'constant', constant_values=pad_value)
 
-        dynamic_indices = np.array([truncate_or_pad_array(seq, max_seq_length, -1) for seq in df['dynamic_indices']])
-        dynamic_values = np.array([truncate_or_pad_array(seq, max_seq_length, np.nan) for seq in df['dynamic_values']])
+        dynamic_indices = np.array([pad_sequence(seq, max_seq_length, -1) for seq in df['dynamic_indices']])
+        dynamic_values = np.array([pad_sequence(seq, max_seq_length, np.nan) for seq in df['dynamic_values']])
+        dynamic_measurement_indices = np.array([pad_sequence(seq, max_seq_length, 0) for seq in df['dynamic_measurement_indices']])
+        time = np.array([pad_sequence(seq, max_seq_length, 0) for seq in df['time']])
 
         dynamic_values = np.where(np.isnan(dynamic_values), -1, dynamic_values)
 
-        return dynamic_indices, dynamic_values
+        return {
+            'dynamic_indices': dynamic_indices,
+            'dynamic_values': dynamic_values,
+            'dynamic_measurement_indices': dynamic_measurement_indices,
+            'time': time
+        }
     except Exception as e:
         print(f"Error loading dynamic data: {str(e)}")
         raise
 
-def load_continuous_features(directory):
+def load_static_data(directory):
     try:
         dfs = []
         for i in range(3):
@@ -147,10 +162,25 @@ def load_continuous_features(directory):
             dfs.append(df)
         
         df = pd.concat(dfs, ignore_index=True)
-        continuous_features = df[['InitialA1c_normalized', 'AgeYears_normalized', 'SDI_score_normalized']].values
-        return continuous_features
+        df = df.sort_values('subject_id')
+
+        max_static_length = max(len(seq) for seq in df['static_indices'])
+
+        def pad_or_truncate_sequence(seq, max_len, pad_value):
+            seq = np.array(seq)
+            if len(seq) > max_len:
+                return seq[:max_len]
+            return np.pad(seq, (0, max_len - len(seq)), 'constant', constant_values=pad_value)
+
+        static_indices = np.array([pad_or_truncate_sequence(seq, max_static_length, 0) for seq in df['static_indices']])
+        static_measurement_indices = np.array([pad_or_truncate_sequence(seq, max_static_length, 0) for seq in df['static_measurement_indices']])
+
+        return {
+            'static_indices': static_indices,
+            'static_measurement_indices': static_measurement_indices
+        }
     except Exception as e:
-        print(f"Error loading continuous features: {str(e)}")
+        print(f"Error loading static data: {str(e)}")
         raise
 
 def load_labels(data_dir: Path) -> pd.DataFrame:
@@ -182,20 +212,52 @@ def load_labels(data_dir: Path) -> pd.DataFrame:
     
     return labels_df[['subject_id', 'label']]
 
+class ModelWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        return self.model(x)
+
 def integrated_gradients_analysis(model, inputs, target):
-    ig = IntegratedGradients(model)
-    attributions, delta = ig.attribute(inputs, target=target, return_convergence_delta=True)
-    return attributions, delta
+    wrapped_model = ModelWrapper(model)
+    ig = IntegratedGradients(wrapped_model)
+    
+    # Create baseline inputs
+    baselines = {}
+    for key, value in inputs.items():
+        if isinstance(value, torch.Tensor):
+            baselines[key] = torch.zeros_like(value)
+    
+    attributions = ig.attribute(inputs, baselines=baselines, target=target)
+    
+    # Combine attributions from different input components
+    combined_attributions = torch.cat([attr.view(attr.size(0), -1) for attr in attributions.values()], dim=1)
+    
+    return combined_attributions, None  # We're not using delta in this case
 
 def layer_conductance_analysis(model, inputs, target, layer):
-    lc = LayerConductance(model, layer)
+    wrapped_model = ModelWrapper(model)
+    lc = LayerConductance(wrapped_model, layer)
+    
     attributions = lc.attribute(inputs, target=target)
-    return attributions
+    
+    # Combine attributions from different input components
+    combined_attributions = torch.cat([attr.view(attr.size(0), -1) for attr in attributions.values()], dim=1)
+    
+    return combined_attributions
 
 def neuron_conductance_analysis(model, inputs, target, layer, neuron_selector):
-    nc = NeuronConductance(model, layer)
+    wrapped_model = ModelWrapper(model)
+    nc = NeuronConductance(wrapped_model, layer)
+    
     attributions = nc.attribute(inputs, neuron_selector=neuron_selector, target=target)
-    return attributions
+    
+    # Combine attributions from different input components
+    combined_attributions = torch.cat([attr.view(attr.size(0), -1) for attr in attributions.values()], dim=1)
+    
+    return combined_attributions
 
 def visualize_attributions(attributions, feature_names, title):
     plt.figure(figsize=(10, 6))
@@ -220,7 +282,7 @@ def main():
     target = 1  # For positive class
     
     # Integrated Gradients
-    ig_attributions, ig_delta = integrated_gradients_analysis(model, input_data, target)
+    ig_attributions, _ = integrated_gradients_analysis(model, input_data, target)
     visualize_attributions(ig_attributions.sum(0), model.config.feature_names, "Integrated Gradients Feature Attribution")
     
     # Layer Conductance
