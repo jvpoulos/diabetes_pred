@@ -65,7 +65,13 @@ import psutil
 from visualize_describe import main as visualize_main
 from build_task import main as build_task_main
 
-def main(use_labs=False, debug=False):
+def main(
+        use_labs=False, 
+        debug=False, 
+        outcomes_file='data/DiabetesOutcomes.txt', 
+        diagnoses_file='data/DiagnosesICD10.txt', 
+        procedures_file='data/ProceduresICD10.txt'
+    ):
     print("Building dataset config...")
 
     if use_labs:
@@ -149,9 +155,9 @@ def main(use_labs=False, debug=False):
         save_dir=data_dir
     )
 
-    outcomes_file_path = 'data/DiabetesOutcomes.txt'
-    diagnoses_file_path = 'data/DiagnosesICD10.txt'
-    procedures_file_path = 'data/ProceduresICD10.txt'
+    outcomes_file_path = outcomes_file
+    diagnoses_file_path = diagnoses_file
+    procedures_file_path = procedures_file
     if use_labs:
         labs_file_path = 'data/Labs_numeric.txt'
 
@@ -506,6 +512,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process Event Stream Data.')
     parser.add_argument('--use_labs', action='store_true', help='Include labs data in processing.')
     parser.add_argument('--debug', action='store_true', help='Debug mode: import only 1% of observations')
+    parser.add_argument('--outcomes_file', type=str, default='data/DiabetesOutcomes.txt', help='Path to outcomes file')
+    parser.add_argument('--diagnoses_file', type=str, default='data/DiagnosesICD10.txt', help='Path to diagnoses file')
+    parser.add_argument('--procedures_file', type=str, default='data/ProceduresICD10.txt', help='Path to procedures file')
     args = parser.parse_args()
 
-    main(use_labs=args.use_labs, debug=args.debug)
+    main(use_labs=args.use_labs, debug=args.debug, 
+        outcomes_file=args.outcomes_file, 
+        diagnoses_file=args.diagnoses_file, 
+        procedures_file=args.procedures_file
+    )
