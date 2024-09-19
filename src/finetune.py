@@ -72,6 +72,8 @@ def _main(cfg: dict, use_labs: bool = False):
         logger.info("Loaded FinetuneConfig:")
         logger.info(str(cfg))
 
+        print(f"FinetuneConfig created with use_static_features: {cfg.use_static_features}")
+        
         if use_labs:
             DATA_DIR = Path.cwd() / "data/labs"
         else:

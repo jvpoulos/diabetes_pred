@@ -7,8 +7,10 @@ import argparse
 import yaml
 from pathlib import Path
 import os
+import gc
 import sys
 import json
+import types
 import pyarrow.parquet as pq
 from captum.attr import IntegratedGradients, LayerConductance, NeuronConductance
 from EventStream.transformer.fine_tuning_model import ESTForStreamClassification
@@ -16,6 +18,20 @@ from EventStream.transformer.lightning_modules.fine_tuning import ESTForStreamCl
 from EventStream.transformer.config import StructuredTransformerConfig, OptimizationConfig
 from EventStream.transformer.transformer import ConditionallyIndependentPointProcessInputLayer
 from EventStream.data.vocabulary import VocabularyConfig
+from EventStream.data.pytorch_dataset import PytorchBatch
+from EventStream.data.data_embedding_layer import DataEmbeddingLayer, EmbeddingMode
+
+def safe_tensor_operation(tensor, operation):
+    try:
+        if operation == torch.mean and tensor.dtype == torch.long:
+            return tensor.float().mean().item()
+        return operation(tensor).item()
+    except RuntimeError as e:
+        print(f"Error occurred: {str(e)}")
+        print(f"Tensor dtype: {tensor.dtype}, shape: {tensor.shape}")
+        if tensor.numel() > 0:
+            return operation(tensor.float()).item()
+        return None
 
 def load_model_and_data(checkpoint_path, config_path, use_labs):
     # Load the finetune config file
@@ -212,31 +228,6 @@ def load_labels(data_dir: Path) -> pd.DataFrame:
     
     return labels_df[['subject_id', 'label']]
 
-class ModelWrapper(nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-
-    def forward(self, x):
-        return self.model(x)
-
-def integrated_gradients_analysis(model, inputs, target):
-    wrapped_model = ModelWrapper(model)
-    ig = IntegratedGradients(wrapped_model)
-    
-    # Create baseline inputs
-    baselines = {}
-    for key, value in inputs.items():
-        if isinstance(value, torch.Tensor):
-            baselines[key] = torch.zeros_like(value)
-    
-    attributions = ig.attribute(inputs, baselines=baselines, target=target)
-    
-    # Combine attributions from different input components
-    combined_attributions = torch.cat([attr.view(attr.size(0), -1) for attr in attributions.values()], dim=1)
-    
-    return combined_attributions, None  # We're not using delta in this case
-
 def layer_conductance_analysis(model, inputs, target, layer):
     wrapped_model = ModelWrapper(model)
     lc = LayerConductance(wrapped_model, layer)
@@ -269,6 +260,143 @@ def visualize_attributions(attributions, feature_names, title):
     plt.tight_layout()
     plt.show()
 
+class SimpleEmbedding(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim):
+        super().__init__()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+    
+    def forward(self, x):
+        return self.embedding(x)
+
+class ModelWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        print(f"Using device: {self.device}")
+        
+    def forward(self, dynamic_indices):
+        print(f"Input shape: {dynamic_indices.shape}")
+        
+        dynamic_indices = dynamic_indices.long().to(self.device)
+        
+        # Create a dummy input dictionary with all required fields
+        input_dict = {
+            'dynamic_indices': dynamic_indices,
+            'dynamic_values': torch.ones_like(dynamic_indices, dtype=torch.float).to(self.device),
+            'dynamic_measurement_indices': torch.zeros_like(dynamic_indices).to(self.device),
+            'static_indices': torch.zeros((dynamic_indices.size(0), 1), dtype=torch.long).to(self.device),
+            'static_measurement_indices': torch.zeros((dynamic_indices.size(0), 1), dtype=torch.long).to(self.device),
+            'time': torch.zeros_like(dynamic_indices, dtype=torch.float).to(self.device)
+        }
+        
+        # Process through the encoder
+        output = self.model.encoder(input_dict)
+        
+        if isinstance(output, dict):
+            output = output.get('last_hidden_state', output)
+        
+        # Apply final layer
+        output = self.model.logit_layer(output[:, -1, :])  # Use the last token's embedding
+        
+        return output.squeeze(-1)  # Ensure output is 1D
+
+    def preprocess_input(self, input_dict):
+        # Create placeholder values for missing arguments
+        batch_size, seq_length = input_dict['dynamic_indices'].shape
+        values = input_dict.get('dynamic_values', torch.ones_like(input_dict['dynamic_indices'], dtype=torch.float))
+        values_mask = input_dict.get('dynamic_values_mask', torch.ones_like(input_dict['dynamic_indices'], dtype=torch.bool))
+        
+        return PytorchBatch(
+            dynamic_indices=input_dict['dynamic_indices'],
+            dynamic_values=values,
+            dynamic_measurement_indices=input_dict['dynamic_measurement_indices'],
+            static_indices=input_dict['static_indices'],
+            static_measurement_indices=input_dict['static_measurement_indices'],
+            time=input_dict['time'],
+            dynamic_values_mask=values_mask,
+            event_mask=None,
+            time_delta=None,
+            dynamic_indices_event_type=None,
+            start_time=None,
+            start_idx=None,
+            end_idx=None,
+            subject_id=None,
+            InitialA1c_normalized=None,
+            AgeYears_normalized=None,
+            SDI_score_normalized=None,
+            time_to_index=None,
+            stream_labels=None,
+            event_type=None
+        )
+
+def integrated_gradients_analysis(model, inputs, target):
+    wrapped_model = ModelWrapper(model)
+    ig = IntegratedGradients(wrapped_model)
+    
+    # Process data in smaller batches
+    batch_size = 64  # Reduced batch size
+    num_batches = (next(iter(inputs.values())).shape[0] + batch_size - 1) // batch_size
+    
+    all_attributions = []
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, next(iter(inputs.values())).shape[0])
+        
+        batch_inputs = {k: v[start_idx:end_idx] for k, v in inputs.items()}
+        
+        # Convert inputs dictionary to a tuple of tensors
+        input_tensors = tuple(batch_inputs.values())
+        
+        # Create baseline inputs
+        baselines = tuple(torch.zeros_like(tensor) for tensor in input_tensors)
+        
+        # Ensure all input tensors are on the same device
+        device = next(model.parameters()).device
+        input_tensors = tuple(tensor.to(device) for tensor in input_tensors)
+        baselines = tuple(tensor.to(device) for tensor in baselines)
+        
+        # Attribute
+        try:
+            attributions = ig.attribute(input_tensors, baselines=baselines, target=target)
+        except Exception as e:
+            print(f"Error during attribution: {str(e)}")
+            print("Input tensor shapes and statistics:")
+            for i, tensor in enumerate(input_tensors):
+                print(f"Tensor {i}: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}")
+                print(f"         min={safe_tensor_operation(tensor, torch.min)}, "
+                      f"max={safe_tensor_operation(tensor, torch.max)}, "
+                      f"mean={safe_tensor_operation(tensor, torch.mean)}")
+            raise
+        
+        # Combine attributions from different input components
+        combined_attributions = torch.cat([attr.view(attr.size(0), -1) for attr in attributions], dim=1)
+        all_attributions.append(combined_attributions)
+        
+        # Clear unnecessary variables from memory
+        del batch_inputs, input_tensors, baselines, attributions
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    # Combine attributions from all batches
+    final_attributions = torch.cat(all_attributions, dim=0)
+    
+    return final_attributions, None  # We're not using delta in this case
+
+def config_to_dict(obj):
+    if isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    elif isinstance(obj, (list, tuple)):
+        return [config_to_dict(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: config_to_dict(value) for key, value in obj.items()}
+    elif hasattr(obj, '__dict__'):
+        return {key: config_to_dict(value) for key, value in obj.__dict__.items()
+                if not key.startswith('_')}
+    else:
+        return str(obj)
+
 def main():
     parser = argparse.ArgumentParser(description="Apply Captum attribution techniques to analyze the transformer model.")
     parser.add_argument("checkpoint_path", help="Path to the PyTorch Lightning checkpoint file")
@@ -278,23 +406,37 @@ def main():
 
     model, input_data, labels = load_model_and_data(args.checkpoint_path, args.config_path, args.use_labs)
     
+    wrapped_model = ModelWrapper(model)
+    
     # Assuming single-label binary classification
     target = 1  # For positive class
     
     # Integrated Gradients
-    ig_attributions, _ = integrated_gradients_analysis(model, input_data, target)
-    visualize_attributions(ig_attributions.sum(0), model.config.feature_names, "Integrated Gradients Feature Attribution")
+    ig = IntegratedGradients(wrapped_model)
     
-    # Layer Conductance
-    # Assuming the first transformer layer
-    layer = model.encoder.h[0]
-    lc_attributions = layer_conductance_analysis(model, input_data, target, layer)
-    visualize_attributions(lc_attributions.mean(0), range(lc_attributions.shape[1]), "Layer Conductance Attribution")
+    batch_size = 32  # Adjust this based on your GPU memory
+    num_batches = (input_data['dynamic_indices'].shape[0] + batch_size - 1) // batch_size
     
-    # Neuron Conductance
-    # Assuming we're interested in the first neuron of the first layer
-    nc_attributions = neuron_conductance_analysis(model, input_data, target, layer, neuron_selector=0)
-    visualize_attributions(nc_attributions.mean(0), model.config.feature_names, "Neuron Conductance Attribution")
+    all_attributions = []
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, input_data['dynamic_indices'].shape[0])
+        
+        batch_input = input_data['dynamic_indices'][start_idx:end_idx].to(wrapped_model.device)
+        
+        attributions = ig.attribute(batch_input, target=target)
+        all_attributions.append(attributions.cpu())
+        
+        # Clear GPU memory
+        torch.cuda.empty_cache()
+    
+    attributions = torch.cat(all_attributions, dim=0)
+    
+    # Visualize attributions
+    feature_names = [f"Feature_{i}" for i in range(attributions.shape[1])]
+    visualize_attributions(attributions.sum(0), feature_names, "Integrated Gradients Feature Attribution")
+    
+    # Layer Conductance and Neuron Conductance can be implemented similarly if needed
 
 if __name__ == "__main__":
     main()
