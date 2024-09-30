@@ -52,7 +52,7 @@ def optimize_hyperparameters(config_path, epochs):
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
-            "weight_decay": tune.loguniform(1e-5, 1e-2),  
+            "weight_decay": tune.loguniform(1e-3, 1e-1),  
             "lr_decay_power": tune.uniform(0.01, 0.5),  
         },
         "trainer_config": {

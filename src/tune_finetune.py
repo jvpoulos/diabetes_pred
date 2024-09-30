@@ -559,7 +559,7 @@ def main(cfg):
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
             "lr_scheduler_type": tune.choice([None, "cosine", "linear", "one_cycle", "reduce_on_plateau"]),
-            "weight_decay": tune.loguniform(1e-5, 1e-2),
+            "weight_decay": tune.loguniform(1e-3, 1e-1),
             "lr_decay_power": tune.uniform(0.01, 0.5),
             "end_lr": tune.loguniform(1e-6, 1e-4),
             "max_epochs": tune.choice([50, 100, 150]),

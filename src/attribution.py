@@ -12,6 +12,8 @@ import sys
 import json
 import types
 import pyarrow.parquet as pq
+from captum.attr import Saliency
+from data_utils import CustomDataEmbeddingLayer
 from captum.attr import IntegratedGradients, LayerConductance, NeuronConductance
 from EventStream.transformer.fine_tuning_model import ESTForStreamClassification
 from EventStream.transformer.lightning_modules.fine_tuning import ESTForStreamClassificationLM
@@ -20,6 +22,11 @@ from EventStream.transformer.transformer import ConditionallyIndependentPointPro
 from EventStream.data.vocabulary import VocabularyConfig
 from EventStream.data.pytorch_dataset import PytorchBatch
 from EventStream.data.data_embedding_layer import DataEmbeddingLayer, EmbeddingMode
+
+
+def load_index_to_code_mapping(file_path):
+    with open(file_path, 'r') as f:
+        return json.load(f)
 
 def safe_tensor_operation(tensor, operation):
     try:
@@ -80,16 +87,25 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
     checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     state_dict = checkpoint['state_dict']
 
-    # Update vocab size in config
-    static_embedding_weight = state_dict.get('model.static_indices_embedding.weight')
-    if static_embedding_weight is not None:
-        config.vocab_size = static_embedding_weight.shape[0]
+    # Get the dimensions of the embedding layers from the checkpoint
+    dynamic_embedding_weight_key = 'model.encoder.input_layer.data_embedding_layer.categorical_embed_layer.weight'
+    static_embedding_weight_key = 'model.encoder.input_layer.static_embedding.weight'
+    
+    if dynamic_embedding_weight_key in state_dict:
+        num_dynamic_embeddings, dynamic_embedding_dim = state_dict[dynamic_embedding_weight_key].shape
+    else:
+        raise ValueError(f"Could not find {dynamic_embedding_weight_key} in the checkpoint")
+    
+    if static_embedding_weight_key in state_dict:
+        num_static_embeddings, static_embedding_dim = state_dict[static_embedding_weight_key].shape
+    else:
+        raise ValueError(f"Could not find {static_embedding_weight_key} in the checkpoint")
 
     # Set oov_index to be the last index of the vocabulary
-    oov_index = config.vocab_size - 1
+    oov_index = num_dynamic_embeddings - 1
 
-    # Update vocabulary_config with the new vocab_size
-    vocabulary_config.vocab_sizes_by_measurement = {k: min(v, config.vocab_size) for k, v in vocabulary_config.vocab_sizes_by_measurement.items()}
+    # Use the hidden_size from the config as the output dimension
+    output_dim = config.hidden_size
 
     # Initialize the model with the updated config
     model = ESTForStreamClassification(
@@ -97,14 +113,23 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
         vocabulary_config=vocabulary_config,
         optimization_config=optimization_config,
         oov_index=oov_index
+    ).half()  # Convert to half precision
+
+    # Replace the encoder's input layer with our custom layer
+    model.encoder.input_layer.data_embedding_layer = CustomDataEmbeddingLayer(
+        num_embeddings=num_dynamic_embeddings,
+        embedding_dim=dynamic_embedding_dim,
+        output_dim=output_dim,
+        padding_idx=oov_index
     )
 
-    # Manually update the encoder's input layer
-    model.encoder.input_layer = ConditionallyIndependentPointProcessInputLayer(
-        config=config,
-        vocab_sizes_by_measurement=vocabulary_config.vocab_sizes_by_measurement,
-        oov_index=oov_index
-    )
+    # Update the static embedding layer
+    model.encoder.input_layer.static_embedding = nn.Embedding(num_static_embeddings, static_embedding_dim)
+    model.encoder.input_layer.static_projection = nn.Linear(static_embedding_dim, output_dim)
+    model.static_indices_embedding = nn.Embedding(num_static_embeddings, output_dim)
+
+    # Convert model to half precision
+    model.half()
 
     # Remove the 'model.' prefix from the state dict keys
     new_state_dict = {}
@@ -116,7 +141,6 @@ def load_model_and_data(checkpoint_path, config_path, use_labs):
 
     # Load the modified state dict
     model.load_state_dict(new_state_dict, strict=False)
-
     # Load input data
     dynamic_data = load_dynamic_data(DATA_DIR)
     static_data = load_static_data(DATA_DIR)
@@ -169,7 +193,7 @@ def load_dynamic_data(directory, max_seq_length=1000):
     except Exception as e:
         print(f"Error loading dynamic data: {str(e)}")
         raise
-
+        
 def load_static_data(directory):
     try:
         dfs = []
@@ -250,23 +274,55 @@ def neuron_conductance_analysis(model, inputs, target, layer, neuron_selector):
     
     return combined_attributions
 
-def visualize_attributions(attributions, feature_names, title):
-    plt.figure(figsize=(10, 6))
+def compute_feature_importance(model, input_data, batch_size=32):
+    model.eval()
+    all_importances = []
+    
+    num_batches = (input_data.shape[0] + batch_size - 1) // batch_size
+    
+    for i in range(num_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, input_data.shape[0])
+        
+        batch_input = input_data[start_idx:end_idx].to(model.device)
+        
+        # Compute baseline output
+        baseline_output = model(batch_input)
+        
+        # Compute importance for each feature
+        importances = []
+        for j in range(batch_input.shape[1]):
+            # Create a mask where the j-th feature is zeroed out
+            mask = torch.ones_like(batch_input)
+            mask[:, j] = 0
+            
+            # Compute output with masked input
+            masked_output = model(batch_input * mask)
+            
+            # Compute importance as the difference in output
+            importance = (baseline_output - masked_output).abs().mean()
+            importances.append(importance.item())
+        
+        all_importances.append(importances)
+        
+        # Clear GPU memory
+        torch.cuda.empty_cache()
+    
+    # Average importances across all batches
+    avg_importances = np.mean(all_importances, axis=0)
+    
+    return avg_importances
+    
+def visualize_attributions(attributions, feature_names, title, save_path):
+    plt.figure(figsize=(20, 10))
     plt.bar(range(len(attributions)), attributions)
     plt.xlabel('Features')
     plt.ylabel('Attribution')
     plt.title(title)
     plt.xticks(range(len(attributions)), feature_names, rotation='vertical')
     plt.tight_layout()
-    plt.show()
-
-class SimpleEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim):
-        super().__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-    
-    def forward(self, x):
-        return self.embedding(x)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
 class ModelWrapper(nn.Module):
     def __init__(self, model):
@@ -281,18 +337,14 @@ class ModelWrapper(nn.Module):
         
         dynamic_indices = dynamic_indices.long().to(self.device)
         
-        # Create a dummy input dictionary with all required fields
+        # Create a dummy input dictionary with only dynamic_indices
         input_dict = {
             'dynamic_indices': dynamic_indices,
-            'dynamic_values': torch.ones_like(dynamic_indices, dtype=torch.float).to(self.device),
-            'dynamic_measurement_indices': torch.zeros_like(dynamic_indices).to(self.device),
-            'static_indices': torch.zeros((dynamic_indices.size(0), 1), dtype=torch.long).to(self.device),
-            'static_measurement_indices': torch.zeros((dynamic_indices.size(0), 1), dtype=torch.long).to(self.device),
-            'time': torch.zeros_like(dynamic_indices, dtype=torch.float).to(self.device)
         }
         
         # Process through the encoder
-        output = self.model.encoder(input_dict)
+        with torch.cuda.amp.autocast():
+            output = self.model.encoder(input_dict)
         
         if isinstance(output, dict):
             output = output.get('last_hidden_state', output)
@@ -398,45 +450,44 @@ def config_to_dict(obj):
         return str(obj)
 
 def main():
-    parser = argparse.ArgumentParser(description="Apply Captum attribution techniques to analyze the transformer model.")
+    parser = argparse.ArgumentParser(description="Compute feature importance for the transformer model.")
     parser.add_argument("checkpoint_path", help="Path to the PyTorch Lightning checkpoint file")
     parser.add_argument("--use_labs", action="store_true", help="Whether to use labs data")
     parser.add_argument("--config_path", help="Path to the finetune_config.yaml file")
+    parser.add_argument("--index_to_code_path", help="Path to the index_to_code.json file", default="index_to_code.json")
     args = parser.parse_args()
+
+    # Load index to code mapping
+    index_to_code_mapping = load_index_to_code_mapping(args.index_to_code_path)
 
     model, input_data, labels = load_model_and_data(args.checkpoint_path, args.config_path, args.use_labs)
     
     wrapped_model = ModelWrapper(model)
     
-    # Assuming single-label binary classification
-    target = 1  # For positive class
+    # Compute feature importance using the original numeric indices
+    importances = compute_feature_importance(wrapped_model, torch.tensor(input_data['dynamic_indices']))
     
-    # Integrated Gradients
-    ig = IntegratedGradients(wrapped_model)
+    # Create output directory
+    output_dir = Path("model_outputs/attributions")
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    batch_size = 32  # Adjust this based on your GPU memory
-    num_batches = (input_data['dynamic_indices'].shape[0] + batch_size - 1) // batch_size
+    # Create feature names using the index_to_code_mapping
+    feature_names = [f"{i}: {index_to_code_mapping.get(str(i), 'Unknown')}" for i in range(len(importances))]
     
-    all_attributions = []
-    for i in range(num_batches):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, input_data['dynamic_indices'].shape[0])
-        
-        batch_input = input_data['dynamic_indices'][start_idx:end_idx].to(wrapped_model.device)
-        
-        attributions = ig.attribute(batch_input, target=target)
-        all_attributions.append(attributions.cpu())
-        
-        # Clear GPU memory
-        torch.cuda.empty_cache()
-    
-    attributions = torch.cat(all_attributions, dim=0)
-    
-    # Visualize attributions
-    feature_names = [f"Feature_{i}" for i in range(attributions.shape[1])]
-    visualize_attributions(attributions.sum(0), feature_names, "Integrated Gradients Feature Attribution")
-    
-    # Layer Conductance and Neuron Conductance can be implemented similarly if needed
+    # Visualize importances
+    save_path = output_dir / "feature_importance.png"
+    visualize_attributions(importances, feature_names, "Feature Importance", save_path)
+    print(f"Feature importance plot saved to {save_path}")
+
+    # Save importances to CSV
+    importances_df = pd.DataFrame({
+        'Feature': feature_names,
+        'Importance': importances
+    })
+    importances_df = importances_df.sort_values('Importance', ascending=False)
+    csv_path = output_dir / "feature_importances.csv"
+    importances_df.to_csv(csv_path, index=False)
+    print(f"Feature importances saved to {csv_path}")
 
 if __name__ == "__main__":
     main()

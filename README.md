@@ -177,23 +177,17 @@ $ python3 src/tune_temporal.py --epochs 300
 3. Train the transformer from scratch:
 
 ```bash
-$ CUDA_VISIBLE_DEVICES=2 python3 src/finetune.py use_labs=true
+$ /home/jvp/env10/bin/python3 -m torch.distributed.run --nproc_per_node=3 --rdzv-backend=c10d --rdzv-endpoint=localhost:12345 src/finetune.py use_labs=true
 ```
 
-4. Visualize patient-level results by plotting AUC and confusion matrices:
+4. (Optional) Load a model checkpoint and apply different attribution techniques from Captum.
 
 ```bash
-$ python3 src/visualize_results.py --predictions_dir model_outputs/predictions --labels_dir model_outputs/labels --output_dir model_outputs
+$ python3 src/attribution.py experiments/finetune/2024-09-22_22-44-45/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs --index_to_code_path data/labs/index_to_code.json
 ```
 
-5. (Optional) Load a model checkpoint and apply different attribution techniques from Captum.
+5. (Optional) Load a model checkpoint and describe attention maps (--create_heatmaps).
 
 ```bash
-$ python3 src/attribution.py experiments/finetune/2024-09-18_13-15-13/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs
-```
-
-6. (Optional) Load a model checkpoint and describe attention maps (--create_heatmaps).
-
-```bash
-$ python3 src/visualize_attention.py experiments/finetune/2024-09-18_13-15-13/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml
+$ python3 src/visualize_attention.py experiments/finetune/2024-09-22_22-44-45/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml
 ```

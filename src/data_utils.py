@@ -51,6 +51,12 @@ import pandas as pd
 import numpy as np
 import math
 import polars as pl
+import wandb
+
+from collections import Counter
+
+import torch
+from torch import nn
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -60,7 +66,30 @@ from EventStream.data.measurement_config import MeasurementConfig
 from EventStream.data.types import DataModality, TemporalityType, NumericDataModalitySubtype
 from EventStream.data.vocabulary import Vocabulary
 
-def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
+class CustomDataEmbeddingLayer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, output_dim, padding_idx=None):
+        super().__init__()
+        self.categorical_embed_layer = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
+        self.projection = nn.Linear(embedding_dim, output_dim)
+        self.output_dim = output_dim
+
+    def forward(self, batch):
+        embeddings = {}
+        
+        if 'dynamic_indices' in batch:
+            dynamic_embed = self.categorical_embed_layer(batch['dynamic_indices'].clamp(max=self.categorical_embed_layer.num_embeddings - 1))
+            embeddings['dynamic'] = self.projection(dynamic_embed).half()
+        
+        if 'static_indices' in batch:
+            static_embed = self.categorical_embed_layer(batch['static_indices'].clamp(max=self.categorical_embed_layer.num_embeddings - 1))
+            embeddings['static'] = self.projection(static_embed).half()
+        
+        # Combine embeddings (this is a simple sum, you might want to use a more sophisticated method)
+        combined_embedding = sum(embeddings.values())
+        
+        return combined_embedding
+
+def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len, min_seq_len):
     dataset = CustomPytorchDataset(
         config=config,
         split=split,
@@ -70,7 +99,8 @@ def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_l
         df_prc=df_prc,
         df_labs=df_labs,
         task_df=task_df,
-        max_seq_len=max_seq_len
+        max_seq_len=max_seq_len,
+        min_seq_len=min_seq_len
     )
     return dataset
 
@@ -1945,7 +1975,7 @@ def create_code_mapping(df_dia, df_prc, df_labs=None):
     return code_to_index
 
 class CustomPytorchDataset(torch.utils.data.Dataset):
-    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None, max_seq_len=None):
+    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None, max_seq_len=None, min_seq_len=None):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
@@ -1960,6 +1990,7 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.task_df = task_df
 
         self.max_seq_len = max_seq_len
+        self.min_seq_len = min_seq_len
 
         self.has_task = task_df is not None
         if self.has_task:
@@ -1974,6 +2005,50 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"Dataset length: {self.length}")
         self.logger.info(f"Has task: {self.has_task}")
 
+        # Log sequence length statistics
+        self._log_sequence_length_stats()
+
+    def _log_sequence_length_stats(self):
+        seq_lengths_before = []
+        seq_lengths_after = []
+        for idx in range(len(self)):
+            row = self.cached_data.row(idx)
+            seq_len_before = len(row[self.cached_data.columns.index('dynamic_indices')])
+            seq_lengths_before.append(seq_len_before)
+            
+            # Apply min/max constraints
+            seq_len_after = max(min(seq_len_before, self.max_seq_len), self.min_seq_len)
+            seq_lengths_after.append(seq_len_after)
+        
+        seq_lengths_before = np.array(seq_lengths_before)
+        seq_lengths_after = np.array(seq_lengths_after)
+        
+        self.logger.info("Sequence length statistics before applying min/max:")
+        self.logger.info(f"Min: {seq_lengths_before.min()}, Max: {seq_lengths_before.max()}, Average: {seq_lengths_before.mean():.2f}")
+        self.logger.info(f"Mode: {Counter(seq_lengths_before).most_common(1)[0][0]}")
+        
+        if wandb.run is not None:
+            wandb.log({
+                "seq_length/before/min": seq_lengths_before.min(),
+                "seq_length/before/max": seq_lengths_before.max(),
+                "seq_length/before/mean": seq_lengths_before.mean(),
+                "seq_length/before/mode": Counter(seq_lengths_before).most_common(1)[0][0],
+                "seq_length/before/histogram": wandb.Histogram(seq_lengths_before)
+            })
+        
+        self.logger.info("Sequence length statistics after applying min/max:")
+        self.logger.info(f"Min: {seq_lengths_after.min()}, Max: {seq_lengths_after.max()}, Average: {seq_lengths_after.mean():.2f}")
+        self.logger.info(f"Mode: {Counter(seq_lengths_after).most_common(1)[0][0]}")
+        
+        if wandb.run is not None:
+            wandb.log({
+                "seq_length/after/min": seq_lengths_after.min(),
+                "seq_length/after/max": seq_lengths_after.max(),
+                "seq_length/after/mean": seq_lengths_after.mean(),
+                "seq_length/after/mode": Counter(seq_lengths_after).most_common(1)[0][0],
+                "seq_length/after/histogram": wandb.Histogram(seq_lengths_after)
+            })
+
     def __getitem__(self, idx):
         if idx < 0 or idx >= self.length:
             raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
@@ -1982,22 +2057,35 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             row = self.cached_data.row(idx)
             item = {}
 
+            # Get the original sequence length
+            orig_seq_len = len(row[self.cached_data.columns.index('dynamic_indices')])
+            
+            # Ensure minimum sequence length
+            seq_len = max(orig_seq_len, self.min_seq_len)
+            
+            # Cap at maximum sequence length if specified
+            if self.max_seq_len:
+                seq_len = min(seq_len, self.max_seq_len)
+
             # Dynamic and static features
             for col in ['dynamic_indices', 'dynamic_measurement_indices', 'static_indices', 'static_measurement_indices']:
                 data = row[self.cached_data.columns.index(col)]
                 if data is None:
                     self.logger.warning(f"None value found in {col} for index {idx}")
                     data = []
-                item[col] = torch.tensor(data[:self.max_seq_len], dtype=torch.long)  # Truncate to max_seq_len
-
+                item[col] = self.pad_sequence(torch.tensor(data, dtype=torch.long), seq_len)
+            
             # Handle dynamic_values
             dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
-            item['dynamic_values'] = torch.tensor([v if v is not None else 0.0 for v in dynamic_values[:self.max_seq_len]], dtype=torch.float)  # Truncate to max_seq_len
-
+            item['dynamic_values'] = self.pad_sequence(torch.tensor([v if v is not None else 0.0 for v in dynamic_values], dtype=torch.float), seq_len)
+            
             # Handle time
             time = row[self.cached_data.columns.index('time')]
-            item['time'] = torch.tensor(time[:self.max_seq_len], dtype=torch.float)  # Truncate to max_seq_len
-
+            item['time'] = self.pad_sequence(torch.tensor(time, dtype=torch.float), seq_len)
+            
+            # Add sequence length to the item
+            item['seq_len'] = seq_len
+            
             # Get the subject_id
             subject_id = row[self.cached_data.columns.index('subject_id')]
 
@@ -2014,6 +2102,31 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             self.logger.error(f"Dataset length: {self.length}")
             raise
 
+    def pad_sequence(self, sequence, max_length, pad_value=0):
+        if isinstance(sequence, list):
+            padded = sequence[:max_length] + [pad_value] * max(0, max_length - len(sequence))
+        elif isinstance(sequence, torch.Tensor):
+            if len(sequence) > max_length:
+                padded = sequence[:max_length].tolist()
+            else:
+                padded = sequence.tolist() + [pad_value] * (max_length - len(sequence))
+        else:
+            try:
+                padded = sequence[:max_length].tolist() + [pad_value] * max(0, max_length - len(sequence))
+            except AttributeError:
+                self.logger.warning(f"Unexpected sequence type: {type(sequence)}")
+                padded = [pad_value] * max_length
+
+        # Determine the dtype based on the pad_value and the sequence type
+        if isinstance(sequence, torch.Tensor):
+            dtype = sequence.dtype
+        elif pad_value == 0.0:
+            dtype = torch.float32
+        else:
+            dtype = torch.long
+
+        return torch.tensor(padded, dtype=dtype)
+        
     def create_code_mapping(self):
         """Create a mapping from codes to indices for diagnoses, procedures, and labs."""
         all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
@@ -2025,10 +2138,13 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         all_codes = {code for code in all_codes if code and str(code).strip()}
         
         sorted_codes = sorted(all_codes)
-        self.code_to_index = {str(code): idx for idx, code in enumerate(sorted_codes, start=1)}
+        self.code_to_index = {str(code): int(idx) for idx, code in enumerate(sorted_codes, start=1)}
         
-        self.logger.info(f"Total unique codes: {len(self.code_to_index)}")
-        self.logger.info(f"Sample of code_to_index: {dict(list(self.code_to_index.items())[:5])}")
+        self.logger.info("Total unique codes: %d", len(self.code_to_index))
+        
+        # Convert the first 5 items to a regular Python dictionary with int values
+        sample_dict = {k: int(v) for k, v in list(self.code_to_index.items())[:5]}
+        self.logger.info("Sample of code_to_index: %s", str(sample_dict))
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
@@ -2094,17 +2210,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             'time': torch.tensor([0.0], dtype=torch.float),
             'labels': torch.tensor(0.0, dtype=torch.float32),
         }
-
-    def pad_sequence(self, sequence, max_length, pad_value=0):
-        if isinstance(sequence, list):
-            padded = sequence[:max_length] + [pad_value] * max(0, max_length - len(sequence))
-        else:
-            try:
-                padded = sequence[:max_length].tolist() + [pad_value] * max(0, max_length - len(sequence))
-            except AttributeError:
-                self.logger.warning(f"Unexpected sequence type: {type(sequence)}")
-                padded = [pad_value] * max_length
-        return torch.tensor(padded, dtype=torch.float32 if pad_value == 0.0 else torch.long)
 
     def process_dynamic_indices(self, indices):
         if indices is None or len(indices) == 0:
