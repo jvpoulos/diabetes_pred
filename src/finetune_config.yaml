@@ -28,7 +28,7 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 6
+  num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   seq_window_size: 168 # An integer specifying the size of the attention window.
   head_dim: 64
@@ -46,9 +46,9 @@ config:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 0.01  # Initial learning rate
+  init_lr: 0.001  # Initial learning rate
   end_lr: 0.0001   # Final learning rate
-  end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
+  end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
   lr_decay_power: 0.05
   lr_frac_warmup_steps: 0.05
   lr_num_warmup_steps: 200
