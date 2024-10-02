@@ -28,48 +28,49 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 2
+  num_hidden_layers: 6
   seq_attention_types: ["global", "local"]
   seq_window_size: 168 # An integer specifying the size of the attention window.
-  head_dim: 32
-  num_attention_heads: 4
+  head_dim: 64
+  num_attention_heads: 8
   max_grad_norm: 1
-  intermediate_dropout: 0.1
+  init_std: 0.02
+  intermediate_dropout: 0.3
   attention_dropout: 0.1
   input_dropout: 0.1
   resid_dropout: 0.1
-  hidden_size: 128  # consistent with head_dim and num_attention_heads
+  hidden_size: 512  # consistent with head_dim and num_attention_heads
   intermediate_size: 128
   layer_norm_epsilon: 1e-5
   task_specific_params:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 0.001  # Initial learning rate
+  init_lr: 0.01  # Initial learning rate
   end_lr: 0.0001   # Final learning rate
-  end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
+  end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
   lr_decay_power: 0.05
   lr_frac_warmup_steps: 0.05
   lr_num_warmup_steps: 200
   max_epochs: 100
-  batch_size: 128
-  validation_batch_size: 128
+  batch_size: 512
+  validation_batch_size: 512
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
   use_grad_value_clipping: true  # Flag to enable grad_value clipping
   patience: 10
-  max_training_steps: 7600 # Steps per epoch = 38960 / 512 ≈ 76, Total steps = 76 * 100 = 7600
+  max_training_steps: 3800 # Steps per epoch = 38960 / 1024 ≈ 38, Total steps = 38 * 100 = 3800
   use_lr_scheduler: true
-  lr_scheduler_type: "cosine"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau", or "null"
+  lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau", or "null"
   num_dataloader_workers: 0
   
 data_config:
   save_dir: "./data/labs"
   dl_reps_dir: "data/labs/DL_reps"
   dataset_path: null
-  max_seq_len: 14513
+  max_seq_len: 95712
   subsequence_sampling_strategy: to_end
-  min_seq_len: 2
+  min_seq_len: 12
   train_subset_size: "FULL"
   train_subset_seed: null
   task_df_name: "a1c_greater_than_7"
@@ -85,7 +86,7 @@ trainer_config:
   log_every_n_steps: 10
   num_nodes: 1
   sync_batchnorm: True,  # Synchronize batch normalization between GPUs
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 2
 
 experiment_dir: "./experiments"
 
