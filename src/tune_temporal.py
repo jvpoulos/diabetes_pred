@@ -6,10 +6,7 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 import os
 import yaml
 from tune_finetune import main as finetune_main
-from tune_finetune import FailureDetectionCallback
 import argparse
-
-import time
 
 def optimize_hyperparameters(config_path, epochs):
     # Load the base configuration
@@ -24,8 +21,8 @@ def optimize_hyperparameters(config_path, epochs):
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
             "use_gradient_checkpointing": tune.choice([False]),
-            "categorical_embedding_dim": tune.choice([32, 64, 128]),
-            "numerical_embedding_dim": tune.choice([32, 64, 128]),
+            "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
+            "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "numerical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "static_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -37,7 +34,7 @@ def optimize_hyperparameters(config_path, epochs):
             "attention_dropout": tune.choice([0.1, 0.2, 0.3]),
             "input_dropout": tune.choice([0.1, 0.2, 0.3]),
             "resid_dropout": tune.choice([0.1, 0.2, 0.3]),
-            "max_grad_norm": tune.choice([1, 5, 10]),
+            "max_grad_norm": tune.choice([1, 5, 10, 15]),
             "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
@@ -48,15 +45,15 @@ def optimize_hyperparameters(config_path, epochs):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([128, 256, 512]),
+            "batch_size": tune.choice([256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
-            "weight_decay": tune.loguniform(1e-3, 1e-1),  
-            "lr_decay_power": tune.uniform(0.01, 0.5),  
+            "weight_decay": tune.loguniform(1e-5, 1e-2),  
+            "lr_decay_power": tune.uniform(0, 1),  
         },
         "trainer_config": {
-            "accumulate_grad_batches": tune.choice([1, 2, 4]),
+            "accumulate_grad_batches": tune.choice([1, 2, 4, 8]),
         },
         "data_config": {
             **base_config.get('data_config', {}),
@@ -105,10 +102,6 @@ def optimize_hyperparameters(config_path, epochs):
         lambda config: not config["config"]["use_gradient_checkpointing"]
     )
 
-    # Remove wandb_logger_kwargs from the search space
-    if 'wandb_logger_kwargs' in search_space:
-        del search_space['wandb_logger_kwargs']
-
     # Get the current working directory
     cwd = os.getcwd()
     
@@ -118,40 +111,35 @@ def optimize_hyperparameters(config_path, epochs):
     # Configure the Ray Tune run
     analysis = tune.run(
         finetune_main,
-        config=search_space,  
-        num_samples=50,  # Number of trials
+        config=search_space,
+        num_samples=30,  # Number of trials
         scheduler=ASHAScheduler(
-            time_attr='training_iteration',
+            time_attr='epoch',
             metric="val_auc_epoch",
             mode="max",
             max_t=epochs,
-            grace_period=20,
+            grace_period=1,
             reduction_factor=2
         ),
+        search_alg=OptunaSearch(
+            metric="val_auc_epoch",
+            mode="max"
+        ),
         progress_reporter=tune.CLIReporter(
-            metric_columns=["initialized", "val_auc_epoch", "training_iteration"]
+            metric_columns=["val_auc_epoch", "training_iteration"]
         ),
         name="diabetes_sweep_labs",
+        trial_name_creator=lambda trial: f"default_run_{trial.trial_id}",
         storage_path=storage_path,  # Use the absolute path
-        resources_per_trial={"cpu": 4},
-        callbacks=[
-            WandbLoggerCallback(project="diabetes_sweep_labs", log_config=True),
-            FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=20)
-        ],
-        stop={
-            "training_iteration": epochs,
-            "time_total_s": 48 * 60 * 60  # 2 days in seconds
-        },
-        raise_on_failed_trial=False,  # This will allow Ray Tune to continue with other trials if one fails
-        time_budget_s=7 * 24 * 60 * 60,  # 7 days total time budget
-        verbose=3
+        resources_per_trial={"cpu": 5, "gpu": 0.33},  # Allocate 5 CPU and 0.33 GPU per trial
+        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
 
     print("Best hyperparameters found were: ", analysis.best_config)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Hyperparameter optimization')
-    parser.add_argument('--epochs', type=int, default=300, help='Number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train')
     parser.add_argument('--config', type=str, default='finetune_config.yaml', help='Path to the config file')
     args = parser.parse_args()
 

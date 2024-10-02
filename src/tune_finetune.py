@@ -32,30 +32,6 @@ import atexit
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-class FailureDetectionCallback(tune.Callback):
-    def __init__(self, metric="val_auc_epoch", threshold=float('-inf'), grace_period=1):
-        self.metric = metric
-        self.threshold = threshold
-        self.grace_period = grace_period
-        self.trial_iterations = {}
-
-    def on_trial_result(self, iteration, trials, trial, result, **info):
-        if self.metric not in result:
-            return
-        
-        if trial not in self.trial_iterations:
-            self.trial_iterations[trial] = 0
-        self.trial_iterations[trial] += 1
-
-        if self.trial_iterations[trial] > self.grace_period and result[self.metric] <= self.threshold:
-            print(f"Stopping trial {trial} due to poor performance: {result[self.metric]} <= {self.threshold}")
-            return True  # Stop the trial
-
-    def on_trial_error(self, iteration, trials, trial, **info):
-        print(f"Trial {trial} errored, stopping it.")
-        return True  # Stop the trial
-        
 def resolve_tune_value(value):
     if isinstance(value, tune.search.sample.Categorical):
         return value.categories[0]  # Use the first category as a default
@@ -174,6 +150,18 @@ def create_datasets(cfg, device):
 
 def train_function(config):
     global DATA_DIR
+
+    # Check for wandb_logger_kwargs and provide a default if not present
+    wandb_logger_kwargs = config.get("wandb_logger_kwargs", {})
+    if not wandb_logger_kwargs:
+        wandb_logger_kwargs = {
+            "project": "diabetes_sweep_labs",
+            "entity": "default_entity",  # replace with your wandb entity
+            "name": f"trial_{tune.get_trial_id()}",
+        }
+
+    # Set up wandb
+    wandb_run = setup_wandb(config=config, project="diabetes_sweep_labs")
     
     # Set DATA_DIR based on the config
     DATA_DIR = Path(get_data_dir(config)).resolve()
@@ -203,18 +191,6 @@ def train_function(config):
         logger.info(json.dumps(config, indent=2))
         raise
 
-    # Set up wandb logger once
-    wandb_logger_kwargs = {
-        "project": "diabetes_sweep_labs",
-        "entity": "jvpoulos",  # replace with your wandb entity
-        "name": f"trial_{os.environ.get('TRIAL_ID', 'unknown')}",  # Use environment variable for trial ID
-        "config": config,
-        "reinit": True, 
-        "settings": wandb.Settings(start_method="thread")
-    }
-    wandb_run = wandb.init(**wandb_logger_kwargs)
-    logger.info(f"Wandb logger set up successfully with run ID: {wandb.run.id}")
-    
     # Get maximum index from datasets
     max_index_train = max(train_pyd.get_max_index(), tuning_pyd.get_max_index(), held_out_pyd.get_max_index())
 
@@ -249,13 +225,14 @@ def train_function(config):
 
     # Ensure vocab_size is set correctly after the update
     config["config"]["vocab_size"] = vocab_size
-    
+
     if config["config"]["use_layer_norm"]:
         if "layer_norm_epsilon" not in config["config"] or config["config"]["layer_norm_epsilon"] is None:
             config["config"]["layer_norm_epsilon"] = np.random.uniform(1e-6, 1e-4)
     else:
         config["config"]["layer_norm_epsilon"] = None
 
+    
     # Handle embedding dimensions based on do_split_embeddings
     if not config["config"].get("do_split_embeddings", False):
         config["config"]["categorical_embedding_dim"] = None
@@ -299,7 +276,7 @@ def train_function(config):
             lr_scheduler_type = lr_scheduler_type.categories[0]
 
     # Resolve the values before calculation
-    max_epochs = config["optimization_config"].get("max_epochs", 300)  # Default to 100 if not specified
+    max_epochs = resolve_tune_value(config["optimization_config"].get("max_epochs", 100))
     batch_size = resolve_tune_value(config["optimization_config"].get("batch_size", 32))
 
     # Now calculate max_training_steps with resolved values
@@ -407,26 +384,24 @@ def train_function(config):
     if isinstance(train_config.trainer_config, Config):
         train_config.trainer_config = train_config.trainer_config.to_dict()
 
-    # Run the training process
-    logger.info(f"Final check - train_config.config.vocab_size: {train_config.config.vocab_size}")
-    logger.info(f"Final check - train_config.vocab_size: {train_config.vocab_size}")
-    logger.info(f"Final check - transformer_config.vocab_size: {transformer_config.vocab_size}")
-    
-    logger.info(f"train_config attributes: {vars(train_config)}")
-    logger.info(f"vocabulary_config: {vocabulary_config}")
-    logger.info(f"oov_index: {oov_index}")
-
-    logger.info(f"Checking vocabulary config file at: {train_config.vocabulary_config_path}")
-    if not os.path.exists(train_config.vocabulary_config_path):
-        raise FileNotFoundError(f"Vocabulary config file not found at: {train_config.vocabulary_config_path}")
-
-    logger.info(f"Contents of directory: {os.listdir(os.path.dirname(train_config.vocabulary_config_path))}")
-
-    original_dir = os.getcwd()
-    os.chdir("/home/jvp/diabetes_pred/data/labs")
     try:
         # Run the training process
-        initialized = False
+        logger.info(f"Final check - train_config.config.vocab_size: {train_config.config.vocab_size}")
+        logger.info(f"Final check - train_config.vocab_size: {train_config.vocab_size}")
+        logger.info(f"Final check - transformer_config.vocab_size: {transformer_config.vocab_size}")
+        
+        logger.info(f"train_config attributes: {vars(train_config)}")
+        logger.info(f"vocabulary_config: {vocabulary_config}")
+        logger.info(f"oov_index: {oov_index}")
+
+        logger.info(f"Checking vocabulary config file at: {train_config.vocabulary_config_path}")
+        if not os.path.exists(train_config.vocabulary_config_path):
+            raise FileNotFoundError(f"Vocabulary config file not found at: {train_config.vocabulary_config_path}")
+
+        logger.info(f"Contents of directory: {os.listdir(os.path.dirname(train_config.vocabulary_config_path))}")
+
+        original_dir = os.getcwd()
+        os.chdir("/home/jvp/diabetes_pred/data/labs")
         try:
             _, tuning_metrics, _ = train(
                 train_config, 
@@ -437,39 +412,26 @@ def train_function(config):
                 vocabulary_config=vocabulary_config,
                 oov_index=oov_index
             )
-            initialized = True
-        except Exception as e:
-            logger.error(f"Initialization failed: {str(e)}")
-            raise Exception("Trial failed to initialize") from e
+        finally:
+            os.chdir(original_dir)
 
-        if initialized and tuning_metrics is not None and 'auroc' in tuning_metrics:
-            tune.report(initialized=initialized, val_auc_epoch=tuning_metrics['auroc'])
+        # Report the results back to Ray Tune
+        if tuning_metrics is not None and 'auroc' in tuning_metrics:
+            ray.train.report({"val_auc_epoch": tuning_metrics['auroc']})
         else:
-            tune.report(initialized=initialized, val_auc_epoch=float('-inf'))  # Report a default value for failed trials
+            print("Warning: tuning_metrics is None or does not contain 'auroc'")
+            ray.train.report({"val_auc_epoch": 0.0})  # Report a default value
     except Exception as e:
         print(f"An error occurred during training: {str(e)}")
         print("Traceback:")
         import traceback
         traceback.print_exc()
-        tune.report(initialized=False, val_auc_epoch=float('-inf'))
+        # Report a failure to Ray Tune
+        ray.train.report({"val_auc_epoch": float('-inf')})
     finally:
-        os.chdir(original_dir)
-
-    # Report the initialization status
-    ray.train.report({"initialized": initialized})
-
-    # Report the results back to Ray Tune
-    if tuning_metrics is not None and 'auroc' in tuning_metrics:
-        ray.train.report({"val_auc_epoch": tuning_metrics['auroc']})
-    else:
-        print("Warning: tuning_metrics is None or does not contain 'auroc'")
-        ray.train.report({"val_auc_epoch": 0.0})  # Report a default value
-
-    # Before finishing the run, log final metrics
-    if wandb.run is not None:
-        if tuning_metrics is not None and 'auroc' in tuning_metrics:
-            wandb.log({"val_auc_epoch": tuning_metrics['auroc']})
-        wandb.finish()
+      
+        # Make sure to finish the wandb run
+        wandb_run.finish()
 
 @hydra.main(config_path=".", config_name="finetune_config", version_base=None)
 def main(cfg):
@@ -498,18 +460,30 @@ def main(cfg):
     logger.info(f"dl_reps_dir set to: {config['data_config']['dl_reps_dir']}")
 
     # Extract necessary configurations
+    wandb_config = config
+    wandb_project = config.get("wandb_logger_kwargs", {}).get("project", "diabetes_sweep_labs")
+    wandb_entity = config.get("wandb_logger_kwargs", {}).get("entity", None)
     data_config = config.get("data_config", {})
     optimization_config = config.get("optimization_config", {})
+    wandb_logger_kwargs = config.get("wandb_logger_kwargs", {})
     seed = config.get("seed", 42)
     pretrained_weights_fp = config.get("pretrained_weights_fp", None)
     save_dir = config.get("save_dir", "./experiments/finetune")
     trainer_config = config.get("trainer_config", {})
+
+    # Initialize wandb
+    wandb.init(config=wandb_config,
+               project=wandb_project,
+               entity=wandb_entity)
 
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create datasets
     train_pyd, tuning_pyd, held_out_pyd = create_datasets(config['data_config'], device)  # Pass data_config directly
+
+    # Set up WandB logger
+    wandb_logger = WandbLogger(**wandb_logger_kwargs)
 
     # Ensure these are in optimization_config
     if "validation_batch_size" not in optimization_config:
@@ -529,8 +503,8 @@ def main(cfg):
             "do_use_sinusoidal": tune.choice([True, False]),
             "do_split_embeddings": tune.choice([True, False]),
             "use_gradient_checkpointing": tune.choice([False]),
-            "categorical_embedding_dim": tune.choice([32, 64, 128]),
-            "numerical_embedding_dim": tune.choice([32, 64, 128]),
+            "categorical_embedding_dim": tune.choice([16, 32, 64, 128]),
+            "numerical_embedding_dim": tune.choice([16, 32, 64, 128]),
             "categorical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "numerical_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
             "static_embedding_weight": tune.choice([0.3, 0.5, 0.7]),
@@ -542,7 +516,7 @@ def main(cfg):
             "attention_dropout": tune.choice([0.1, 0.2, 0.3]),
             "input_dropout": tune.choice([0.1, 0.2, 0.3]),
             "resid_dropout": tune.choice([0.1, 0.2, 0.3]),
-            "max_grad_norm": tune.choice([1, 5, 10]),
+            "max_grad_norm": tune.choice([1, 5, 10, 15]),
             "intermediate_size": tune.choice([128, 256, 512]),
             "task_specific_params": {
                 "pooling_method": tune.choice(["max", "mean"])
@@ -554,18 +528,18 @@ def main(cfg):
         },
         "optimization_config": {
             "init_lr": tune.loguniform(1e-4, 1e-01),
-            "batch_size": tune.choice([128, 256, 512]),
+            "batch_size": tune.choice([256, 512, 1024]),
             "use_grad_value_clipping": tune.choice([True, False]),
             "patience": tune.choice([1, 5, 10]),
             "use_lr_scheduler": tune.choice([True, False]),
             "lr_scheduler_type": tune.choice([None, "cosine", "linear", "one_cycle", "reduce_on_plateau"]),
-            "weight_decay": tune.loguniform(1e-3, 1e-1),
-            "lr_decay_power": tune.uniform(0.01, 0.5),
+            "weight_decay": tune.loguniform(1e-5, 1e-2),
+            "lr_decay_power": tune.uniform(0, 1),
             "end_lr": tune.loguniform(1e-6, 1e-4),
             "max_epochs": tune.choice([50, 100, 150]),
         },
         "trainer_config": {
-            "accumulate_grad_batches": tune.choice([1, 2, 4]),
+            "accumulate_grad_batches": tune.choice([1, 2, 4, 8]),
         },
         "data_config": {
             **data_config,
@@ -625,27 +599,14 @@ def main(cfg):
         train_function,
         config=search_space,  
         num_samples=30,  # Number of trials
-        scheduler=ASHAScheduler(
-            time_attr='training_iteration',
-            metric="val_auc_epoch",
-            mode="max",
-            max_t=config.get("max_epochs", 100),
-            grace_period=1,
-            reduction_factor=2
-        ),
-        progress_reporter=tune.CLIReporter(
-            metric_columns=["initialized", "val_auc_epoch", "training_iteration"]
-        ),
+        scheduler=ASHAScheduler(metric="val_auc_epoch", mode="max"),
+        progress_reporter=tune.CLIReporter(metric_columns=["val_auc_epoch", "training_iteration"]),
         name="diabetes_sweep_labs",
         storage_path=storage_path,  # Use the absolute path
         resources_per_trial={"cpu": 4, "gpu": 1},
-        callbacks=[
-            WandbLoggerCallback(project="diabetes_sweep_labs"),
-            FailureDetectionCallback(metric="val_auc_epoch", threshold=float('-inf'), grace_period=1)
-        ],
-        stop={"training_iteration": config.get("max_epochs", 100)},
-        raise_on_failed_trial=False  # This will allow Ray Tune to continue with other trials if one fails
+        callbacks=[WandbLoggerCallback(project="diabetes_sweep_labs")]
     )
+
     # Print the best config
     best_config = analysis.get_best_config(metric="val_auc_epoch", mode="max")
     print("Best hyperparameters found were: ", best_config)

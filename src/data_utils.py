@@ -3,12 +3,11 @@ import torch
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MaxAbsScaler
+from sklearn.impute import SimpleImputer
 from torch.utils.data import TensorDataset 
 import io
 from tqdm import tqdm
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
 import gc
 import math
 from math import ceil
@@ -45,18 +44,7 @@ import chardet
 import io
 import chardet
 from tqdm import tqdm
-import plotly.graph_objects as go
-from scipy import stats
-import pandas as pd
-import numpy as np
-import math
-import polars as pl
-import wandb
-
-from collections import Counter
-
-import torch
-from torch import nn
+from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -65,31 +53,9 @@ from EventStream.data.dataset_base import DatasetBase
 from EventStream.data.measurement_config import MeasurementConfig
 from EventStream.data.types import DataModality, TemporalityType, NumericDataModalitySubtype
 from EventStream.data.vocabulary import Vocabulary
+from EventStream.data.preprocessing.standard_scaler import StandardScaler
 
-class CustomDataEmbeddingLayer(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, output_dim, padding_idx=None):
-        super().__init__()
-        self.categorical_embed_layer = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-        self.projection = nn.Linear(embedding_dim, output_dim)
-        self.output_dim = output_dim
-
-    def forward(self, batch):
-        embeddings = {}
-        
-        if 'dynamic_indices' in batch:
-            dynamic_embed = self.categorical_embed_layer(batch['dynamic_indices'].clamp(max=self.categorical_embed_layer.num_embeddings - 1))
-            embeddings['dynamic'] = self.projection(dynamic_embed).half()
-        
-        if 'static_indices' in batch:
-            static_embed = self.categorical_embed_layer(batch['static_indices'].clamp(max=self.categorical_embed_layer.num_embeddings - 1))
-            embeddings['static'] = self.projection(static_embed).half()
-        
-        # Combine embeddings (this is a simple sum, you might want to use a more sophisticated method)
-        combined_embedding = sum(embeddings.values())
-        
-        return combined_embedding
-
-def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len, min_seq_len):
+def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs, task_df, max_seq_len):
     dataset = CustomPytorchDataset(
         config=config,
         split=split,
@@ -99,128 +65,28 @@ def create_dataset(config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_l
         df_prc=df_prc,
         df_labs=df_labs,
         task_df=task_df,
-        max_seq_len=max_seq_len,
-        min_seq_len=min_seq_len
+        max_seq_len=max_seq_len
     )
     return dataset
-
-def is_numeric(value):
-    try:
-        float(value)
-        return True
-    except ValueError:
-        return False
-
-def discretize_variable(values, num_bins=50):
-    """
-    Discretize a continuous variable into bins.
-    
-    Args:
-    values (np.array): Array of values to discretize
-    num_bins (int): Number of bins to use for discretization
-    
-    Returns:
-    np.array: Array of discretized values
-    dict: Mapping of bin edges to discretized values
-    """
-    bins = pd.qcut(values, q=num_bins, labels=False, duplicates='drop')
-    bin_edges = pd.qcut(values, q=num_bins, duplicates='drop').categories
-    bin_mapping = {i: f"{bin_edges[i].left:.2f}-{bin_edges[i].right:.2f}" for i in range(len(bin_edges))}
-    return bins, bin_mapping
-
-def create_static_vocabularies(subjects_df):
-    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
-    
-    static_indices_vocab = {}
-    static_measurement_indices_vocab = {}
-    
-    idx = 1
-    for col in static_categorical_columns + static_continuous_columns:
-        if col in static_continuous_columns:
-            values = subjects_df[col].to_numpy()
-            bins, bin_mapping = discretize_variable(values)
-            subjects_df = subjects_df.with_columns([
-                pl.Series(name=f"{col}_discretized", values=bins)
-            ])
-            static_indices_vocab[col] = {bin_mapping[i]: i + idx for i in range(len(bin_mapping))}
-            if col == 'SDI_score':
-                static_indices_vocab[col]['NaN'] = len(bin_mapping) + idx
-            static_measurement_indices_vocab[col] = idx
-            idx += len(static_indices_vocab[col])
-        else:
-            unique_values = subjects_df.select(col).unique().sort(col)
-            static_indices_vocab[col] = {str(val[0]): i + idx for i, val in enumerate(unique_values.rows())}
-            static_measurement_indices_vocab[col] = idx
-            idx += len(static_indices_vocab[col])
-    
-    # Create static_indices and static_measurement_indices columns
+            
+def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
     static_indices = []
     static_measurement_indices = []
-    
-    for row in subjects_df.iter_rows(named=True):
-        subject_static_indices = []
-        subject_static_measurement_indices = []
-        for col in static_categorical_columns + static_continuous_columns:
-            if col in static_continuous_columns:
-                val = row[f"{col}_discretized"]
-                if col == 'SDI_score' and (val is None or pd.isna(val)):
-                    val = 'NaN'
-                else:
-                    val = bin_mapping[int(val)]
-            else:
-                val = str(row[col])
-            if val is not None:
-                idx = static_indices_vocab[col].get(val)
-                if idx is not None:
-                    subject_static_indices.append(idx)
-                    subject_static_measurement_indices.append(static_measurement_indices_vocab[col])
-        static_indices.append(subject_static_indices)
-        static_measurement_indices.append(subject_static_measurement_indices)
-    
-    subjects_df = subjects_df.with_columns([
-        pl.Series(name="static_indices", values=static_indices).cast(pl.List(pl.UInt32)),
-        pl.Series(name="static_measurement_indices", values=static_measurement_indices).cast(pl.List(pl.UInt32))
-    ])
-    
-    return static_indices_vocab, static_measurement_indices_vocab, subjects_df
+    for idx, col in enumerate(static_columns):
+        value = row[col]
+        if value is not None:
+            index = static_indices_vocab.get(f"{col}_{str(value)}", 0)
+            if index != 0:  # Only include non-zero indices
+                static_indices.append(pl.UInt32(index))
+                static_measurement_indices.append(pl.UInt32(static_measurement_indices_vocab[col]))
+    return [static_indices, static_measurement_indices]
 
-def fit_imputer_and_scaler_on_training_data(data):
-    imputer = SimpleImputer(strategy='mean')
+def fit_scaler_on_training_data(data):
     scaler = StandardScaler()
-    
-    # Reshape data if it's 1D
-    if len(data.shape) == 1:
-        data = data.reshape(-1, 1)
-    
-    # Fit and transform with imputer
-    imputed_data = imputer.fit_transform(data)
-    
-    # Fit scaler on imputed data
-    scaled_data = scaler.fit_transform(imputed_data)
-    
-    return {
-        'imputer': imputer,
-        'scaler': scaler,
-        'mean_': float(scaler.mean_[0]),
-        'std_': float(scaler.scale_[0])
-    }
-
-def transform_with_imputer_and_scaler(data, fitted_params):
-    imputer = fitted_params['imputer']
-    scaler = fitted_params['scaler']
-    
-    # Reshape data if it's 1D
-    if len(data.shape) == 1:
-        data = data.reshape(-1, 1)
-    
-    # Transform with imputer
-    imputed_data = imputer.transform(data)
-    
-    # Transform with scaler
-    scaled_data = scaler.transform(imputed_data)
-    
-    return scaled_data.flatten()
+    mean = float(np.mean(data))
+    std = float(np.std(data))
+    return {'mean_': mean, 'std_': std}
 
 # Update events_df with single event types
 def split_event_type(event_type):
@@ -242,19 +108,56 @@ def try_convert_to_float(x, val_type):
             return None
     return x  # Return as-is for non-numeric types
 
-def map_to_index(col, static_indices_vocab):
-    if col not in static_indices_vocab:
-        return pl.lit(None)  # Return None for continuous variables
+def create_static_vocabularies(subjects_df):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
     
+    static_indices_vocab = {}
+    static_measurement_indices_vocab = {}
+    
+    for idx, col in enumerate(static_columns):
+        if col == 'InitialA1c':
+            unique_values = subjects_df.select(pl.col(col).round(2).alias(col)).unique().sort(col)
+            static_indices_vocab[col] = {str(round(val[0], 2)): i + 1 for i, val in enumerate(unique_values.rows())}
+        elif col in ['AgeYears', 'SDI_score']:
+            unique_values = subjects_df.select(pl.col(col).cast(pl.Float64).round(0).cast(pl.Int64).alias(col)).unique().sort(col)
+            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
+        else:
+            unique_values = subjects_df.select(col).unique().sort(col)
+            static_indices_vocab[col] = {str(val[0]): i + 1 for i, val in enumerate(unique_values.rows())}
+        
+        static_measurement_indices_vocab[col] = idx + 1
+    
+    return static_indices_vocab, static_measurement_indices_vocab
+
+def map_to_index(col, static_indices_vocab):
     mapping_dict = {str(k): v for k, v in static_indices_vocab[col].items()}
     
     expr = pl.when(pl.col(col).is_null()).then(None)
     
-    for k, v in mapping_dict.items():
-        expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(pl.lit(v).cast(pl.Int64))
+    if col == 'InitialA1c':
+        for k, v in mapping_dict.items():
+            expr = expr.when(
+                pl.col(col).cast(pl.Float64).round(2).cast(pl.Utf8) == k
+            ).then(pl.lit(v).cast(pl.Int64))
+    else:
+        for k, v in mapping_dict.items():
+            expr = expr.when(pl.col(col).cast(pl.Utf8) == k).then(pl.lit(v).cast(pl.Int64))
     
     return expr.otherwise(None)
     
+def create_static_indices_and_measurements(row, static_indices_vocab, static_measurement_indices_vocab):
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+    static_indices = []
+    static_measurement_indices = []
+    for idx, col in enumerate(static_columns):
+        value = row[col]
+        if value is not None:
+            index = static_indices_vocab.get(f"{col}_{str(value)}", 0)
+            if index != 0:  # Only include non-zero indices
+                static_indices.append(index)
+                static_measurement_indices.append(static_measurement_indices_vocab[col])
+    return [static_indices, static_measurement_indices]
+
 class ConcreteDataset(DatasetBase):
     PREPROCESSORS = {
         "standard_scaler": StandardScaler,
@@ -272,36 +175,8 @@ class ConcreteDataset(DatasetBase):
         # Initialize initial_unified_measurements_idxmap
         self._initial_unified_measurements_idxmap = self._create_initial_unified_measurements_idxmap()
 
-        # Initialize _unified_measurements_vocab as a private attribute
-        self._unified_measurements_vocab = ["event_type"] + list(self.config.measurement_configs.keys())
-
-    def _create_initial_unified_measurements_idxmap(self):
-        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
-        unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
-        return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
-
-    def _create_static_indices_vocab(self):
-        static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-        vocab = {}
-        idx = 1
-        for col in static_categorical_columns:
-            unique_values = self.subjects_df.select(col).unique().sort(col)
-            vocab[col] = {str(val[0]): i + idx for i, val in enumerate(unique_values.rows())}
-            idx += len(vocab[col])
-        return vocab
-
-    def _create_static_measurement_indices_vocab(self):
-        static_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran', 'InitialA1c', 'AgeYears', 'SDI_score']
-        return {col: idx for idx, col in enumerate(static_columns, start=1)}
-
-    # Override the unified_measurements_vocab property to make it settable
-    @property
-    def unified_measurements_vocab(self):
-        return self._unified_measurements_vocab
-
-    @unified_measurements_vocab.setter
-    def unified_measurements_vocab(self, value):
-        self._unified_measurements_vocab = value
+    def create_static_indices_and_measurements(self, row):
+        return create_static_indices_and_measurements(row, self.static_indices_vocab, self.static_measurement_indices_vocab)
 
     def transform_measurements(self):
         for measure, config in self.measurement_configs.items():
@@ -393,6 +268,11 @@ class ConcreteDataset(DatasetBase):
                 self.subjects_df = self.subjects_df.with_columns([
                     pl.col('static_measurement_indices').cast(pl.List(pl.UInt32))
                 ])
+
+    def _create_initial_unified_measurements_idxmap(self):
+        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
+        unified_measurements_vocab = ["event_type"] + static_columns + [m for m in self.config.measurement_configs.keys() if m not in static_columns]
+        return {m: i + 1 for i, m in enumerate(unified_measurements_vocab)}
 
     def _get_flat_static_rep(self, feature_columns: list[str], **kwargs) -> pl.LazyFrame:
         static_features = [c for c in feature_columns if c.startswith("static/")]
@@ -498,14 +378,14 @@ class ConcreteDataset(DatasetBase):
                 inliers_col = ~M.predict_from_polars(vals_col, pl.col("outlier_model")).alias(inliers_col_name)
                 source_df = source_df.with_columns(inliers_col)
 
-            # # Apply normalization
-            # if self.config.normalizer_config is not None:
-            #     M = self._get_preprocessing_model(self.config.normalizer_config, for_fit=False)
-            #     if "normalizer" in source_df.columns:
-            #         normalized_vals_col = M.predict_from_polars(vals_col, pl.col("normalizer"))
-            #         source_df = source_df.with_columns(normalized_vals_col.alias(vals_col_name))
-            #     else:
-            #         print(f"Warning: 'normalizer' column not found for measure {measure}. Skipping normalization.")
+            # Apply normalization
+            if self.config.normalizer_config is not None:
+                M = self._get_preprocessing_model(self.config.normalizer_config, for_fit=False)
+                if "normalizer" in source_df.columns:
+                    normalized_vals_col = M.predict_from_polars(vals_col, pl.col("normalizer"))
+                    source_df = source_df.with_columns(normalized_vals_col.alias(f"{vals_col_name}_normalized"))
+                else:
+                    print(f"Warning: 'normalizer' column not found for measure {measure}. Skipping normalization.")
 
             result_df = source_df.drop(cols_to_drop_at_end)
             
@@ -1677,47 +1557,48 @@ class ConcreteDataset(DatasetBase):
             events_df = self.events_df
             dynamic_measurements_df = self.dynamic_measurements_df
 
-        static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-        static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
-        all_static_columns = static_categorical_columns + static_continuous_columns
+        static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
         
-        # Create static_data first, avoiding duplicate columns
-        unique_columns = list(dict.fromkeys(["subject_id"] + all_static_columns))
-        static_data = subjects_df.select(*unique_columns)
+        # Remove duplicates between subject_measures and static_columns
+        unique_subject_measures = list(set(subject_measures) - set(static_columns))
+        
+        # Create static_data first
+        static_data = subjects_df.select(
+            "subject_id",
+            *[pl.col(m) for m in unique_subject_measures],
+            *static_columns
+        )
 
-        print("Sample of static_data before transformation:")
-        print(static_data.head())
-
-        print("static_indices_vocab:", self.static_indices_vocab)
-        print("static_measurement_indices_vocab:", self.static_measurement_indices_vocab)
-
-        # Create static_indices column (only for categorical columns)
+        # Cast InitialA1c to Float64 and then round to two decimal places
         static_data = static_data.with_columns([
-            pl.struct(static_categorical_columns).map_elements(
-                lambda x: [
-                    self.static_indices_vocab[col].get(str(x[col]), 0)
-                    for col in static_categorical_columns if x[col] is not None
-                ]
-            ).cast(pl.List(pl.UInt32)).alias("static_indices")
+            pl.col("InitialA1c").cast(pl.Float64).round(2).alias("InitialA1c")
         ])
 
-        # Create static_measurement_indices column (for all static columns)
+        # Create static_indices column
         static_data = static_data.with_columns([
-            pl.struct(all_static_columns).map_elements(
+            pl.struct(static_columns).map_elements(
                 lambda x: [
-                    self.static_measurement_indices_vocab[col]
-                    for col in all_static_columns if x[col] is not None
-                ]
-            ).cast(pl.List(pl.UInt32)).alias("static_measurement_indices")
+                    static_indices_vocab[col].get(str(round(x[col], 2) if col == 'InitialA1c' else 
+                                                  int(float(x[col])) if col in ['AgeYears', 'SDI_score'] and x[col] is not None else 
+                                                  x[col]), 0) 
+                    for col in static_columns if x[col] is not None
+                ],
+                return_dtype=pl.List(pl.Int64)  # Use Int64 first
+            ).cast(pl.List(pl.UInt32)).alias("static_indices")  # Then cast the whole list to UInt32
         ])
 
-        print("Sample of static_data after transformation:")
-        print(static_data.head())
+        static_data = static_data.with_columns([
+            pl.col("SDI_score").map_elements(lambda x: float('nan') if x is None else x).alias("SDI_score")
+        ])       
 
-        print("Sample values of static_indices:")
-        print(static_data['static_indices'].head())
-        print("Sample values of static_measurement_indices:")
-        print(static_data['static_measurement_indices'].head())
+        # Create static_measurement_indices column
+        static_measurement_indices_vocab = self.static_measurement_indices_vocab
+        static_data = static_data.with_columns([
+            pl.struct(static_columns).map_elements(
+                lambda x: [static_measurement_indices_vocab[col] for col in static_columns if x[col] is not None],
+                return_dtype=pl.List(pl.Int64)  # Use Int64 first
+            ).cast(pl.List(pl.UInt32)).alias("static_measurement_indices")  # Then cast the whole list to UInt32
+        ])
 
         subject_id_dtype = pl.UInt32
         static_data = static_data.with_columns(pl.col("subject_id").cast(subject_id_dtype))
@@ -1975,7 +1856,7 @@ def create_code_mapping(df_dia, df_prc, df_labs=None):
     return code_to_index
 
 class CustomPytorchDataset(torch.utils.data.Dataset):
-    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None, max_seq_len=None, min_seq_len=None):
+    def __init__(self, config, split, dl_reps_dir, subjects_df, df_dia, df_prc, df_labs=None, task_df=None, device=None, max_seq_len=None):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.logger.info(f"Initializing CustomPytorchDataset for split: {split}")
@@ -1990,7 +1871,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.task_df = task_df
 
         self.max_seq_len = max_seq_len
-        self.min_seq_len = min_seq_len
 
         self.has_task = task_df is not None
         if self.has_task:
@@ -2005,50 +1885,6 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         self.logger.info(f"Dataset length: {self.length}")
         self.logger.info(f"Has task: {self.has_task}")
 
-        # Log sequence length statistics
-        self._log_sequence_length_stats()
-
-    def _log_sequence_length_stats(self):
-        seq_lengths_before = []
-        seq_lengths_after = []
-        for idx in range(len(self)):
-            row = self.cached_data.row(idx)
-            seq_len_before = len(row[self.cached_data.columns.index('dynamic_indices')])
-            seq_lengths_before.append(seq_len_before)
-            
-            # Apply min/max constraints
-            seq_len_after = max(min(seq_len_before, self.max_seq_len), self.min_seq_len)
-            seq_lengths_after.append(seq_len_after)
-        
-        seq_lengths_before = np.array(seq_lengths_before)
-        seq_lengths_after = np.array(seq_lengths_after)
-        
-        self.logger.info("Sequence length statistics before applying min/max:")
-        self.logger.info(f"Min: {seq_lengths_before.min()}, Max: {seq_lengths_before.max()}, Average: {seq_lengths_before.mean():.2f}")
-        self.logger.info(f"Mode: {Counter(seq_lengths_before).most_common(1)[0][0]}")
-        
-        if wandb.run is not None:
-            wandb.log({
-                "seq_length/before/min": seq_lengths_before.min(),
-                "seq_length/before/max": seq_lengths_before.max(),
-                "seq_length/before/mean": seq_lengths_before.mean(),
-                "seq_length/before/mode": Counter(seq_lengths_before).most_common(1)[0][0],
-                "seq_length/before/histogram": wandb.Histogram(seq_lengths_before)
-            })
-        
-        self.logger.info("Sequence length statistics after applying min/max:")
-        self.logger.info(f"Min: {seq_lengths_after.min()}, Max: {seq_lengths_after.max()}, Average: {seq_lengths_after.mean():.2f}")
-        self.logger.info(f"Mode: {Counter(seq_lengths_after).most_common(1)[0][0]}")
-        
-        if wandb.run is not None:
-            wandb.log({
-                "seq_length/after/min": seq_lengths_after.min(),
-                "seq_length/after/max": seq_lengths_after.max(),
-                "seq_length/after/mean": seq_lengths_after.mean(),
-                "seq_length/after/mode": Counter(seq_lengths_after).most_common(1)[0][0],
-                "seq_length/after/histogram": wandb.Histogram(seq_lengths_after)
-            })
-
     def __getitem__(self, idx):
         if idx < 0 or idx >= self.length:
             raise IndexError(f"Index {idx} out of bounds for dataset of length {self.length}")
@@ -2056,77 +1892,37 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         try:
             row = self.cached_data.row(idx)
             item = {}
-
-            # Get the original sequence length
-            orig_seq_len = len(row[self.cached_data.columns.index('dynamic_indices')])
-            
-            # Ensure minimum sequence length
-            seq_len = max(orig_seq_len, self.min_seq_len)
-            
-            # Cap at maximum sequence length if specified
-            if self.max_seq_len:
-                seq_len = min(seq_len, self.max_seq_len)
-
-            # Dynamic and static features
             for col in ['dynamic_indices', 'dynamic_measurement_indices', 'static_indices', 'static_measurement_indices']:
                 data = row[self.cached_data.columns.index(col)]
                 if data is None:
                     self.logger.warning(f"None value found in {col} for index {idx}")
                     data = []
-                item[col] = self.pad_sequence(torch.tensor(data, dtype=torch.long), seq_len)
-            
+                item[col] = torch.tensor(data[:self.max_seq_len], dtype=torch.long)  # Truncate to max_seq_len
+
             # Handle dynamic_values
             dynamic_values = row[self.cached_data.columns.index('dynamic_values')]
-            item['dynamic_values'] = self.pad_sequence(torch.tensor([v if v is not None else 0.0 for v in dynamic_values], dtype=torch.float), seq_len)
-            
+            item['dynamic_values'] = torch.tensor([v if v is not None else 0.0 for v in dynamic_values[:self.max_seq_len]], dtype=torch.float)  # Truncate to max_seq_len
+
             # Handle time
             time = row[self.cached_data.columns.index('time')]
-            item['time'] = self.pad_sequence(torch.tensor(time, dtype=torch.float), seq_len)
-            
-            # Add sequence length to the item
-            item['seq_len'] = seq_len
-            
+            item['time'] = torch.tensor(time[:self.max_seq_len], dtype=torch.float)  # Truncate to max_seq_len
+
             # Get the subject_id
             subject_id = row[self.cached_data.columns.index('subject_id')]
 
             # Get the label from task_dict
             if self.has_task:
                 label = self.task_dict.get(subject_id, 0.0)
-                item['labels'] = torch.tensor([float(label)], dtype=torch.float32)
+                item['labels'] = torch.tensor(float(label), dtype=torch.float32)
             else:
-                item['labels'] = torch.tensor([0.0], dtype=torch.float32)
-
+                item['labels'] = torch.tensor(0.0, dtype=torch.float32)
+                    
             return item
         except Exception as e:
             self.logger.error(f"Error getting item at index {idx}: {str(e)}")
             self.logger.error(f"Dataset length: {self.length}")
             raise
 
-    def pad_sequence(self, sequence, max_length, pad_value=0):
-        if isinstance(sequence, list):
-            padded = sequence[:max_length] + [pad_value] * max(0, max_length - len(sequence))
-        elif isinstance(sequence, torch.Tensor):
-            if len(sequence) > max_length:
-                padded = sequence[:max_length].tolist()
-            else:
-                padded = sequence.tolist() + [pad_value] * (max_length - len(sequence))
-        else:
-            try:
-                padded = sequence[:max_length].tolist() + [pad_value] * max(0, max_length - len(sequence))
-            except AttributeError:
-                self.logger.warning(f"Unexpected sequence type: {type(sequence)}")
-                padded = [pad_value] * max_length
-
-        # Determine the dtype based on the pad_value and the sequence type
-        if isinstance(sequence, torch.Tensor):
-            dtype = sequence.dtype
-        elif pad_value == 0.0:
-            dtype = torch.float32
-        else:
-            dtype = torch.long
-
-        return torch.tensor(padded, dtype=dtype)
-        
     def create_code_mapping(self):
         """Create a mapping from codes to indices for diagnoses, procedures, and labs."""
         all_codes = set(self.df_dia['CodeWithType'].unique()) | set(self.df_prc['CodeWithType'].unique())
@@ -2138,62 +1934,64 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
         all_codes = {code for code in all_codes if code and str(code).strip()}
         
         sorted_codes = sorted(all_codes)
-        self.code_to_index = {str(code): int(idx) for idx, code in enumerate(sorted_codes, start=1)}
+        self.code_to_index = {str(code): idx for idx, code in enumerate(sorted_codes, start=1)}
         
-        self.logger.info("Total unique codes: %d", len(self.code_to_index))
-        
-        # Convert the first 5 items to a regular Python dictionary with int values
-        sample_dict = {k: int(v) for k, v in list(self.code_to_index.items())[:5]}
-        self.logger.info("Sample of code_to_index: %s", str(sample_dict))
+        self.logger.info(f"Total unique codes: {len(self.code_to_index)}")
+        self.logger.info(f"Sample of code_to_index: {dict(list(self.code_to_index.items())[:5])}")
 
     def load_cached_data(self):
         self.logger.info(f"Loading cached data for split: {self.split}")
-
+        
         if not self.dl_reps_dir.exists():
             raise FileNotFoundError(f"Directory not found: {self.dl_reps_dir}")
-
+        
         parquet_files = list(self.dl_reps_dir.glob(f"{self.split}*.parquet"))
         self.logger.info(f"Found {len(parquet_files)} Parquet files")
-
+        
         if not parquet_files:
             raise FileNotFoundError(f"No Parquet files found for split '{self.split}' in directory '{self.dl_reps_dir}'")
-
+        
         pl.enable_string_cache()  # Enable global string cache
-
-        dfs = []
+        
+        lazy_dfs = []
         total_rows = 0
         for parquet_file in tqdm(parquet_files, desc="Loading data files"):
             self.logger.debug(f"Scanning file: {parquet_file}")
             try:
-                df = pl.read_parquet(parquet_file)
+                lazy_df = pl.scan_parquet(parquet_file)
                 if self.task_df is not None:
-                    df = df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
-                dfs.append(df)
-                total_rows += len(df)
+                    lazy_df = lazy_df.filter(pl.col('subject_id').is_in(self.task_df['subject_id']))
+                lazy_dfs.append(lazy_df)
+                # Estimate rows without loading the entire file
+                total_rows += lazy_df.select(pl.count()).collect().item()
             except Exception as e:
-                self.logger.error(f"Error reading Parquet file: {parquet_file}")
+                self.logger.error(f"Error scanning Parquet file: {parquet_file}")
                 self.logger.error(f"Error message: {str(e)}")
                 continue
 
-        if not dfs:
+        if not lazy_dfs:
             self.logger.error(f"No data loaded for split: {self.split}")
             raise ValueError(f"No data loaded for split: {self.split}")
 
-        self.logger.info(f"Total rows: {total_rows}")
-
+        self.logger.info(f"Estimated total rows: {total_rows}")
+        
         if total_rows == 0:
             raise ValueError(f"No matching data found for split: {self.split}")
 
-        # Combine DataFrames
-        cached_data = pl.concat(dfs)
-
+        # Combine lazy DataFrames and collect the result
+        cached_data = pl.concat(lazy_dfs).collect()
+        
         self.logger.info(f"Final cached_data shape: {cached_data.shape}")
         pl.disable_string_cache()  # Disable global string cache after concatenation
-
+        
         self.logger.info(f"Cached data loaded successfully for split: {self.split}")
         self.logger.info(f"Dataset size: {len(cached_data)}")
         self.logger.debug("Data types of cached data:")
         self.logger.debug(cached_data.dtypes)
+
+        # Optionally, you can add a data summary here
+        self.logger.info("Data summary:")
+        self.logger.info(cached_data.describe())
 
         return cached_data
 
@@ -2210,6 +2008,17 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
             'time': torch.tensor([0.0], dtype=torch.float),
             'labels': torch.tensor(0.0, dtype=torch.float32),
         }
+
+    def pad_sequence(self, sequence, max_length, pad_value=0):
+        if isinstance(sequence, list):
+            padded = sequence[:max_length] + [pad_value] * max(0, max_length - len(sequence))
+        else:
+            try:
+                padded = sequence[:max_length].tolist() + [pad_value] * max(0, max_length - len(sequence))
+            except AttributeError:
+                self.logger.warning(f"Unexpected sequence type: {type(sequence)}")
+                padded = [pad_value] * max_length
+        return torch.tensor(padded, dtype=torch.float32 if pad_value == 0.0 else torch.long)
 
     def process_dynamic_indices(self, indices):
         if indices is None or len(indices) == 0:
@@ -2244,26 +2053,22 @@ class CustomPytorchDataset(torch.utils.data.Dataset):
     def get_max_index(self):
         return max(self.code_to_index.values())
 
-# Define a consistent color scheme
-GENDER_COLORS = {"Male": "#1f77b4", "Female": "#ff7f0e"}
-
 def save_plot(data, x_col, y_col, gender_col, title, y_label, x_range, file_path):
-    fig, ax = plt.subplots(figsize=(12, 8))
-    for gender in [0, 1]:
+    """
+    Creates a scatter plot with gender-based coloring and saves it to a file.
+    """
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for gender in [0, 1]:  # 0 for Male, 1 for Female
         subset = data[data[gender_col] == gender]
-        ax.scatter(subset[x_col], subset[y_col], 
-                   label="Female" if gender == 1 else "Male", 
-                   color=GENDER_COLORS["Female" if gender == 1 else "Male"],
-                   alpha=0.7)
+        ax.scatter(subset[x_col], subset[y_col], label="Female" if gender == 1 else "Male", alpha=0.5)
     ax.set_xlabel('Age')
     ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.legend()
-    ax.set_xlim(0, 40)  # Set x-axis range to include all ages
-    plt.tight_layout()
+    ax.set_xlim(x_range)
     plt.savefig(file_path)
     plt.close()
-
+    
 def save_plot_line(df, x, y, filename, xlabel, ylabel, title, x_range=None):
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(df[x], df[y])
@@ -2364,42 +2169,26 @@ def save_scatter_plot(data, x_col, y_col, title, y_label, file_path, x_range=Non
     fig.write_image(file_path, format="png", width=600, height=350, scale=2)
     
 def save_plot_measurements_per_subject(data, x_col, gender_col, title, x_label, file_path):
-    fig = px.box(data, x=gender_col, y=x_col, 
-                 color=gender_col, 
-                 labels={x_col: 'Number of Measurements', gender_col: 'Gender'},
-                 title=title,
-                 color_discrete_map={0: GENDER_COLORS["Male"], 1: GENDER_COLORS["Female"]})
-    fig.update_layout(
-        xaxis=dict(tickmode='array', tickvals=[0, 1], ticktext=['Male', 'Female']),
-        showlegend=False
-    )
-    fig.write_image(str(file_path))
+    """
+    Creates a box plot for the distribution of measurements per subject, grouped by gender, and saves it to a file.
 
-def create_scatter_plot(merged_data, DATA_SUMMARIES_DIR):
-    fig = px.scatter(merged_data, x='AgeYears_discretized', y='measurements_per_subject', color='Female',
-                     title='Average number of measurements per patient, grouped by age and gender',
-                     labels={'measurements_per_subject': 'Avg. measurements per patient', 'AgeYears_discretized': 'Age Group'},
-                     color_discrete_map={0: GENDER_COLORS["Male"], 1: GENDER_COLORS["Female"]})
-    fig.update_layout(
-        xaxis_title="Age Group",
-        yaxis_title="Average measurements per patient",
-        yaxis_range=[0, merged_data['measurements_per_subject'].max() * 1.1],
-        legend_title_text='Gender',
-        xaxis_range=[0, 40]  # Set x-axis range to include all ages
-    )
-    fig.update_traces(marker=dict(size=8))
+    Parameters:
+    - data: DataFrame with the data to plot.
+    - x_col: Column name to use for the x-axis (number of measurements).
+    - gender_col: Column name for gender representation.
+    - title: Title for the plot.
+    - x_label: Label for the x-axis.
+    - file_path: Path to save the plot as a PNG file.
+    """
+    # Map gender to "Female" or "Male"
+    data[gender_col] = data[gender_col].map({1: "Female", 0: "Male"})
 
-    fig.for_each_trace(lambda t: t.update(name='Female' if t.name == '1' else 'Male'))
+    # Create the box plot with specified colors
+    fig = px.box(data, x=x_col, color=gender_col, title=title, labels={x_col: x_label, gender_col: 'Gender'},
+                 color_discrete_map={"Female": "blue", "Male": "red"})
 
-    fig.update_layout(legend=dict(
-        itemsizing='constant',
-        title_text='Gender',
-        title_font_family='Arial',
-        font=dict(family='Arial', size=12, color='black'),
-        bordercolor='Black',
-        borderwidth=1
-    ))
-    fig.write_image(str(DATA_SUMMARIES_DIR / "measurements_per_subject_at_age_by_gender.png"))
+    # Save to file
+    fig.write_image(file_path, format="png", width=600, height=350, scale=2)
 
 def save_plot_heatmap(data, x_col, y_col, title, file_path):
     """
@@ -2470,7 +2259,7 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
 
     if df_name in ['Diagnoses', 'Procedures', 'Labs']:
         df = df.with_columns(pl.col('Date').str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f", strict=False).cast(pl.Datetime('us')))
- 
+        
     if df_name in ['Diagnoses', 'Procedures']:
         df = df.drop_nulls(subset=['Date', 'CodeWithType'])
         if min_frequency is not None:
@@ -2484,21 +2273,6 @@ def preprocess_dataframe(df_name, file_path, columns, selected_columns, min_freq
 
     elif df_name == 'Labs':
         df = df.drop_nulls(subset=['Date', 'Code', 'Result'])
-
-        # Excluding rows with no numeric values in the 'Result' column
-        # Count rows before filtering
-        rows_before = df.shape[0]
-
-        # Filter out rows with non-numeric 'Result'
-        df = df.filter(pl.col('Result').map_elements(is_numeric))
-
-        # Count rows after filtering
-        rows_after = df.shape[0]
-
-        # Print the number of excluded rows
-        excluded_rows = rows_before - rows_after
-        print(f"Number of rows excluded from df_labs due to non-numeric 'Result': {excluded_rows}")
-
         if min_frequency is not None:
             code_counts = df.group_by('Code').agg(pl.count('Code').alias('count'))
             if isinstance(min_frequency, int):

@@ -47,7 +47,7 @@ from EventStream.data.types import (
     InputDFType,
     TemporalityType,
 )
-from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, map_to_index, is_numeric
+from data_utils import read_file, preprocess_dataframe, json_serial, add_to_container, read_parquet_file, generate_time_intervals, create_code_mapping, map_codes_to_indices, create_inverse_mapping, optimize_labs_data, process_events_and_measurements_df, try_convert_to_float, print_memory_usage, ConcreteDataset, create_static_vocabularies, split_event_type, create_static_indices_and_measurements, fit_scaler_on_training_data, map_to_index
 from data_dict import outcomes_columns, dia_columns, prc_columns, labs_columns, outcomes_columns_select, dia_columns_select, prc_columns_select, labs_columns_select
 from collections import defaultdict
 from EventStream.data.preprocessing.standard_scaler import StandardScaler
@@ -151,15 +151,15 @@ def main(use_labs=False, debug=False):
 
     outcomes_file_path = 'data/DiabetesOutcomes.txt'
     diagnoses_file_path = 'data/DiagnosesICD10.txt'
-    procedures_file_path = 'data/Procedures_NoLabs.txt'
+    procedures_file_path = 'data/ProceduresICD10.txt'
     if use_labs:
         labs_file_path = 'data/Labs_numeric.txt'
 
     # Process subjects data
     subjects_df = preprocess_dataframe('Outcomes', outcomes_file_path, outcomes_columns, outcomes_columns_select)
     subjects_df = subjects_df.group_by('StudyID').agg([
-        pl.col('IndexDate').first(),
         pl.col('InitialA1c').first(),
+        pl.col('A1cGreaterThan7').first(),
         pl.col('Female').first(),
         pl.col('Married').first(),
         pl.col('GovIns').first(),
@@ -169,10 +169,6 @@ def main(use_labs=False, debug=False):
         pl.col('Veteran').first()
     ])
 
-    subjects_df = subjects_df.with_columns([
-        pl.col('IndexDate').str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S.%f").alias('IndexDate')
-    ])
-
     # Create subject_id mapping
     subject_id_mapping = {study_id: idx for idx, study_id in enumerate(subjects_df['StudyID'].unique(), start=1)}
     subjects_df = subjects_df.with_columns([
@@ -180,25 +176,9 @@ def main(use_labs=False, debug=False):
     ])
 
     # Create static vocabularies
-    static_indices_vocab, static_measurement_indices_vocab, subjects_df = create_static_vocabularies(subjects_df)
+    static_indices_vocab, static_measurement_indices_vocab = create_static_vocabularies(subjects_df)
 
     dynamic_measurement_indices_vocab = {"dynamic_indices": 1}
-
-    print("Sample of static_indices_vocab:")
-    print(dict(list(static_indices_vocab.items())[:5]))
-    print("Sample of static_measurement_indices_vocab:")
-    print(dict(list(static_measurement_indices_vocab.items())[:5]))
-
-    # Print the columns of subjects_df to verify
-    print("Columns in subjects_df:", subjects_df.columns)
-
-    # Print the first few rows of subjects_df
-    print("First few rows of subjects_df:")
-    print(subjects_df.head())
-
-    # Print data types of columns
-    print("Data types of columns in subjects_df:")
-    print(subjects_df.dtypes)
 
     # After creating static_indices_vocab and static_measurement_indices_vocab
     with open(data_dir / "static_indices_vocab.json", "w") as f:
@@ -207,24 +187,15 @@ def main(use_labs=False, debug=False):
     with open(data_dir / "static_measurement_indices_vocab.json", "w") as f:
         json.dump(static_measurement_indices_vocab, f, indent=2)
     
-    static_categorical_columns = ['Female', 'Married', 'GovIns', 'English', 'Veteran']
-    static_continuous_columns = ['InitialA1c', 'AgeYears', 'SDI_score']
-    all_static_columns = static_categorical_columns + static_continuous_columns
+    static_columns = ['InitialA1c', 'Female', 'Married', 'GovIns', 'English', 'AgeYears', 'SDI_score', 'Veteran']
 
-    # Create static_indices expression
-    static_indices_expr = pl.concat_list([
-        pl.when(pl.col(col).is_not_null())
-        .then(pl.col(col).cast(pl.Utf8).map_elements(lambda x: static_indices_vocab[col].get(x, None), return_dtype=pl.UInt32))
-        .otherwise(None)
-        for col in static_categorical_columns
-    ]).alias("static_indices")
-
-    # Create static_measurement_indices expression
+    # Create expressions for static_indices and static_measurement_indices
+    static_indices_expr = pl.concat_list([map_to_index(col, static_indices_vocab) for col in static_columns]).alias("static_indices")
     static_measurement_indices_expr = pl.concat_list([
         pl.when(pl.col(col).is_not_null())
-        .then(pl.lit(static_measurement_indices_vocab[col]).cast(pl.UInt32))
-        .otherwise(pl.lit(None))
-        for col in static_categorical_columns
+        .then(pl.lit(static_measurement_indices_vocab[col]))
+        .otherwise(None)
+        for col in static_columns
     ]).alias("static_measurement_indices")
 
     # Apply the expressions to the DataFrame
@@ -238,7 +209,7 @@ def main(use_labs=False, debug=False):
         pl.col("static_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32)),
         pl.col("static_measurement_indices").list.eval(pl.element().filter(pl.element().is_not_null())).cast(pl.List(pl.UInt32))
     ])
-            
+    
     print("Data types after processing:")
     print(subjects_df.dtypes)
     
@@ -247,8 +218,8 @@ def main(use_labs=False, debug=False):
     print("Columns in subjects_df:", subjects_df.columns)
 
     print("Processing diagnosis and procedure data...")
-    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select)
-    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select)
+    df_dia = preprocess_dataframe('Diagnoses', diagnoses_file_path, dia_columns, dia_columns_select, min_frequency=ceil(subjects_df.height*0.01))
+    df_prc = preprocess_dataframe('Procedures', procedures_file_path, prc_columns, prc_columns_select, min_frequency=ceil(subjects_df.height*0.01))
 
     # Add subject_id to df_dia and df_prc
     df_dia = df_dia.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
@@ -256,7 +227,7 @@ def main(use_labs=False, debug=False):
 
     if use_labs:
         print("Processing labs data...")
-        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, debug=debug)
+        df_labs = preprocess_dataframe('Labs', labs_file_path, labs_columns, labs_columns_select, min_frequency=ceil(subjects_df.height*0.01), debug=debug)
         df_labs = optimize_labs_data(df_labs)
         df_labs = df_labs.join(subjects_df.select(['StudyID', 'subject_id']), on='StudyID', how='inner')
 
@@ -341,17 +312,6 @@ def main(use_labs=False, debug=False):
         pl.col('event_type').str.split('&').list.first().alias('event_type')
     ])
 
-    # Join events_df with subjects_df to get IndexDate
-    events_df = events_df.join(
-        subjects_df.select(['subject_id', 'IndexDate']),
-        on='subject_id'
-    )
-
-    # Calculate time_to_index
-    events_df = events_df.with_columns([
-        ((pl.col('timestamp') - pl.col('IndexDate')).dt.total_minutes()).alias('time_to_index')
-    ])
-
     # Rename existing 'event_id' column
     events_df = events_df.rename({"event_id": "original_event_id"})
     dynamic_measurements_df = dynamic_measurements_df.rename({"event_id": "original_event_id"})
@@ -390,8 +350,8 @@ def main(use_labs=False, debug=False):
     config.vocab_sizes_by_measurement = {
         'event_type': len(event_types_idxmap),
         'dynamic_indices': len(code_to_index),
-        'static_indices': len(static_indices_vocab),  
-        'static_measurement_indices': len(static_measurement_indices_vocab),
+        'static_indices': len(static_indices_vocab),  # You'll need to create this vocabulary
+        'static_measurement_indices': len(static_measurement_indices_vocab),  # You'll need to create this vocabulary
     }
 
     config.vocab_offsets_by_measurement = {
@@ -453,13 +413,10 @@ def main(use_labs=False, debug=False):
     ESD.preprocess()
 
     # Cache deep learning representation
-    ESD.cache_deep_learning_representation(
-        DL_chunk_size, 
-        do_overwrite=do_overwrite,
-        static_indices_vocab=static_indices_vocab,
-        dynamic_measurement_indices_vocab=dynamic_measurement_indices_vocab,
-    )
-    
+    ESD.cache_deep_learning_representation(DL_chunk_size, do_overwrite=do_overwrite, 
+                                           static_indices_vocab=static_indices_vocab,
+                                           dynamic_measurement_indices_vocab=event_type_mapping)
+
     # Save dataset
     ESD.save(do_overwrite=do_overwrite)
 
