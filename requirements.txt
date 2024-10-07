@@ -24,13 +24,13 @@ mixins==0.1.4
 ml-mixins==0.0.5
 plotly==5.20.0
 inflect==7.2.0
-bitsandbytes==0.43.1
 kaleido==0.2.1
 lightning==2.2.3
 pytorch_lognormal_mixture==0.0.1
 pyo3-pack==0.6.1
 optuna==3.6.1
 captum==0.7.0
+chardet==5.2.0
 
 
 

@@ -11,6 +11,7 @@ from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
 from EventStream.transformer.lightning_modules.fine_tuning import train
 from pathlib import Path
 import json
+from EventStream.utils import CustomJSONEncoder
 from EventStream.data.config import PytorchDatasetConfig
 from EventStream.data.dataset_config import DatasetConfig
 from EventStream.data.dataset_polars import Dataset
@@ -44,11 +45,6 @@ def main(cfg: DictConfig):
 def _main(cfg: dict, use_labs: bool = False):
     logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
-
-    logger.info("Loading vocabulary config")
-    with open("data/vocabulary_config.json", "r") as f:
-        vocabulary_config_dict = json.load(f)
-    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
     
     logger.info("Starting main function")
     
@@ -68,9 +64,6 @@ def _main(cfg: dict, use_labs: bool = False):
     else:
         cfg = FinetuneConfig(**cfg)
 
-    logger.info("Loaded FinetuneConfig:")
-    logger.info(str(cfg))
-
     print(f"FinetuneConfig created with use_static_features: {cfg.use_static_features}")
     
     if use_labs:
@@ -79,6 +72,11 @@ def _main(cfg: dict, use_labs: bool = False):
         DATA_DIR = Path.cwd() / "data"
 
     logger.info(f"Data directory: {DATA_DIR}")
+
+    logger.info("Loading vocabulary config")
+    with open(str(DATA_DIR / "vocabulary_config.json"), "r") as f:
+        vocabulary_config_dict = json.load(f)
+    vocabulary_config = VocabularyConfig.from_dict(vocabulary_config_dict)
 
     # Update dl_reps_dir using the setter method
     cfg.data_config.set_dl_reps_dir(str(DATA_DIR / "DL_reps"))

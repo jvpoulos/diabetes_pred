@@ -107,7 +107,6 @@ $ pip3 install -r diabetes_pred/requirements.txt
 ```bash
 $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
-Optionally,  follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
 6. Clone forked version of git repo [EventStreamGPT](https://github.com/jvpoulos/EventStreamGPT), outside of project directory:
 ```bash
@@ -117,11 +116,14 @@ touch EventStreamGPT/EventStream/__init__.py
 touch EventStreamGPT/EventStream/data/__init__.py
 ```
 
-7. Install Dask (optional):
+7. Install Dask:
 
 ```bash
 $ python3 -m pip install "dask[complete]" --upgrade
 ```
+
+Follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
+
 ## Static analyses
 
 1. Load data:
