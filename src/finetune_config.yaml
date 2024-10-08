@@ -31,19 +31,19 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 3
+  num_hidden_layers: 2
   seq_attention_types: ["global", "local"]
   seq_window_size: 168 # An integer specifying the size of the attention window.
   head_dim: 64
   max_position_embeddings: 512
-  num_attention_heads: 8
+  num_attention_heads: 1
   max_grad_norm: 1
   intermediate_dropout: 0.1
   attention_dropout: 0.1
   input_dropout: 0.1
   resid_dropout: 0.1
-  hidden_size: 512  # consistent with head_dim and num_attention_heads
-  intermediate_size: 256
+  hidden_size: 64  # consistent with head_dim and num_attention_heads
+  intermediate_size: 128
   layer_norm_epsilon: 1e-3
   task_specific_params:
     pooling_method: mean
@@ -53,15 +53,15 @@ optimization_config:
   end_lr: 0.0001   # Final learning rate
   end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
   max_epochs: 100
-  batch_size: 256
-  validation_batch_size: 256
+  batch_size: 512
+  validation_batch_size: 512
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
-  use_grad_value_clipping: true  # Flag to enable grad_value clipping
-  patience: 10
-  max_training_steps: 7600 # Steps per epoch = 38960 / 512 ≈ 76
+  use_grad_value_clipping: false  # Flag to enable grad_value clipping
+  patience: 2
+  max_training_steps: 3800 # Steps per epoch = 38960 / 1024 ≈ 38
   use_lr_scheduler: true
-  lr_scheduler_type: "linear"  # can be "cosine", "linear", "one_cycle", "reduce_on_plateau", or "null"
+  lr_scheduler_type: "linear_warmup"  # can be "cosine", "linear", "linear_warmup", "one_cycle", "reduce_on_plateau", or "null"
   num_dataloader_workers: 0
   
 data_config:
