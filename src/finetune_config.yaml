@@ -7,16 +7,16 @@ dataset_path: null
 pretrained_weights_fp: null
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
+  activation_function: 'gelu'
   use_fake_feature: true
   fake_feature_correlation: 0.8
   use_gradient_checkpointing: false
   use_cache: true # must be false if use_gradient_checkpointing is true
   use_labs: true
   use_static_features: true
-  use_batch_norm: false
+  use_batch_norm: true
   use_layer_norm: true
-  use_flash_attention: true
-  attention_mechanism: "stable_attention" # (original_improved or stable_attention)
+  use_flash_attention: false
   output_attentions: true
   problem_type: "single_label_classification"
   num_labels: 2
@@ -31,18 +31,18 @@ config:
   dynamic_embedding_weight: 0.5
   do_normalize_by_measurement_index: false
   structured_event_processing_mode: conditionally_independent
-  num_hidden_layers: 2
+  num_hidden_layers: 3
   seq_attention_types: ["global", "local"]
   seq_window_size: 168 # An integer specifying the size of the attention window.
   head_dim: 64
   max_position_embeddings: 512
-  num_attention_heads: 1
+  num_attention_heads: 4
   max_grad_norm: 1
   intermediate_dropout: 0.1
   attention_dropout: 0.1
   input_dropout: 0.1
   resid_dropout: 0.1
-  hidden_size: 64  # consistent with head_dim and num_attention_heads
+  hidden_size: 256  # consistent with head_dim and num_attention_heads
   intermediate_size: 128
   layer_norm_epsilon: 1e-3
   task_specific_params:
@@ -57,11 +57,11 @@ optimization_config:
   validation_batch_size: 512
   weight_decay: 0.01
   clip_grad_value: 1  # Default value for grad_value clipping
-  use_grad_value_clipping: false  # Flag to enable grad_value clipping
+  use_grad_value_clipping: true  # Flag to enable grad_value clipping
   patience: 2
   max_training_steps: 3800 # Steps per epoch = 38960 / 1024 ≈ 38
   use_lr_scheduler: true
-  lr_scheduler_type: "linear_warmup"  # can be "cosine", "linear", "linear_warmup", "one_cycle", "reduce_on_plateau", or "null"
+  lr_scheduler_type: "linear"  # can be "cosine", "linear", "linear_warmup", "one_cycle", "reduce_on_plateau", or "null"
   num_dataloader_workers: 0
   
 data_config:
