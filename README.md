@@ -35,7 +35,7 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 
 ## Code Files in `src/`
 
-- `model_utils.py`
+- `model_utils.py` [static analyses]
 	-  Set of utility functions and classes for training and validating machine learning models in PyTorch, including support for data loading, model training with techniques like MixUp and CutMix, model validation, and custom dataset handling.
 
 - `data_loader.py` [static analyses]
@@ -124,38 +124,6 @@ $ python3 -m pip install "dask[complete]" --upgrade
 
 Follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
-## Static analyses
-
-1. Load data:
-
-```bash
-$ cd diabetes_pred 
-$ python3 src/data_loader.py
-```
-
-2. (Optional) Create plots and summary statistics for the training dataset (static analyses):
-
-```bash
-$ python3 src/data_analysis.py
-``` 
-
-3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
-
-```bash
-$ python3 src/tune_static.py --model_type FTTransformer --epochs 25
-```
-
-4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
-
-```bash
-$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --use_batch_accumulation --clipping --max_norm 5 --batch_size 8 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
-```
-
-or 
-```bash
-$ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 8 --epochs 200 --early_stopping_patience 10 --use_batch_accumulation --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization layernorm --use_mixup --use_cutmix --weight_decay 0.1 --d_hidden_factor 4
-```
-
 ## Temporal analyses
 
 0. Create Python path for ESGPT
@@ -182,14 +150,34 @@ $ python3 src/tune_temporal.py --epochs 300
 $ /home/jvp/env10/bin/python3 -m torch.distributed.run --nproc_per_node=3 --rdzv-backend=c10d --rdzv-endpoint=localhost:12345 src/finetune.py use_labs=true
 ```
 
-4. (Optional) Load a model checkpoint and apply different attribution techniques from Captum.
+## Static analyses
+
+1. Load data:
 
 ```bash
-$ python3 src/attribution.py experiments/finetune/2024-09-22_22-44-45/checkpoints/last.ckpt --config_path src/finetune_config.yaml --use_labs --index_to_code_path data/labs/index_to_code.json
+$ cd diabetes_pred 
+$ python3 src/data_loader.py
 ```
 
-5. (Optional) Load a model checkpoint and describe attention maps (--create_heatmaps).
+2. (Optional) Create plots and summary statistics for the training dataset:
 
 ```bash
-$ python3 src/visualize_attention.py experiments/finetune/2024-09-22_22-44-45/checkpoints/last.ckpt --use_labs --config_path src/finetune_config.yaml
+$ python3 src/data_analysis.py
+``` 
+
+3. (Optional) Hyperparameter optimization for transfomer model. Arguments: `--model_type` ('TabTransformer', 'FTTransformer', or 'ResNet') `--epochs`.
+
+```bash
+$ python3 src/tune_static.py --model_type FTTransformer --epochs 25
+```
+
+4. Train and evaluate transformer. Arguments: `--model_type` (required) `--dim` `--depth` `--heads` `--ff_dropout` `--attn_dropout` `--batch_size` `--learning_rate` `--scheduler`  `--weight_decay` `--epochs` `--early_stopping_patience` `--use_cutmix`  `--cutmix_prob`  `--cutmix_alpha`  `--use_mixup` `--mixup_alpha` `--clipping` `use_batch_accumulation` `--max_norm` `--mixup_alpha` `--model_path`.
+
+```bash
+$ python3 src/train.py --model_type FTTransformer --dim 128 --depth 3 --heads 16 --ff_dropout 0 --attn_dropout 0 --use_batch_accumulation --clipping --max_norm 5 --batch_size 8 --epochs 200 --early_stopping_patience 10 --scheduler 'cosine'
+```
+
+or 
+```bash
+$ python3 src/train.py --model_type ResNet --dim 128 --depth 3 --dropout 0.2 --batch_size 8 --epochs 200 --early_stopping_patience 10 --use_batch_accumulation --clipping --max_norm 5 --scheduler 'cosine' --learning_rate 0.01 --normalization layernorm --use_mixup --use_cutmix --weight_decay 0.1 --d_hidden_factor 4
 ```

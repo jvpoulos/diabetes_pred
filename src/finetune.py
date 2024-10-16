@@ -11,6 +11,7 @@ from EventStream.transformer.lightning_modules.fine_tuning import FinetuneConfig
 from EventStream.transformer.lightning_modules.fine_tuning import train
 from pathlib import Path
 import json
+import wandb
 from EventStream.utils import CustomJSONEncoder
 from EventStream.data.config import PytorchDatasetConfig
 from EventStream.data.dataset_config import DatasetConfig
@@ -150,21 +151,27 @@ def _main(cfg: dict, use_labs: bool = False):
     logger.debug(f"Tuning dataset cached data: {[df.shape for df in tuning_pyd.cached_data_list] if hasattr(tuning_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
     logger.debug(f"Held-out dataset cached data: {[df.shape for df in held_out_pyd.cached_data_list] if hasattr(held_out_pyd, 'cached_data_list') else 'No cached_data_list attribute'}")
 
-    # Initialize WandbLogger
-    wandb_kwargs = cfg.wandb_logger_kwargs.copy()
-    project = wandb_kwargs.pop('project', 'default_project')
-    name = wandb_kwargs.pop('name', 'default_run')
-    
-    # Remove unsupported parameters
-    wandb_kwargs.pop('team', None)
-    wandb_kwargs.pop('do_log_graph', None)
-    
-    wandb_logger = WandbLogger(
-        project=project,
-        name=name,
-        save_dir=cfg.save_dir,
-        **wandb_kwargs
-    )
+    # Initialize WandbLogger only if wandb hasn't been initialized
+    if wandb.run is None:
+        wandb_kwargs = cfg.wandb_logger_kwargs.copy()
+        project = wandb_kwargs.pop('project', 'default_project')
+        name = wandb_kwargs.pop('name', 'default_run')
+        
+        # Remove unsupported parameters
+        wandb_kwargs.pop('team', None)
+        wandb_kwargs.pop('do_log_graph', None)
+        
+        wandb_logger = WandbLogger(
+            project=project,
+            name=name,
+            save_dir=cfg.save_dir,
+            **wandb_kwargs
+        )
+        logger.info("Initialized new WandbLogger")
+    else:
+        # If wandb is already initialized, create a WandbLogger with the existing run
+        wandb_logger = WandbLogger(experiment=wandb.run)
+        logger.info("Using existing wandb run")
     
     logger.info("Starting training process")
 
