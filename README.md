@@ -62,12 +62,6 @@ GPUs: GeForce RTX 2080 (x2) or NVIDIA RTX 6000 Ada Generation (x3)
 - `tune_temporal.py` [temporal analyses]
 	- Hyperparameter optimization for temporal transfomer models using Ray Tune.
 
-- `visualize_attention.py` [temporal analyses]
-	- Loads a model checkpoint and extract the attention weights from it. Visualizes the attention weights, focusing on the average normalized attention weights per attention head for each feature value within each outcome group. The script will produce both a heatmap visualization and a table.
-
-- `attribution.py` [temporal analyses]
-	- Loads a model checkpoint and applies different attribution techniques from Captum, including Integrated Gradients for feature attribution and Conductance for layer and neuron attribution, to better understand the transformer predicting single-label classification.
-
 - `train.py` [static analyses]
 	- Trains transformer model, supporting Tab Transformer and FT Transformer.
 

@@ -4,6 +4,8 @@ import os
 print(f"MASTER_ADDR={os.getenv('MASTER_ADDR')}")
 print(f"MASTER_PORT={os.getenv('MASTER_PORT')}")
 
+import torch.distributed as dist
+
 import argparse
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -29,6 +31,7 @@ if torch.cuda.is_available():
     # Set float32 matmul precision to 'medium' for better performance on Tensor Core enabled devices
     torch.set_float32_matmul_precision('medium')
 import logging
+from datetime import timedelta
 
 from data_utils import CustomPytorchDataset, create_dataset
 
@@ -59,11 +62,25 @@ def _main(cfg: dict, use_labs: bool = False):
         data_config_fp = Path(data_config_path)
         logger.info(f"Loading data_config from {data_config_fp}")
         reloaded_data_config = PytorchDatasetConfig.from_json_file(data_config_fp)
+        
+        # Store the original problem_type
+        original_problem_type = cfg["config"].get("problem_type", "single_label_classification")
+        
+        # Update the config with new data_config
         cfg["data_config"] = reloaded_data_config
-        cfg["config"]["problem_type"] = cfg["config"]["problem_type"]
-        cfg = FinetuneConfig(**cfg, data_config_path=data_config_path, optimization_config_path=optimization_config_path)
+        
+        # Ensure problem_type is preserved
+        cfg["config"]["problem_type"] = original_problem_type
+        
+        # Create FinetuneConfig with all parameters
+        cfg = FinetuneConfig(**cfg, 
+                           data_config_path=data_config_path, 
+                           optimization_config_path=optimization_config_path)
+        
+        logger.info(f"Created FinetuneConfig with problem_type: {cfg.config.problem_type}")
     else:
         cfg = FinetuneConfig(**cfg)
+        logger.info(f"Created FinetuneConfig without data_config, problem_type: {cfg.config.problem_type}")
 
     print(f"FinetuneConfig created with use_static_features: {cfg.use_static_features}")
     
@@ -180,11 +197,84 @@ def _main(cfg: dict, use_labs: bool = False):
     logger.info("Training completed successfully.")
 
 if __name__ == "__main__":
-    mp.set_start_method('spawn', force=True)
+    # Set environment variables for distributed training
+    os.environ["NCCL_DEBUG"] = "INFO"
     
-    # Use dill for serialization
-    import cloudpickle
-    mp.reductions.ForkingPickler.dumps = cloudpickle.dumps
-    mp.reductions.ForkingPickler.loads = cloudpickle.loads
+    # Try different network interfaces
+    interfaces = ['eth0', 'ens3', 'ens5', 'lo']
+    interface_found = False
     
+    for interface in interfaces:
+        if os.system(f"ip link show {interface} > /dev/null 2>&1") == 0:
+            os.environ["NCCL_SOCKET_IFNAME"] = interface
+            print(f"Found network interface: {interface}")
+            interface_found = True
+            break
+    
+    if not interface_found:
+        print("Warning: No suitable network interface found. Using default settings.")
+        # Remove the environment variable if no interface found
+        os.environ.pop("NCCL_SOCKET_IFNAME", None)
+    
+    # Additional NCCL configurations for robustness
+    os.environ.update({
+        'MASTER_PORT': str(12355),
+        'MASTER_ADDR': 'localhost',
+        'NCCL_IB_DISABLE': '1',  # Disable InfiniBand
+        'NCCL_P2P_DISABLE': '1',  # Disable P2P transfers
+        'NCCL_DEBUG_SUBSYS': 'ALL',
+        'NCCL_MIN_NRINGS': '1',
+        'NCCL_BLOCKING_WAIT': '1'
+    })
+    
+    # Get local rank
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    
+    # Set device before ANYTHING else
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        
+    # Debug info
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Number of GPUs: {torch.cuda.device_count()}")
+    print(f"Local rank: {local_rank}")
+    
+    # Initialize process group before model creation
+    if torch.cuda.is_available():
+        # Use TCP backend if NCCL fails
+        try:
+            dist.init_process_group(
+                backend="nccl",
+                init_method="env://",
+                timeout=timedelta(minutes=60)
+            )
+            print("Successfully initialized NCCL backend")
+        except Exception as e:
+            print(f"NCCL initialization failed: {e}")
+            print("Falling back to TCP backend")
+            # Fall back to TCP backend
+            dist.init_process_group(
+                backend="gloo",
+                init_method="env://",
+                timeout=timedelta(minutes=60)
+            )
+        
+        # Set up CUDA device
+        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(device)
+        
+        # Clear cache
+        torch.cuda.empty_cache()
+        
+        if local_rank == 0:
+            print(f"Process group initialized - World Size: {dist.get_world_size()}")
+            if dist.get_backend() == "nccl":
+                print(f"Using NCCL version: {torch.cuda.nccl.version()}")
+            
+    # Set spawn method for multiprocessing
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
     main()
