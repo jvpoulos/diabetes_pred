@@ -5,7 +5,6 @@ seed: 42
 save_dir: "./experiments/finetune/${now:%Y-%m-%d_%H-%M-%S}"
 dataset_path: null
 pretrained_weights_fp: None
-#pretrained_weights_fp: "./experiments/finetune/2024-10-21_09-31-04/checkpoints/last.ckpt"
 
 config:
   _target_: EventStream.transformer.config.StructuredTransformerConfig
@@ -17,8 +16,8 @@ config:
   use_cache: false # must be false if use_gradient_checkpointing is true
   use_labs: true
   use_static_features: true
-  use_batch_norm: true
-  use_layer_norm: true
+  use_batch_norm: false
+  use_layer_norm: false
   use_flash_attention: false
   output_attentions: true
   problem_type: "single_label_classification"
@@ -52,14 +51,14 @@ config:
     pooling_method: mean
 
 optimization_config:
-  init_lr: 0.01  # Initial learning rate
+  init_lr: 0.001  # Initial learning rate
   end_lr: 0.0001   # Final learning rate
-  end_lr_frac_of_init_lr: 0.01  # This should be equal to end_lr / init_lr
+  end_lr_frac_of_init_lr: 0.1  # This should be equal to end_lr / init_lr
   max_epochs: 10
   batch_size: 128
   validation_batch_size: 128
   weight_decay: 0.01
-  patience: 2
+  patience: 1
   max_training_steps: 760 # Steps per epoch = 38960 / 512 ≈ 76
   use_lr_scheduler: true
   lr_scheduler_type: "linear"  # can be "cosine", "linear", "linear_warmup", "one_cycle", "reduce_on_plateau", or "null"
