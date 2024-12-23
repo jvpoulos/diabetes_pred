@@ -1,4 +1,4 @@
-# Predictive modeling in Diabetes (work-in-progress)
+# Predictive modeling in Diabetes
 
 ## Models for Prediction
 
@@ -106,7 +106,7 @@ $ pip3 install git+https://github.com/jvpoulos/TabTransformer.git
 ```
 Optionally,  follow instructions for installing [flash attention](https://github.com/Dao-AILab/flash-attention). Note: FlashAttention only supports Ampere GPUs or newer.
 
-6. Clone forked version of git repo [EventStreamGPT](https://github.com/jvpoulos/EventStreamGPT), outside of project directory:
+6. Clone forked version of git repo [EventStreamGPT](https://github.com/jvpoulos/ESGPT), outside of project directory:
 ```bash
 $ git clone https://github.com/jvpoulos/EventStreamGPT.git
 touch EventStreamGPT/__init__.py
